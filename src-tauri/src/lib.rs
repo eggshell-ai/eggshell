@@ -5,12 +5,43 @@ mod tools;
 
 use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository};
 use sqlx::SqlitePool;
+use serde::Serialize;
+use std::net::{SocketAddr, TcpStream};
+use std::process::Command;
 use std::sync::Arc;
 use tauri::Emitter;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[derive(Debug, Serialize)]
+struct DependencyStatus { node: bool, php: bool, symfony: bool, mysql: bool }
+
+fn executable_in_path(executable: &str) -> bool {
+    let locator = if cfg!(windows) { "where" } else { "which" };
+    let result = Command::new(locator).arg(executable).output();
+    match result {
+        Ok(output) => {
+            let found = output.status.success();
+            found
+        }
+        Err(error) => {
+            false
+        }
+    }
+}
+
+#[tauri::command]
+fn detect_dependencies() -> DependencyStatus {
+    let node = executable_in_path("node");
+    let php = executable_in_path("php");
+    let symfony = executable_in_path("symfony");
+    let mysql = executable_in_path("mysql");
+    let mysqld = if mysql { false } else { executable_in_path("mysqld") };
+    let status = DependencyStatus { node, php, symfony, mysql: mysql || mysqld };
+    status
 }
 
 #[tauri::command]
@@ -80,6 +111,7 @@ pub fn run() {
         .manage(agent)
         .invoke_handler(tauri::generate_handler![
             greet,
+            detect_dependencies,
             list_projects,
             create_project,
             delete_project,
