@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
+import SetupPage from "./SetupPage";
 
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
@@ -11,6 +12,7 @@ type Session = { id: number; title: string; conversation_history: string };
 const emptyProject: ProjectForm = { title: "", slug: "", path: "" };
 
 function App() {
+  const [isSetupComplete, setIsSetupComplete] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [isAdding, setIsAdding] = useState(false);
   const [form, setForm] = useState<ProjectForm>(emptyProject);
@@ -103,6 +105,7 @@ function App() {
   const messages: Message[] = isSending
     ? [...persistedMessages, { role: "user", content: draft }, ...streamedMessages]
     : persistedMessages;
+  if (!isSetupComplete) return <SetupPage onComplete={() => setIsSetupComplete(true)} />;
   if (activeProject) return <main className="chat-layout">
     <aside className="chat-sidebar"><button className="back-button" type="button" onClick={() => { setIsStarting(false); setActiveProject(null); }}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{activeProject.title}</h2></div><button className="start-button" type="button" onClick={() => void startProject()} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><button className="new-chat-button" type="button" onClick={startNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSession?.id === session.id ? "session-row active" : "session-row"} key={session.id}><button className="session-item" type="button" onClick={() => setActiveSession(session)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => void removeSession(session)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
     <section className="chat-panel"><header className="chat-header"><h1>{activeSession?.title ?? "New session"}</h1><p>{activeSession ? "Dummy assistant" : "Start a conversation"}</p></header><div className="message-list" aria-live="polite">{!messages.length && <div className="chat-empty"><h2>How can I help?</h2><p>Send a message to begin.</p></div>}{messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Eggshell"}</span><p>{message.content}</p></article>)}</div>{error && <p className="chat-error" role="alert">{error}</p>}<form className="composer" onSubmit={sendMessage}><input value={draft} onChange={(event) => setDraft(event.target.value)} disabled={isSending} placeholder="Message Eggshell…" aria-label="Message" /><button className="add-button" disabled={isSending || !draft.trim()} type="submit">{isSending ? "Sending…" : "Send"}</button></form></section>
