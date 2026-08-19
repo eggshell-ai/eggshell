@@ -1,0 +1,4 @@
+# SQLite changes are runtime data and must not restart `tauri dev`.
+data/eggshell.db
+data/eggshell.db-shm
+data/eggshell.db-wal
