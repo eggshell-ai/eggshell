@@ -1,0 +1,19 @@
+[
+    {
+        "name": "Home.Dashboard",
+        "route": "/",
+        "icon": "DashboardOutlined"
+    },
+    {
+        "name": "Management.Users",
+        "route": "/users",
+        "icon": "UserOutlined",
+        "permission": "users.index"
+    },
+    {
+        "name": "Management.Roles",
+        "route": "/roles",
+        "icon": "TeamOutlined",
+        "permission": "roles.index"
+    }
+]
