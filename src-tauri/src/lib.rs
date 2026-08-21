@@ -1,4 +1,5 @@
 mod db;
+mod setup;
 pub mod config;
 pub mod llm;
 mod tools;
@@ -9,7 +10,7 @@ use serde::Serialize;
 use std::net::{SocketAddr, TcpStream};
 use std::process::Command;
 use std::sync::Arc;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -140,6 +141,7 @@ fn mysql_in_program_files() -> bool {
 /// counts as MySQL being here.
 fn mysql_present() -> bool {
     executable_in_path("mysql") || executable_in_path("mysqld") || mysql_in_program_files()
+        || cfg!(windows) && std::env::var_os("LOCALAPPDATA").map(|root| std::path::PathBuf::from(root).join("MySQL").join("mysql-8.0.46-winx64").join("bin").join("mysqld.exe")).is_some_and(|path| path.is_file())
 }
 
 #[tauri::command]
@@ -250,6 +252,10 @@ fn mysql_service_commands() -> Vec<Vec<String>> {
 fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
     if dependency == "symfony" { return symfony_download_plan(); }
 
+    if dependency == "mysql" && !executable_in_path("winget") {
+        return Ok(InstallPlan { preparation: Vec::new(), attempts: vec![setup::mysql_fallback_command()], follow_up: Vec::new(), hint: "Eggshell downloads the portable MySQL server from cdn.mysql.com.".to_string() });
+    }
+
     if !executable_in_path("winget") {
         return Err("winget was not found. Install \"App Installer\" from the Microsoft Store, then run setup again.".to_string());
     }
@@ -264,7 +270,7 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
         other => return Err(unsupported_dependency(other)),
     };
 
-    let attempts = packages
+    let mut attempts: Vec<Vec<String>> = packages
         .iter()
         .map(|package| {
             [
@@ -284,6 +290,7 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
             .to_vec()
         })
         .collect();
+    if dependency == "mysql" { attempts.push(setup::mysql_fallback_command()); }
 
     Ok(InstallPlan {
         preparation: Vec::new(),
@@ -529,8 +536,8 @@ const CONFIG_PLACEHOLDER: &str = "...";
 struct SetupState { setup_completed: bool, model: String }
 
 #[tauri::command]
-fn load_setup_state() -> SetupState {
-    match config::ConfigService::load_default() {
+fn load_setup_state(app: tauri::AppHandle) -> SetupState {
+    match config::ConfigService::load_default(&app) {
         Ok(config) => SetupState {
             setup_completed: config.setup_completed,
             model: if config.ollama.model == CONFIG_PLACEHOLDER { String::new() } else { config.ollama.model },
@@ -549,6 +556,7 @@ fn save_provider_config(
     provider: String,
     model: String,
     api_key: String,
+    app: tauri::AppHandle,
     ollama: tauri::State<'_, Arc<llm::OllamaService>>,
 ) -> Result<(), String> {
     if provider != "ollama" {
@@ -562,13 +570,13 @@ fn save_provider_config(
 
     // Setup writes every field the file holds, and a first launch has nothing to
     // read, so an unreadable configuration is replaced rather than fatal.
-    let mut config = config::ConfigService::load_default().unwrap_or_else(|error| {
+    let mut config = config::ConfigService::load_default(&app).unwrap_or_else(|error| {
         println!("save_provider_config: {error}; writing a fresh configuration");
-        config::AppConfig { ollama: config::OllamaConfig { model: String::new(), api_key: String::new() }, setup_completed: false }
+        config::AppConfig { ollama: config::OllamaConfig { model: String::new(), api_key: String::new() }, mysql: config::MysqlConfig::default(), setup_completed: false }
     });
     config.ollama = config::OllamaConfig { model, api_key };
     config.setup_completed = true;
-    config::ConfigService::save_default(&config).map_err(|error| error.to_string())?;
+    config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
 
     // The agent was built from the configuration read at start-up, so without
     // this the credentials just entered would only take effect after a restart.
@@ -634,24 +642,26 @@ async fn send_message(project_id: i64, session_id: Option<i64>, message: String,
 pub fn run() {
     let pool = tauri::async_runtime::block_on(db::initialize())
         .expect("failed to initialize SQLite database");
-    // A missing or unconfigured file is what a first launch looks like: start
-    // with empty provider settings and let the setup screen fill them in.
-    let config = config::ConfigService::load_default().unwrap_or_else(|error| {
-        println!("run: {error}; starting with empty provider settings");
-        config::AppConfig {
-            ollama: config::OllamaConfig { model: String::new(), api_key: String::new() },
-            setup_completed: false,
-        }
-    });
-    let ollama = Arc::new(llm::OllamaService::new(config.ollama));
-    let agent = llm::AgentService::new(ollama.clone());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(pool)
-        .manage(agent)
-        .manage(ollama)
+        .setup(|app| {
+            // A missing or unconfigured file is what a first launch looks like.
+            let config = config::ConfigService::load_default(app).unwrap_or_else(|error| {
+                println!("run: {error}; starting with empty provider settings");
+                config::AppConfig {
+                    ollama: config::OllamaConfig { model: String::new(), api_key: String::new() },
+                    mysql: config::MysqlConfig::default(),
+                    setup_completed: false,
+                }
+            });
+            let ollama = Arc::new(llm::OllamaService::new(config.ollama));
+            app.manage(llm::AgentService::new(ollama.clone()));
+            app.manage(ollama);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             detect_dependencies,

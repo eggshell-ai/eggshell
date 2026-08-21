@@ -1,3 +1,9 @@
 ollama:
   model: gemma4:31b-cloud
   apiKey: ...
+
+mysql:
+  type: managed
+  port: 336
+  user: root
+  pass: ""

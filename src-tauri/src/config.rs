@@ -3,16 +3,25 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use tauri::{Manager, Runtime};
 
 /// Application configuration loaded from `config.yaml`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     pub ollama: OllamaConfig,
+    #[serde(default)]
+    pub mysql: MysqlConfig,
     /// Written once the setup screen finishes, so later launches skip it. Older
     /// configuration files predate the flag, hence the default.
     #[serde(rename = "setupCompleted", default)]
     pub setup_completed: bool,
 }
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct MysqlConfig { #[serde(rename = "type", default = "default_mysql_type")] pub kind: String, #[serde(default = "default_mysql_port")] pub port: u16, #[serde(default = "default_mysql_user")] pub user: String, #[serde(default)] pub pass: String }
+fn default_mysql_type() -> String { "managed".to_string() }
+fn default_mysql_port() -> u16 { 336 }
+fn default_mysql_user() -> String { "root".to_string() }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OllamaConfig {
@@ -27,11 +36,20 @@ pub struct OllamaConfig {
 /// consumer is ready to use it.
 pub struct ConfigService;
 
-/// Resolved against the working directory, which is `src-tauri` under
-/// `tauri dev`. Loading and saving share it so the two can never drift apart.
-const DEFAULT_CONFIG_PATH: &str = "config.yaml";
-
 impl ConfigService {
+    /// Returns the per-user, platform-specific configuration path and creates
+    /// its parent directory when necessary.
+    pub fn default_path<R: Runtime, M: Manager<R>>(manager: &M) -> Result<PathBuf, ConfigError> {
+        let directory = manager.path().app_config_dir().map_err(|error| ConfigError::Path {
+            message: error.to_string(),
+        })?;
+        fs::create_dir_all(&directory).map_err(|source| ConfigError::Directory {
+            path: directory.clone(),
+            source,
+        })?;
+        Ok(directory.join("config.yaml"))
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<AppConfig, ConfigError> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path).map_err(|source| ConfigError::Read {
@@ -45,8 +63,8 @@ impl ConfigService {
         })
     }
 
-    pub fn load_default() -> Result<AppConfig, ConfigError> {
-        Self::load(DEFAULT_CONFIG_PATH)
+    pub fn load_default<R: Runtime, M: Manager<R>>(manager: &M) -> Result<AppConfig, ConfigError> {
+        Self::load(Self::default_path(manager)?)
     }
 
     /// Rewrites the whole file from `config`, so anything the struct does not
@@ -62,13 +80,21 @@ impl ConfigService {
         })
     }
 
-    pub fn save_default(config: &AppConfig) -> Result<(), ConfigError> {
-        Self::save(DEFAULT_CONFIG_PATH, config)
+    pub fn save_default<R: Runtime, M: Manager<R>>(manager: &M, config: &AppConfig) -> Result<(), ConfigError> {
+        Self::save(Self::default_path(manager)?, config)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("failed to resolve the application configuration directory: {message}")]
+    Path { message: String },
+    #[error("failed to create configuration directory {path}: {source}")]
+    Directory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to read configuration file {path}: {source}")]
     Read {
         path: PathBuf,
