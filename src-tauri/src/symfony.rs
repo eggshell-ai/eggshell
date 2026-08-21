@@ -170,6 +170,95 @@ fn configure_environment(command: &mut Command) {
             command.env(name, value);
         }
     }
+
+    if let Some(directory) = symfony_install_dir() {
+        #[cfg(windows)]
+        persist_on_user_path(&directory);
+        prepend_to_path(command, &directory);
+    }
+}
+
+/// Where setup put the Symfony CLI, when it is somewhere PATH does not already
+/// cover: a directory Eggshell owns on Windows, and the prefix the get.symfony.com
+/// installer uses everywhere else. `None` once the CLI is installed system-wide.
+#[cfg(windows)]
+fn symfony_install_dir() -> Option<PathBuf> {
+    let directory = crate::managed_bin_dir()?;
+    directory.join("symfony.exe").is_file().then_some(directory)
+}
+
+#[cfg(not(windows))]
+fn symfony_install_dir() -> Option<PathBuf> {
+    let directory = PathBuf::from(std::env::var_os("HOME")?)
+        .join(".symfony5")
+        .join("bin");
+    directory.join("symfony").is_file().then_some(directory)
+}
+
+fn prepend_to_path(command: &mut Command, directory: &Path) {
+    let mut value = directory.as_os_str().to_os_string();
+    if let Some(existing) = std::env::var_os("PATH").filter(|existing| !existing.is_empty()) {
+        value.push(if cfg!(windows) { ";" } else { ":" });
+        value.push(existing);
+    }
+    command.env("PATH", value);
+}
+
+/// `setx` makes the Symfony CLI Eggshell installed visible to every process the
+/// user starts from now on, including terminals opened outside the app.
+///
+/// It only ever appends to the *user* PATH, only when the directory is missing,
+/// and only while the result still fits setx's 1024 character limit — anything
+/// longer is silently truncated, which would take the user's other entries with
+/// it. The unexpanded registry value is what gets rewritten, so entries written
+/// as `%USERPROFILE%\...` stay that way.
+#[cfg(windows)]
+fn persist_on_user_path(directory: &Path) {
+    static PERSISTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if PERSISTED.set(()).is_err() {
+        return;
+    }
+
+    let quoted_directory = directory.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$directory = '{quoted_directory}'; \
+         $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment'); \
+         $current = if ($key) {{ [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames') }} else {{ '' }}; \
+         if ($current -split ';' | Where-Object {{ $_.Trim().TrimEnd('\\') -ieq $directory.TrimEnd('\\') }}) {{ exit 0 }}; \
+         $updated = if ($current) {{ \"$current;$directory\" }} else {{ $directory }}; \
+         if ($updated.Length -gt 1024) {{ exit 3 }}; \
+         setx PATH $updated | Out-Null; \
+         exit $LASTEXITCODE"
+    );
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!(
+                "SymfonyShell: {} is on the user PATH",
+                directory.display()
+            );
+        }
+        Ok(output) if output.status.code() == Some(3) => {
+            println!(
+                "SymfonyShell: leaving the user PATH alone because adding {} would exceed setx's 1024 character limit",
+                directory.display()
+            );
+        }
+        Ok(output) => {
+            println!(
+                "SymfonyShell: could not add {} to the user PATH: {}",
+                directory.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Err(error) => {
+            println!("SymfonyShell: could not run setx: {error}");
+        }
+    }
 }
 
 fn run_command_blocking(command: &str, cwd: &Path) -> LlmResult<()> {

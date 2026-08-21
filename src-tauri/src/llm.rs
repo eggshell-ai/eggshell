@@ -4,6 +4,7 @@ use serde_json::{Map, Value};
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use std::sync::RwLock;
 
 use crate::config::OllamaConfig;
 
@@ -161,8 +162,9 @@ pub struct MockLlmService;
 pub struct OllamaService {
     client: reqwest::Client,
     api_url: String,
-    api_key: String,
-    model: String,
+    /// The setup screen can rewrite the model and key while Eggshell is running,
+    /// so these are read per request instead of being fixed at start-up.
+    settings: RwLock<OllamaConfig>,
 }
 
 impl OllamaService {
@@ -170,12 +172,29 @@ impl OllamaService {
         Self {
             client: reqwest::Client::new(),
             api_url: "https://ollama.com/api".to_string(),
-            api_key: config.api_key,
-            model: config.model,
+            settings: RwLock::new(config),
         }
     }
 
-    fn request(&self, endpoint: &str) -> reqwest::RequestBuilder {
+    /// Replaces the provider settings used by every later request.
+    pub fn apply(&self, config: OllamaConfig) {
+        *self
+            .settings
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = config;
+    }
+
+    /// A poisoned lock only means an earlier writer panicked partway through;
+    /// the settings behind it are still a whole value, so read them rather than
+    /// taking every later prompt down with it.
+    fn settings(&self) -> OllamaConfig {
+        self.settings
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+
+    fn request(&self, endpoint: &str, api_key: &str) -> reqwest::RequestBuilder {
         let request = self
             .client
             .post(format!(
@@ -184,10 +203,10 @@ impl OllamaService {
                 endpoint
             ))
             .header("Content-Type", "application/json");
-        if self.api_key.is_empty() || self.api_key == "..." {
+        if api_key.is_empty() || api_key == "..." {
             request
         } else {
-            request.bearer_auth(&self.api_key)
+            request.bearer_auth(api_key)
         }
     }
 
@@ -211,10 +230,11 @@ impl LLMService for OllamaService {
         prompt: &str,
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<String> {
+        let settings = self.settings();
         let response = self
-            .request("generate")
+            .request("generate", &settings.api_key)
             .json(&serde_json::json!({
-                "model": self.model,
+                "model": settings.model,
                 "prompt": Self::prompt_with_context(prompt, context),
                 "stream": false,
             }))
@@ -257,7 +277,8 @@ impl LLMService for OllamaService {
             ollama_messages.push(value);
         }
         let tool_definitions = tools.iter().map(|tool| serde_json::json!({ "type": "function", "function": { "name": tool.name(), "description": tool.description(), "parameters": tool.parameters() } })).collect::<Vec<_>>();
-        let response = self.request("chat").json(&serde_json::json!({ "model": self.model, "messages": ollama_messages, "stream": false, "tools": tool_definitions })).send().await?.error_for_status()?.json::<Value>().await?;
+        let settings = self.settings();
+        let response = self.request("chat", &settings.api_key).json(&serde_json::json!({ "model": settings.model, "messages": ollama_messages, "stream": false, "tools": tool_definitions })).send().await?.error_for_status()?.json::<Value>().await?;
         let message = response.get("message").cloned().unwrap_or_default();
         let calls = message
             .get("tool_calls")

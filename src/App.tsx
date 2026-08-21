@@ -9,10 +9,13 @@ type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
 type Message = { role: "user" | "assistant" | "thought" | "tool_call" | "tool_result"; content: string; data?: unknown };
 type Session = { id: number; title: string; conversation_history: string };
+type SetupState = { setup_completed: boolean; model: string };
 const emptyProject: ProjectForm = { title: "", slug: "", path: "" };
 
 function App() {
-  const [isSetupComplete, setIsSetupComplete] = useState(false);
+  // `null` until config.yaml has been read, so a completed setup never flashes
+  // the setup screen on the way past it.
+  const [isSetupComplete, setIsSetupComplete] = useState<boolean | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [isAdding, setIsAdding] = useState(false);
   const [form, setForm] = useState<ProjectForm>(emptyProject);
@@ -27,6 +30,14 @@ function App() {
   const [streamedMessages, setStreamedMessages] = useState<Message[]>([]);
 
   useEffect(() => { void loadProjects(); }, []);
+  useEffect(() => {
+    void invoke<SetupState>("load_setup_state")
+      .then(({ setup_completed }) => setIsSetupComplete(setup_completed))
+      .catch((reason: unknown) => {
+        console.error("[App] load_setup_state rejected", { reason });
+        setIsSetupComplete(false);
+      });
+  }, []);
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
     void listen<{ projectId: number; event: { type: string; data: unknown } }>("agent-event", ({ payload }) => {
@@ -105,6 +116,7 @@ function App() {
   const messages: Message[] = isSending
     ? [...persistedMessages, { role: "user", content: draft }, ...streamedMessages]
     : persistedMessages;
+  if (isSetupComplete === null) return null; // loading config
   if (!isSetupComplete) return <SetupPage onComplete={() => setIsSetupComplete(true)} />;
   if (activeProject) return <main className="chat-layout">
     <aside className="chat-sidebar"><button className="back-button" type="button" onClick={() => { setIsStarting(false); setActiveProject(null); }}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{activeProject.title}</h2></div><button className="start-button" type="button" onClick={() => void startProject()} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><button className="new-chat-button" type="button" onClick={startNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSession?.id === session.id ? "session-row active" : "session-row"} key={session.id}><button className="session-item" type="button" onClick={() => setActiveSession(session)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => void removeSession(session)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
