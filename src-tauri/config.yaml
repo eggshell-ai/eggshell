@@ -4,6 +4,6 @@ ollama:
 
 mysql:
   type: managed
-  port: 336
+  port: 3306
   user: root
   pass: ""

@@ -20,7 +20,7 @@ pub struct AppConfig {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct MysqlConfig { #[serde(rename = "type", default = "default_mysql_type")] pub kind: String, #[serde(default = "default_mysql_port")] pub port: u16, #[serde(default = "default_mysql_user")] pub user: String, #[serde(default)] pub pass: String }
 fn default_mysql_type() -> String { "managed".to_string() }
-fn default_mysql_port() -> u16 { 336 }
+fn default_mysql_port() -> u16 { 3306 }
 fn default_mysql_user() -> String { "root".to_string() }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

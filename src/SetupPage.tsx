@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
 
 type DependencyStatus = { node: boolean; php: boolean; symfony: boolean; mysql: boolean };
 type DependencyKey = keyof DependencyStatus;
@@ -9,6 +10,8 @@ type InstallState = "idle" | "installing" | "failed";
 type SetupState = { setup_completed: boolean; model: string };
 type SetupStep = "dependencies" | "provider";
 type Provider = { key: "ollama"; name: string; detail: string };
+// Mirrors `setup::LogLine`: `stream` is what produced the line, and the panel colours by it.
+type LogLine = { seq: number; stream: "info" | "command" | "stdout" | "stderr" | "error"; text: string };
 
 const dependencies: Dependency[] = [
   { key: "node", name: "Node JS", version: "24+" },
@@ -37,6 +40,43 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [logLines, setLogLines] = useState<LogLine[]>([]);
+  const [isLogOpen, setIsLogOpen] = useState(false);
+  const logRef = useRef<HTMLDivElement | null>(null);
+  // Following the output is only welcome while the user is already at the bottom;
+  // yanking the view away from a line they scrolled back to read is not.
+  const isPinnedRef = useRef(true);
+
+  // Every line carries a sequence number, so history fetched after a live event
+  // still lands in order and a line already on screen is never repeated.
+  function appendLine(line: LogLine) {
+    setLogLines((current) => {
+      if (current.some(({ seq }) => seq === line.seq)) return current;
+      const position = current.findIndex(({ seq }) => seq > line.seq);
+      if (position === -1) return [...current, line];
+      return [...current.slice(0, position), line, ...current.slice(position)];
+    });
+  }
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let stopped = false;
+
+    void listen<LogLine>("setup-log", ({ payload }) => appendLine(payload))
+      .then((stop) => { if (stopped) stop(); else unlisten = stop; })
+      // Dependency detection and MySQL's start-up have already logged by the time
+      // this mounts, and that is exactly what someone opening the log wants first.
+      .then(() => invoke<LogLine[]>("setup_log_history"))
+      .then((history) => history.forEach(appendLine))
+      .catch((error: unknown) => console.error("[SetupPage] setup log unavailable", { error }));
+
+    return () => { stopped = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    const panel = logRef.current;
+    if (panel && isPinnedRef.current) panel.scrollTop = panel.scrollHeight;
+  }, [logLines, isLogOpen]);
 
   useEffect(() => {
     const startedAt = performance.now();
@@ -94,6 +134,9 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
           dependency: dependency.key, reason, elapsedMs: Math.round(performance.now() - startedAt),
         });
         setInstallStates((current) => replaceAt(current, index, "failed"));
+        // A failure is the one moment the output is worth more than the summary,
+        // so the log opens itself rather than waiting to be asked.
+        setIsLogOpen(true);
         nextFailures.push(`${dependency.name} could not be installed automatically. ${String(reason)}`);
       }
     }
@@ -130,7 +173,30 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     ? <p className="setup-note">Restart Eggshell so it picks up the newly installed tools.</p>
     : null;
 
-  if (step === "provider") return <main className="setup-page"><section className="setup-card" aria-labelledby="provider-title">
+  // One control on either step: a toggle, and the panel it reveals. Collapsed, the
+  // line count is the only hint that anything is being recorded.
+  const logSection = <>
+    <button className="log-toggle" type="button" aria-expanded={isLogOpen}
+      onClick={() => setIsLogOpen((open) => !open)}>
+      {isLogOpen ? "Hide log" : "View log"}
+      {!isLogOpen && logLines.length > 0 && <span> · {logLines.length} lines</span>}
+    </button>
+    {isLogOpen && <div
+      className="setup-log" role="log" aria-label="Setup log" ref={logRef}
+      onScroll={({ currentTarget }) => {
+        const { scrollTop, scrollHeight, clientHeight } = currentTarget;
+        isPinnedRef.current = scrollHeight - scrollTop - clientHeight < 24;
+      }}
+    >
+      {logLines.length === 0
+        ? <p className="log-line info">Nothing has run yet.</p>
+        : logLines.map(({ seq, stream, text }) => <p className={`log-line ${stream}`} key={seq}>{text}</p>)}
+    </div>}
+  </>;
+
+  const cardClass = isLogOpen ? "setup-card with-log" : "setup-card";
+
+  if (step === "provider") return <main className="setup-page"><section className={cardClass} aria-labelledby="provider-title">
     <div className="setup-brand" aria-hidden="true">e</div><p className="eyebrow">Final step</p>
     <h1 id="provider-title">Configure Your LLM Provider</h1>
     <p className="setup-intro">Pick the provider Eggshell should send your prompts to.</p>
@@ -157,9 +223,10 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
       {isSaving ? "Saving…" : "Next"}
     </button>
     {restartNote}
+    {logSection}
   </section></main>;
 
-  return <main className="setup-page"><section className="setup-card" aria-labelledby="setup-title">
+  return <main className="setup-page"><section className={cardClass} aria-labelledby="setup-title">
     <div className="setup-brand" aria-hidden="true">e</div><p className="eyebrow">Welcome to Eggshell</p>
     <h1 id="setup-title">Let’s get you set up</h1>
     <div className="dependency-list" aria-label="Required dependencies">
@@ -180,5 +247,6 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
       {buttonLabel}
     </button>
     {restartNote}
+    {logSection}
   </section></main>;
 }
