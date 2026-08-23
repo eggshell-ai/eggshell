@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 
-type DependencyStatus = { node: boolean; php: boolean; symfony: boolean; mysql: boolean };
+type DependencyStatus = { node: boolean; php: boolean; composer: boolean; symfony: boolean; mysql: boolean };
 type DependencyKey = keyof DependencyStatus;
 type Dependency = { key: DependencyKey; name: string; version?: string };
 type InstallOutcome = { installed: boolean; already_present: boolean; command: string; restart_required: boolean };
@@ -16,6 +16,7 @@ type LogLine = { seq: number; stream: "info" | "command" | "stdout" | "stderr" |
 const dependencies: Dependency[] = [
   { key: "node", name: "Node JS", version: "24+" },
   { key: "php", name: "PHP", version: "8.2+" },
+  { key: "composer", name: "Composer" },
   { key: "symfony", name: "Symfony CLI" },
   { key: "mysql", name: "MySQL" },
 ];

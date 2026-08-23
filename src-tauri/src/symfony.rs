@@ -176,6 +176,18 @@ fn configure_environment(command: &mut Command) {
         persist_on_user_path(&directory);
         prepend_to_path(command, &directory);
     }
+
+    #[cfg(windows)]
+    if crate::managed_composer_present() {
+        if let Some(directory) = crate::managed_bin_dir() {
+            prepend_to_path(command, &directory);
+        }
+    }
+
+    #[cfg(windows)]
+    if let Some(directory) = crate::setup::managed_php_dir() {
+        prepend_to_path(command, &directory);
+    }
 }
 
 /// Where setup put the Symfony CLI, when it is somewhere PATH does not already

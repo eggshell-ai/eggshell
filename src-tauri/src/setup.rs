@@ -178,6 +178,17 @@ fn strip_ansi(text: &str) -> String {
 #[cfg(windows)]
 pub(crate) const MYSQL_DIRECTORY: &str = "mysql-8.0.46-winx64";
 
+pub(crate) const PHP_DIRECTORY: &str = "php";
+
+pub(crate) fn managed_php_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(|root| std::path::PathBuf::from(root).join("eggshell").join(PHP_DIRECTORY))
+}
+
+pub(crate) fn managed_php_present() -> bool {
+    managed_php_dir().is_some_and(|directory| directory.join("php.exe").is_file())
+}
+
 /// Where the fallback route leaves the server: the base directory holding
 /// `bin/mysqld.exe`, `my.ini` and `data`. `None` on the platforms where setup
 /// installs MySQL through a package manager instead, since those register a
@@ -206,5 +217,22 @@ port        = 3306
     vec!["powershell".into(), "-NoProfile".into(), "-NonInteractive".into(), "-ExecutionPolicy".into(), "Bypass".into(), "-Command".into(), script]
 }
 
+#[cfg(windows)]
+pub(crate) fn php_fallback_command() -> Vec<String> {
+    let url = "https://downloads.php.net/~windows/releases/php-8.5.9-nts-Win32-vs17-x64.zip";
+    let settings = "extension_dir = \"ext\"`r`nextension=curl`r`nextension=fileinfo`r`nextension=gd`r`nextension=intl`r`nextension=mbstring`r`nextension=openssl`r`nextension=pdo_mysql`r`nextension=pdo_pgsql`r`nextension=pdo_sqlite`r`nextension=sodium`r`nextension=sqlite3`r`nextension=xsl`r`nextension=zip";
+    let script = format!(r#"$ErrorActionPreference = 'Stop'; $root = Join-Path $env:APPDATA 'eggshell'; $base = Join-Path $root '{PHP_DIRECTORY}'; $archive = Join-Path $root 'php-8.5.9.zip'; New-Item -ItemType Directory -Force -Path $root | Out-Null; if (-not (Test-Path (Join-Path $base 'php.exe'))) {{ Invoke-WebRequest -Uri '{url}' -OutFile $archive -UseBasicParsing; New-Item -ItemType Directory -Force -Path $base | Out-Null; Expand-Archive -LiteralPath $archive -DestinationPath $base -Force; Remove-Item -LiteralPath $archive -Force }}; $ini = Join-Path $base 'php.ini'; Move-Item -LiteralPath (Join-Path $base 'php.ini-development') -Destination $ini -Force; Add-Content -LiteralPath $ini -Value "`r`n{settings}`r`n" -Encoding ascii"#);
+    vec!["powershell".into(), "-NoProfile".into(), "-NonInteractive".into(), "-ExecutionPolicy".into(), "Bypass".into(), "-Command".into(), script]
+}
+
 #[cfg(not(windows))]
 pub(crate) fn mysql_fallback_command() -> Vec<String> { Vec::new() }
+
+#[cfg(not(windows))]
+pub(crate) fn managed_php_dir() -> Option<std::path::PathBuf> { None }
+
+#[cfg(not(windows))]
+pub(crate) fn managed_php_present() -> bool { false }
+
+#[cfg(not(windows))]
+pub(crate) fn php_fallback_command() -> Vec<String> { Vec::new() }

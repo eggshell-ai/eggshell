@@ -19,7 +19,7 @@ fn greet(name: &str) -> String {
 }
 
 #[derive(Debug, Serialize)]
-struct DependencyStatus { node: bool, php: bool, symfony: bool, mysql: bool }
+struct DependencyStatus { node: bool, php: bool, composer: bool, symfony: bool, mysql: bool }
 
 #[derive(Debug, Serialize)]
 struct InstallOutcome { installed: bool, already_present: bool, command: String, restart_required: bool }
@@ -45,6 +45,65 @@ const SYMFONY_CLI_VERSION: &str = "5.17.1";
 #[cfg(windows)]
 pub(crate) fn managed_bin_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| std::path::PathBuf::from(appdata).join("eggshell"))
+}
+
+/// Composer's installer writes a PHAR, so Eggshell also creates this launcher in
+/// its managed bin directory. Keeping both together lets Symfony invoke the
+/// normal `composer` command without special cases.
+#[cfg(windows)]
+pub(crate) fn managed_composer_present() -> bool {
+    managed_bin_dir().is_some_and(|directory| directory.join("composer.bat").is_file())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn managed_composer_present() -> bool {
+    false
+}
+
+/// Make the portable PHP and Composer available to every command Eggshell starts
+/// during this launch. This is deliberately process-local: it does not rewrite
+/// the user's PATH.
+fn add_managed_tools_to_process_path() {
+    #[cfg(windows)]
+    {
+        let mut directories = Vec::new();
+        if managed_composer_present() {
+            if let Some(directory) = managed_bin_dir() { directories.push(directory); }
+        }
+        if setup::managed_php_present() {
+            if let Some(directory) = setup::managed_php_dir() { directories.push(directory); }
+        }
+        if directories.is_empty() { return; }
+
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = directories;
+        paths.extend(std::env::split_paths(&existing));
+        if let Ok(path) = std::env::join_paths(paths) {
+            std::env::set_var("PATH", path);
+        }
+    }
+}
+
+/// The Composer installer can run immediately after portable PHP is installed,
+/// before the process-wide PATH has been refreshed.
+fn add_managed_tools_to_command_path(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        let mut directories = Vec::new();
+        if managed_composer_present() {
+            if let Some(directory) = managed_bin_dir() { directories.push(directory); }
+        }
+        if setup::managed_php_present() {
+            if let Some(directory) = setup::managed_php_dir() { directories.push(directory); }
+        }
+        if directories.is_empty() { return; }
+
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        directories.extend(std::env::split_paths(&existing));
+        if let Ok(path) = std::env::join_paths(directories) {
+            command.env("PATH", path);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -163,6 +222,7 @@ fn detect_dependencies(log: tauri::State<'_, setup::SetupLog>) -> DependencyStat
     let status = DependencyStatus {
         node: executable_in_path("node"),
         php: executable_in_path("php"),
+        composer: managed_composer_present() || executable_in_path("composer"),
         symfony: executable_in_path("symfony") || managed_symfony_present(),
         mysql: mysql_present(),
     };
@@ -172,6 +232,7 @@ fn detect_dependencies(log: tauri::State<'_, setup::SetupLog>) -> DependencyStat
     for (name, present) in [
         ("Node JS", status.node),
         ("PHP", status.php),
+        ("Composer", status.composer),
         ("Symfony CLI", status.symfony),
         ("MySQL", status.mysql),
     ] {
@@ -188,6 +249,7 @@ fn executable_for(dependency: &str) -> Result<&'static str, String> {
     match dependency {
         "node" => Ok("node"),
         "php" => Ok("php"),
+        "composer" => Ok("composer"),
         "symfony" => Ok("symfony"),
         "mysql" => Ok("mysql"),
         other => Err(unsupported_dependency(other)),
@@ -199,6 +261,8 @@ fn executable_for(dependency: &str) -> Result<&'static str, String> {
 /// MySQL announces itself through the daemon or its install directory.
 fn dependency_present(dependency: &str, executable: &str) -> bool {
     match dependency {
+        "php" => setup::managed_php_present() || executable_in_path(executable),
+        "composer" => managed_composer_present() || executable_in_path(executable),
         "symfony" => managed_symfony_present() || executable_in_path(executable),
         "mysql" => mysql_present(),
         _ => executable_in_path(executable),
@@ -209,6 +273,8 @@ fn dependency_present(dependency: &str, executable: &str) -> bool {
 /// prepends its directory to PATH every time it runs a command. Projects reach
 /// MySQL over TCP rather than by running its client, so PATH never matters there.
 fn requires_restart(dependency: &str, executable: &str) -> bool {
+    if dependency == "php" && setup::managed_php_present() { return false; }
+    if dependency == "composer" && managed_composer_present() { return false; }
     if dependency == "symfony" && managed_symfony_present() { return false; }
     if dependency == "mysql" { return false; }
     !executable_in_process_path(executable)
@@ -229,6 +295,7 @@ fn symfony_download_plan() -> Result<InstallPlan, String> {
     let quoted_directory = directory.display().to_string().replace('\'', "''");
     let script = format!(
         "$ErrorActionPreference = 'Stop'; \
+         $env:PATH = $env:PATH + ';' + [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH', 'User'); \
          $directory = '{quoted_directory}'; \
          New-Item -ItemType Directory -Force -Path $directory | Out-Null; \
          $archive = Join-Path $directory 'symfony-cli.zip'; \
@@ -250,6 +317,48 @@ fn symfony_download_plan() -> Result<InstallPlan, String> {
         follow_up: Vec::new(),
         hint: format!(
             "Eggshell downloads Symfony CLI {SYMFONY_CLI_VERSION} into {}, which needs access to github.com.",
+            directory.display()
+        ),
+    })
+}
+
+/// Composer's official installer produces `composer.phar`. Run it in Eggshell's
+/// app-data bin directory and add a tiny launcher so Windows resolves `composer`
+/// from PATH like a regular executable. The installer is intentionally used
+/// without a hash check as a temporary compatibility workaround.
+#[cfg(windows)]
+fn composer_download_plan() -> Result<InstallPlan, String> {
+    let directory = managed_bin_dir().ok_or_else(|| {
+        "APPDATA is not set, so Eggshell has nowhere to keep Composer.".to_string()
+    })?;
+    let quoted_directory = directory.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; \
+         $directory = '{quoted_directory}'; \
+         New-Item -ItemType Directory -Force -Path $directory | Out-Null; \
+         Push-Location $directory; \
+         try {{ \
+           & php -r \"copy('https://getcomposer.org/installer', 'composer-setup.php');\"; \
+           & php composer-setup.php; \
+           & php -r \"unlink('composer-setup.php');\"; \
+           Set-Content -LiteralPath (Join-Path $directory 'composer.bat') -Value '@php \"%~dp0composer.phar\" %*' -Encoding ascii \
+         }} finally {{ Pop-Location }}"
+    );
+
+    Ok(InstallPlan {
+        preparation: Vec::new(),
+        attempts: vec![vec![
+            "powershell".to_string(),
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-Command".to_string(),
+            script,
+        ]],
+        follow_up: Vec::new(),
+        hint: format!(
+            "Eggshell installs Composer into {} using getcomposer.org; PHP must be installed first.",
             directory.display()
         ),
     })
@@ -277,9 +386,14 @@ fn mysql_service_commands() -> Vec<Vec<String>> {
 #[cfg(windows)]
 fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
     if dependency == "symfony" { return symfony_download_plan(); }
+    if dependency == "composer" { return composer_download_plan(); }
 
     if dependency == "mysql" && !executable_in_path("winget") {
         return Ok(InstallPlan { preparation: Vec::new(), attempts: vec![setup::mysql_fallback_command()], follow_up: Vec::new(), hint: "Eggshell downloads the portable MySQL server from cdn.mysql.com.".to_string() });
+    }
+
+    if dependency == "php" && !executable_in_path("winget") {
+        return Ok(InstallPlan { preparation: Vec::new(), attempts: vec![setup::php_fallback_command()], follow_up: Vec::new(), hint: "Eggshell downloads portable PHP from downloads.php.net.".to_string() });
     }
 
     if !executable_in_path("winget") {
@@ -292,6 +406,7 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
     let packages: &[&str] = match dependency {
         "node" => &["OpenJS.NodeJS.LTS"],
         "php" => &["PHP.PHP.8.4", "PHP.PHP.8.3"],
+        "composer" => &["Composer.Composer"],
         "mysql" => &["Oracle.MySQL"],
         other => return Err(unsupported_dependency(other)),
     };
@@ -317,6 +432,7 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
         })
         .collect();
     if dependency == "mysql" { attempts.push(setup::mysql_fallback_command()); }
+    if dependency == "php" { attempts.push(setup::php_fallback_command()); }
 
     Ok(InstallPlan {
         preparation: Vec::new(),
@@ -353,6 +469,7 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
     let formula = match dependency {
         "node" => "node",
         "php" => "php",
+        "composer" => "composer",
         "mysql" => "mysql",
         other => return Err(unsupported_dependency(other)),
     };
@@ -445,15 +562,19 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
     let (preparation, attempts): (Vec<Vec<&str>>, Vec<Vec<&str>>) = match (manager, dependency) {
         ("apt-get", "node") => (vec![vec!["apt-get", "update"]], vec![vec!["apt-get", "install", "-y", "nodejs", "npm"]]),
         ("apt-get", "php") => (vec![vec!["apt-get", "update"]], vec![vec!["apt-get", "install", "-y", "php-cli"]]),
+        ("apt-get", "composer") => (vec![vec!["apt-get", "update"]], vec![vec!["apt-get", "install", "-y", "composer"]]),
         ("dnf", "node") => (Vec::new(), vec![vec!["dnf", "install", "-y", "nodejs", "npm"]]),
         ("dnf", "php") => (Vec::new(), vec![vec!["dnf", "install", "-y", "php-cli"]]),
+        ("dnf", "composer") => (Vec::new(), vec![vec!["dnf", "install", "-y", "composer"]]),
         ("pacman", "node") => (Vec::new(), vec![vec!["pacman", "-Sy", "--noconfirm", "nodejs", "npm"]]),
         ("pacman", "php") => (Vec::new(), vec![vec!["pacman", "-Sy", "--noconfirm", "php"]]),
+        ("pacman", "composer") => (Vec::new(), vec![vec!["pacman", "-Sy", "--noconfirm", "composer"]]),
         ("zypper", "node") => (Vec::new(), vec![vec!["zypper", "--non-interactive", "install", "nodejs", "npm"]]),
         ("zypper", "php") => (
             Vec::new(),
             vec![vec!["zypper", "--non-interactive", "install", "php8-cli"], vec!["zypper", "--non-interactive", "install", "php-cli"]],
         ),
+        ("zypper", "composer") => (Vec::new(), vec![vec!["zypper", "--non-interactive", "install", "composer"]]),
         (_, other) => return Err(unsupported_dependency(other)),
     };
 
@@ -482,7 +603,9 @@ fn run_installer(command: &[String], log: &setup::SetupLog) -> Result<(), String
 
     // Piped rather than captured: a multi-minute download has nothing to show for
     // itself until it finishes, and the log window is where the wait is explained.
-    let mut child = Command::new(program)
+    let mut process = Command::new(program);
+    add_managed_tools_to_command_path(&mut process);
+    let mut child = process
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -826,6 +949,7 @@ fn start_managed_mysql(mysql: &config::MysqlConfig, log: &setup::SetupLog) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    add_managed_tools_to_process_path();
     let pool = tauri::async_runtime::block_on(db::initialize())
         .expect("failed to initialize SQLite database");
 
