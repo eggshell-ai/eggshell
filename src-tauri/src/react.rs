@@ -188,4 +188,59 @@ fn configure_environment(command: &mut Command) {
             command.env(name, value);
         }
     }
+
+    #[cfg(windows)]
+    if let Some(directory) = crate::setup::managed_node_dir() {
+        if directory.join("node.exe").is_file() {
+            persist_on_user_path(&directory);
+            prepend_to_path(command, &directory);
+        }
+    }
+}
+
+fn prepend_to_path(command: &mut Command, directory: &Path) {
+    let mut value = directory.as_os_str().to_os_string();
+    if let Some(existing) = std::env::var_os("PATH").filter(|existing| !existing.is_empty()) {
+        value.push(if cfg!(windows) { ";" } else { ":" });
+        value.push(existing);
+    }
+    command.env("PATH", value);
+}
+
+/// Make Eggshell's portable Node available to processes the user starts after
+/// this one. The current command also receives the directory directly above.
+#[cfg(windows)]
+fn persist_on_user_path(directory: &Path) {
+    static PERSISTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if PERSISTED.set(()).is_err() {
+        return;
+    }
+
+    let quoted_directory = directory.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$directory = '{quoted_directory}'; \
+         $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment'); \
+         $current = if ($key) {{ [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames') }} else {{ '' }}; \
+         if ($current -split ';' | Where-Object {{ $_.Trim().TrimEnd('\\') -ieq $directory.TrimEnd('\\') }}) {{ exit 0 }}; \
+         $updated = if ($current) {{ \"$current;$directory\" }} else {{ $directory }}; \
+         if ($updated.Length -gt 1024) {{ exit 3 }}; \
+         setx PATH $updated | Out-Null; \
+         exit $LASTEXITCODE"
+    );
+
+    match Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            println!("ReactShell: {} is on the user PATH", directory.display());
+        }
+        Ok(output) if output.status.code() == Some(3) => {
+            println!("ReactShell: leaving the user PATH alone because adding {} would exceed setx's 1024 character limit", directory.display());
+        }
+        Ok(output) => {
+            println!("ReactShell: could not add {} to the user PATH: {}", directory.display(), String::from_utf8_lossy(&output.stderr).trim());
+        }
+        Err(error) => println!("ReactShell: could not run setx: {error}"),
+    }
 }

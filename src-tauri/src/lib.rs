@@ -60,13 +60,16 @@ pub(crate) fn managed_composer_present() -> bool {
     false
 }
 
-/// Make the portable PHP and Composer available to every command Eggshell starts
+/// Make the portable Node, PHP and Composer available to every command Eggshell starts
 /// during this launch. This is deliberately process-local: it does not rewrite
 /// the user's PATH.
 fn add_managed_tools_to_process_path() {
     #[cfg(windows)]
     {
         let mut directories = Vec::new();
+        if setup::managed_node_present() {
+            if let Some(directory) = setup::managed_node_dir() { directories.push(directory); }
+        }
         if managed_composer_present() {
             if let Some(directory) = managed_bin_dir() { directories.push(directory); }
         }
@@ -90,6 +93,9 @@ fn add_managed_tools_to_command_path(command: &mut Command) {
     #[cfg(windows)]
     {
         let mut directories = Vec::new();
+        if setup::managed_node_present() {
+            if let Some(directory) = setup::managed_node_dir() { directories.push(directory); }
+        }
         if managed_composer_present() {
             if let Some(directory) = managed_bin_dir() { directories.push(directory); }
         }
@@ -220,7 +226,7 @@ fn mysql_present() -> bool {
 #[tauri::command]
 fn detect_dependencies(log: tauri::State<'_, setup::SetupLog>) -> DependencyStatus {
     let status = DependencyStatus {
-        node: executable_in_path("node"),
+        node: setup::managed_node_present() || executable_in_path("node"),
         php: executable_in_path("php"),
         composer: managed_composer_present() || executable_in_path("composer"),
         symfony: executable_in_path("symfony") || managed_symfony_present(),
@@ -261,6 +267,7 @@ fn executable_for(dependency: &str) -> Result<&'static str, String> {
 /// MySQL announces itself through the daemon or its install directory.
 fn dependency_present(dependency: &str, executable: &str) -> bool {
     match dependency {
+        "node" => setup::managed_node_present() || executable_in_path(executable),
         "php" => setup::managed_php_present() || executable_in_path(executable),
         "composer" => managed_composer_present() || executable_in_path(executable),
         "symfony" => managed_symfony_present() || executable_in_path(executable),
@@ -273,6 +280,7 @@ fn dependency_present(dependency: &str, executable: &str) -> bool {
 /// prepends its directory to PATH every time it runs a command. Projects reach
 /// MySQL over TCP rather than by running its client, so PATH never matters there.
 fn requires_restart(dependency: &str, executable: &str) -> bool {
+    if dependency == "node" && setup::managed_node_present() { return false; }
     if dependency == "php" && setup::managed_php_present() { return false; }
     if dependency == "composer" && managed_composer_present() { return false; }
     if dependency == "symfony" && managed_symfony_present() { return false; }
@@ -388,6 +396,10 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
     if dependency == "symfony" { return symfony_download_plan(); }
     if dependency == "composer" { return composer_download_plan(); }
 
+    if dependency == "node" && !executable_in_path("winget") {
+        return Ok(InstallPlan { preparation: Vec::new(), attempts: vec![setup::node_fallback_command()], follow_up: Vec::new(), hint: "Eggshell downloads portable Node JS from nodejs.org.".to_string() });
+    }
+
     if dependency == "mysql" && !executable_in_path("winget") {
         return Ok(InstallPlan { preparation: Vec::new(), attempts: vec![setup::mysql_fallback_command()], follow_up: Vec::new(), hint: "Eggshell downloads the portable MySQL server from cdn.mysql.com.".to_string() });
     }
@@ -433,6 +445,7 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
         .collect();
     if dependency == "mysql" { attempts.push(setup::mysql_fallback_command()); }
     if dependency == "php" { attempts.push(setup::php_fallback_command()); }
+    if dependency == "node" { attempts.push(setup::node_fallback_command()); }
 
     Ok(InstallPlan {
         preparation: Vec::new(),

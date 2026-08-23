@@ -180,6 +180,22 @@ pub(crate) const MYSQL_DIRECTORY: &str = "mysql-8.0.46-winx64";
 
 pub(crate) const PHP_DIRECTORY: &str = "php";
 
+/// The Node archive contains this one top-level directory. Keeping that name
+/// means the fallback can extract directly into Eggshell's app-data directory.
+#[cfg(windows)]
+pub(crate) const NODE_DIRECTORY: &str = "node-v24.19.0-win-x64";
+
+#[cfg(windows)]
+pub(crate) fn managed_node_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(|root| std::path::PathBuf::from(root).join("eggshell").join(NODE_DIRECTORY))
+}
+
+#[cfg(windows)]
+pub(crate) fn managed_node_present() -> bool {
+    managed_node_dir().is_some_and(|directory| directory.join("node.exe").is_file())
+}
+
 pub(crate) fn managed_php_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("APPDATA")
         .map(|root| std::path::PathBuf::from(root).join("eggshell").join(PHP_DIRECTORY))
@@ -225,6 +241,16 @@ pub(crate) fn php_fallback_command() -> Vec<String> {
     vec!["powershell".into(), "-NoProfile".into(), "-NonInteractive".into(), "-ExecutionPolicy".into(), "Bypass".into(), "-Command".into(), script]
 }
 
+/// Downloads the pinned portable Node build when winget is unavailable (or its
+/// installer fails). The archive's sole directory is extracted beneath AppData,
+/// leaving `node.exe` and `npm.cmd` together in Eggshell's managed location.
+#[cfg(windows)]
+pub(crate) fn node_fallback_command() -> Vec<String> {
+    let url = "https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip";
+    let script = format!(r#"$ErrorActionPreference = 'Stop'; $root = Join-Path $env:APPDATA 'eggshell'; $base = Join-Path $root '{NODE_DIRECTORY}'; $archive = Join-Path $root 'node-v24.19.0-win-x64.zip'; New-Item -ItemType Directory -Force -Path $root | Out-Null; if (-not (Test-Path (Join-Path $base 'node.exe'))) {{ [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '{url}' -OutFile $archive -UseBasicParsing; Expand-Archive -LiteralPath $archive -DestinationPath $root -Force; Remove-Item -LiteralPath $archive -Force }}"#);
+    vec!["powershell".into(), "-NoProfile".into(), "-NonInteractive".into(), "-ExecutionPolicy".into(), "Bypass".into(), "-Command".into(), script]
+}
+
 #[cfg(not(windows))]
 pub(crate) fn mysql_fallback_command() -> Vec<String> { Vec::new() }
 
@@ -232,7 +258,16 @@ pub(crate) fn mysql_fallback_command() -> Vec<String> { Vec::new() }
 pub(crate) fn managed_php_dir() -> Option<std::path::PathBuf> { None }
 
 #[cfg(not(windows))]
+pub(crate) fn managed_node_dir() -> Option<std::path::PathBuf> { None }
+
+#[cfg(not(windows))]
+pub(crate) fn managed_node_present() -> bool { false }
+
+#[cfg(not(windows))]
 pub(crate) fn managed_php_present() -> bool { false }
 
 #[cfg(not(windows))]
 pub(crate) fn php_fallback_command() -> Vec<String> { Vec::new() }
+
+#[cfg(not(windows))]
+pub(crate) fn node_fallback_command() -> Vec<String> { Vec::new() }
