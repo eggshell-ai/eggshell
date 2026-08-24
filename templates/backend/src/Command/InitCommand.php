@@ -13,7 +13,7 @@ class InitCommand extends Command
     private const DB_HOST = '127.0.0.1';
     private const DB_PORT = '3306';
     private const DB_ROOT_USER = 'root';
-    private const DB_ROOT_PASSWORD = '29031982';
+    private const DB_ROOT_PASSWORD = '';
     private const DB_NAME = 'dummy_project';
     private const DB_USER = 'dummy_project';
     private const DB_PASSWORD = 'dummy_project_password_123';
