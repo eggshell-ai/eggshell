@@ -478,7 +478,8 @@ body {
 .log-toggle:hover { color: #6246ea; }
 .log-toggle span { color: #b3afc0; font-weight: 500; }
 
-.setup-log {
+.setup-log,
+.log-panel {
   max-height: 200px;
   margin-top: 13px;
   padding: 12px 14px;
@@ -504,6 +505,50 @@ body {
 .log-line.stderr { color: #8a5a2b; }
 .log-line.error { color: #9e2d42; }
 .log-line.info { color: #8b86a0; }
+.log-line.done { color: #2f8f5b; font-weight: 700; }
+
+/* The tabbed log the Add-project dialog shows while the shells run. Its body
+   reuses .log-panel above; the tabs sit flush against its top edge. */
+.log-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 13px;
+}
+
+.log-panel-wrap .log-panel {
+  margin-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.log-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #eceaf1;
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  padding: 8px 14px;
+  color: #8b86a0;
+  background: #f3f1f8;
+  font-size: .8rem;
+  font-weight: 650;
+}
+
+.log-tab.active {
+  color: #3f3c49;
+  background: #faf9fd;
+}
+
+.log-tab .tab-status {
+  font-size: .8rem;
+  line-height: 1;
+}
+
+.log-tab .tab-status.running { color: #6246ea; }
+.log-tab .tab-status.done { color: #2f8f5b; }
+.log-tab .tab-status.failed { color: #9e2d42; }
+.log-tab .tab-status.waiting { color: #b3afc0; }
 
 @media (max-width: 500px) {
   .setup-card { padding: 32px 22px 27px; }
@@ -673,6 +718,29 @@ h2 {
   border-radius: 18px;
   background: white;
   box-shadow: 0 22px 55px #1713244d;
+}
+
+/* Only while the log is on screen, so the form stays as narrow as it was. */
+.project-dialog.creating {
+  width: min(100%, 620px);
+}
+
+.dialog-note {
+  margin: -8px 0 4px;
+  color: #8b86a0;
+  font-size: .84rem;
+  line-height: 1.5;
+}
+
+.dialog-error {
+  margin: 14px 0 0;
+  padding: 11px 14px;
+  border-radius: 9px;
+  color: #9e2d42;
+  background: #fff0f2;
+  font-size: .82rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .dialog-heading {

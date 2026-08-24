@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::RwLock;
 
 use crate::config::OllamaConfig;
+use crate::progress::ProgressLog;
 
 use crate::tools::{LoadSkillTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool, WritePageTool};
 
@@ -81,7 +82,16 @@ impl App for AdminPanelApp {
 }
 
 /// Creates the selected project directory and runs the initial agent setup.
-pub async fn initialize_project(project_path: &str, _slug: &str) -> LlmResult<()> {
+///
+/// The shells run one after another rather than side by side, so `log` reaches
+/// each of them in turn — the window's frontend tab stays empty until the backend
+/// is finished.
+pub async fn initialize_project(
+    project_path: &str,
+    _slug: &str,
+    template_root: &Path,
+    log: &ProgressLog,
+) -> LlmResult<()> {
     let path = Path::new(project_path);
     fs::create_dir_all(path)?;
 
@@ -91,7 +101,7 @@ pub async fn initialize_project(project_path: &str, _slug: &str) -> LlmResult<()
     // Initialize each shell against the project directory. SymfonyShell creates
     // the backend and ReactShell creates the frontend under project_path.
     for shell in &shells {
-        if let Err(error) = shell.init(project_path).await {
+        if let Err(error) = shell.init(project_path, template_root, log).await {
             return Err(error);
         }
     }
@@ -322,7 +332,15 @@ pub trait App: Send + Sync {
 /// A shell that can be initialized for a project.
 #[async_trait]
 pub trait Shell: Send + Sync {
-    async fn init(&self, project_path: &str) -> LlmResult<()>;
+    /// Builds this shell's half of a project, reporting to `log` as it goes. Each
+    /// implementation logs under a channel of its own, so the window can tab
+    /// between them.
+    async fn init(
+        &self,
+        project_path: &str,
+        template_root: &Path,
+        log: &ProgressLog,
+    ) -> LlmResult<()>;
     async fn start(&self, project_path: &str) -> LlmResult<()>;
 }
 

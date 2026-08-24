@@ -2,9 +2,11 @@ mod db;
 mod setup;
 pub mod config;
 pub mod llm;
+pub mod progress;
 mod tools;
 
 use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository};
+use progress::ProgressLog;
 use sqlx::SqlitePool;
 use serde::Serialize;
 use std::net::{SocketAddr, TcpStream};
@@ -224,7 +226,7 @@ fn mysql_present() -> bool {
 }
 
 #[tauri::command]
-fn detect_dependencies(log: tauri::State<'_, setup::SetupLog>) -> DependencyStatus {
+fn detect_dependencies(log: tauri::State<'_, ProgressLog>) -> DependencyStatus {
     let status = DependencyStatus {
         node: setup::managed_node_present() || executable_in_path("node"),
         php: executable_in_path("php"),
@@ -607,7 +609,7 @@ fn installer_tail(details: &str) -> String {
     cleaned.chars().skip(length - 300).collect()
 }
 
-fn run_installer(command: &[String], log: &setup::SetupLog) -> Result<(), String> {
+fn run_installer(command: &[String], log: &ProgressLog) -> Result<(), String> {
     let (program, arguments) = command
         .split_first()
         .ok_or_else(|| "an install command was empty".to_string())?;
@@ -635,12 +637,12 @@ fn run_installer(command: &[String], log: &setup::SetupLog) -> Result<(), String
     let stderr = child.stderr.take();
     let stderr_log = log.clone();
     let reader = std::thread::spawn(move || {
-        stderr.map(|pipe| setup::pump_output(pipe, "stderr", &stderr_log)).unwrap_or_default()
+        stderr.map(|pipe| progress::pump_output(pipe, "stderr", &stderr_log)).unwrap_or_default()
     });
     let stdout_lines = child
         .stdout
         .take()
-        .map(|pipe| setup::pump_output(pipe, "stdout", log))
+        .map(|pipe| progress::pump_output(pipe, "stdout", log))
         .unwrap_or_default();
     let stderr_lines = reader.join().unwrap_or_default();
 
@@ -663,7 +665,7 @@ fn run_installer(command: &[String], log: &setup::SetupLog) -> Result<(), String
 
 fn install_dependency_blocking(
     dependency: &str,
-    log: &setup::SetupLog,
+    log: &ProgressLog,
 ) -> Result<InstallOutcome, String> {
     let executable = executable_for(dependency)?;
     if dependency_present(dependency, executable) {
@@ -724,7 +726,7 @@ fn install_dependency_blocking(
 #[tauri::command]
 async fn install_dependency(
     name: String,
-    log: tauri::State<'_, setup::SetupLog>,
+    log: tauri::State<'_, ProgressLog>,
 ) -> Result<InstallOutcome, String> {
     // The blocking task outlives this borrow of the managed state, so it takes a
     // copy of the log along with it.
@@ -737,7 +739,7 @@ async fn install_dependency(
 /// Whatever the log has collected so far, so opening the log window shows what
 /// happened before it was open: dependency detection, and MySQL's start-up.
 #[tauri::command]
-fn setup_log_history(log: tauri::State<'_, setup::SetupLog>) -> Vec<setup::LogLine> {
+fn setup_log_history(log: tauri::State<'_, ProgressLog>) -> Vec<progress::LogLine> {
     log.history()
 }
 
@@ -751,7 +753,7 @@ const CONFIG_PLACEHOLDER: &str = "...";
 struct SetupState { setup_completed: bool, model: String }
 
 #[tauri::command]
-fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, setup::SetupLog>) -> SetupState {
+fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -> SetupState {
     match config::ConfigService::load_default(&app) {
         Ok(config) => SetupState {
             setup_completed: config.setup_completed,
@@ -772,7 +774,7 @@ fn save_provider_config(
     model: String,
     api_key: String,
     app: tauri::AppHandle,
-    log: tauri::State<'_, setup::SetupLog>,
+    log: tauri::State<'_, ProgressLog>,
     ollama: tauri::State<'_, Arc<llm::OllamaService>>,
 ) -> Result<(), String> {
     if provider != "ollama" {
@@ -812,16 +814,49 @@ async fn list_projects(pool: tauri::State<'_, SqlitePool>) -> Result<Vec<Project
         .map_err(|error| error.to_string())
 }
 
+fn bundled_template_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let resource_dir = app.path()
+        .resource_dir()
+        .map_err(|error| format!("Could not locate bundled resources: {error}"))?;
+
+    // Development builds and some bundle formats place resources directly
+    // below resource_dir. On Windows, the packaged application may place
+    // them below the updater staging directory instead.
+    let candidates = [
+        resource_dir.join("templates"),
+        resource_dir.join("_up_").join("templates"),
+    ];
+
+    candidates
+        .iter()
+        .find(|candidate| candidate.is_dir())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "Bundled templates were not found. Checked: {} and {}",
+                candidates[0].display(),
+                candidates[1].display()
+            )
+        })
+}
+
 #[tauri::command]
 async fn create_project(
     project: NewProject,
     pool: tauri::State<'_, SqlitePool>,
+    app: tauri::AppHandle,
 ) -> Result<Project, String> {
     if project.title.trim().is_empty() || project.path.trim().is_empty() {
         return Err("A project title and folder are required.".to_string());
     }
 
-    ProjectsRepository::create(pool.inner(), project)
+    let template_root = bundled_template_root(&app)?;
+
+    // A log of its own per creation, rather than the managed setup log: the two are
+    // read by different windows, and this one's channels are the shells.
+    let log = ProgressLog::new(app.clone(), "project-log", "project");
+
+    ProjectsRepository::create(pool.inner(), project, &template_root, &log)
         .await
         .map_err(|error| error.to_string())
 }
@@ -878,7 +913,7 @@ const MYSQL_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Nothing here is fatal: the app has plenty to do without a database, and the
 /// setup screen — not a failed launch — is where a missing MySQL belongs. Every
 /// dead end is logged and returned from.
-fn start_managed_mysql(mysql: &config::MysqlConfig, log: &setup::SetupLog) {
+fn start_managed_mysql(mysql: &config::MysqlConfig, log: &ProgressLog) {
     if mysql.kind != "managed" {
         log.line("info", format!("mysql: configured as \"{}\", so starting the server is left to whoever owns it", mysql.kind));
         return;
@@ -963,17 +998,17 @@ fn start_managed_mysql(mysql: &config::MysqlConfig, log: &setup::SetupLog) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     add_managed_tools_to_process_path();
-    let pool = tauri::async_runtime::block_on(db::initialize())
-        .expect("failed to initialize SQLite database");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(pool)
         .setup(|app| {
+            let pool = tauri::async_runtime::block_on(db::initialize(app.handle()))
+                .expect("failed to initialize SQLite database");
+            app.manage(pool);
             // Built before anything else it could record, and managed so every
             // setup command writes to the same log the setup screen reads.
-            let log = setup::SetupLog::new(app.handle().clone());
+            let log = ProgressLog::new(app.handle().clone(), "setup-log", "setup");
             app.manage(log.clone());
 
             // A missing or unconfigured file is what a first launch looks like.

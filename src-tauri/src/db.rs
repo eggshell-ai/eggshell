@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Manager};
 
 use crate::llm::{self, AgentOptions, AgentService, App, LLMMessage, LLMMessageRole};
+use crate::progress::ProgressLog;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -53,6 +55,8 @@ impl ProjectsRepository {
     pub async fn create(
         pool: &SqlitePool,
         project: NewProject,
+        template_root: &Path,
+        log: &ProgressLog,
     ) -> Result<Project, Box<dyn std::error::Error + Send + Sync>> {
         let NewProject { title, slug, path } = project;
         let title = title.trim().to_string();
@@ -62,7 +66,7 @@ impl ProjectsRepository {
             None => Self::next_slug(pool, &title).await?,
         };
 
-        llm::initialize_project(&path, &slug).await?;
+        llm::initialize_project(&path, &slug, template_root, log).await?;
 
         let id = sqlx::query("INSERT INTO projects (title, slug, path) VALUES (?, ?, ?)")
             .bind(&title)
@@ -239,8 +243,9 @@ fn slugify(title: &str) -> String {
     }
 }
 
-pub async fn initialize() -> Result<SqlitePool, Box<dyn std::error::Error>> {
-    let data_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
+pub async fn initialize(app: &AppHandle) -> Result<SqlitePool, Box<dyn std::error::Error>> {
+    let data_directory = app.path().app_data_dir()?;
+
     std::fs::create_dir_all(&data_directory)?;
 
     let options = SqliteConnectOptions::new()

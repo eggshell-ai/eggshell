@@ -1,10 +1,15 @@
 use crate::llm::{LlmResult, Shell};
+use crate::progress::{pump_output, ProgressLog};
 use async_trait::async_trait;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// The channel the React output is logged under, which the window shows as its
+/// frontend tab.
+const CHANNEL: &str = "react";
 
 /// Initializes the React frontend included with an AdminPanel project.
 pub struct ReactShell;
@@ -14,11 +19,8 @@ impl ReactShell {
         Self
     }
 
-    fn template_path() -> io::Result<PathBuf> {
-        Ok(std::env::current_dir()?
-            .join("..")
-            .join("templates")
-            .join("admin-panel"))
+    fn template_path(template_root: &Path) -> PathBuf {
+        template_root.join("admin-panel")
     }
 
     fn copy_template(template_path: &Path, target_path: &Path) -> io::Result<()> {
@@ -36,10 +38,12 @@ impl ReactShell {
         copy_directory(template_path, target_path)
     }
 
-    async fn run_npm_install(cwd: &Path) -> LlmResult<()> {
+    async fn run_npm_install(cwd: &Path, log: &ProgressLog) -> LlmResult<()> {
         let cwd = cwd.to_path_buf();
+        // The blocking task outlives this borrow, so it takes a copy of the log.
+        let log = log.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            run_command_blocking(&["install", "--force"], &cwd)
+            run_command_blocking(&["install", "--force"], &cwd, &log)
         })
         .await
         .map_err(|error| io::Error::other(format!("npm install task failed: {error}")))??;
@@ -80,21 +84,33 @@ impl Default for ReactShell {
 
 #[async_trait]
 impl Shell for ReactShell {
-    async fn init(&self, project_path: &str) -> LlmResult<()> {
-        let template_path = Self::template_path()?;
+    async fn init(
+        &self,
+        project_path: &str,
+        template_root: &Path,
+        log: &ProgressLog,
+    ) -> LlmResult<()> {
+        let log = log.for_channel(CHANNEL);
+        let template_path = Self::template_path(template_root);
         let target_path = Path::new(project_path).join("frontend");
 
-        println!(
-            "ReactShell: Copying template from {} to {}",
-            template_path.display(),
-            target_path.display()
+        log.line(
+            "info",
+            format!(
+                "Copying template from {} to {}",
+                template_path.display(),
+                target_path.display()
+            ),
         );
-        Self::copy_template(&template_path, &target_path)?;
-        println!("ReactShell: Template copied successfully");
+        Self::copy_template(&template_path, &target_path).inspect_err(|error| {
+            log.line("error", format!("Could not copy the template: {error}"))
+        })?;
+        log.line("info", "Template copied successfully");
 
-        Self::run_npm_install(&target_path).await?;
-        println!("ReactShell: npm install completed");
+        Self::run_npm_install(&target_path, &log).await?;
+        log.line("info", "npm install completed");
 
+        log.line("done", "Frontend ready");
         Ok(())
     }
 
@@ -142,29 +158,58 @@ fn npm_command(args: &[&str]) -> Command {
     command
 }
 
-fn run_command_blocking(args: &[&str], cwd: &Path) -> LlmResult<()> {
-    println!(
-        "ReactShell: Running command \"npm {}\" in {}",
-        args.join(" "),
-        cwd.display()
-    );
+/// Runs one npm command to completion, logging its output line by line as it
+/// arrives.
+///
+/// Piped rather than captured: `npm install --force` takes minutes and has nothing
+/// to show for itself until it finishes, and the log window is where that wait is
+/// explained.
+fn run_command_blocking(args: &[&str], cwd: &Path, log: &ProgressLog) -> LlmResult<()> {
+    let label = format!("npm {}", args.join(" "));
+    log.line("command", format!("$ {label}"));
+    println!("ReactShell: running \"{label}\" in {}", cwd.display());
 
     let mut command = npm_command(args);
     configure_environment(&mut command);
-    let output = command.current_dir(cwd).output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    command
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    if !stdout.is_empty() {
-        println!("ReactShell: stdout: {stdout}");
+    // The output is in the app now, so the console this would otherwise flash up
+    // for every command is pure noise.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "command failed with {}: npm {}\n{stderr}",
-            output.status,
-            args.join(" ")
-        ))
-        .into());
+
+    let mut child = command.spawn().inspect_err(|error| {
+        log.line("error", format!("`{label}` could not be started: {error}"));
+    })?;
+
+    // One pipe is drained on a thread of its own: npm writes its whole progress
+    // display to stderr, and a command nobody reads blocks forever waiting for room.
+    let stderr = child.stderr.take();
+    let stderr_log = log.clone();
+    let reader = std::thread::spawn(move || {
+        stderr.map(|pipe| pump_output(pipe, "stderr", &stderr_log)).unwrap_or_default()
+    });
+    let stdout_lines = child
+        .stdout
+        .take()
+        .map(|pipe| pump_output(pipe, "stdout", log))
+        .unwrap_or_default();
+    let stderr_lines = reader.join().unwrap_or_default();
+
+    let status = child.wait()?;
+    if !status.success() {
+        let details =
+            if stderr_lines.is_empty() { stdout_lines.join("\n") } else { stderr_lines.join("\n") };
+        let message = format!("command failed with {status}: {label}\n{details}");
+        log.line("error", format!("`{label}` exited with {status}"));
+        return Err(io::Error::other(message).into());
     }
     Ok(())
 }
