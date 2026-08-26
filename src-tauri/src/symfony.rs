@@ -49,6 +49,18 @@ impl SymfonyShell {
         Ok(())
     }
 
+    async fn run_php_command(args: &[&str], cwd: &Path, log: &ProgressLog) -> LlmResult<()> {
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let cwd = cwd.to_path_buf();
+        let log = log.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            run_process_blocking("php", &args, &cwd, &log)
+        })
+        .await
+        .map_err(|error| io::Error::other(format!("command task failed: {error}")))??;
+        Ok(())
+    }
+
     fn start_server(cwd: &Path) -> io::Result<()> {
         println!("SymfonyShell: Starting Symfony server in {}", cwd.display());
 
@@ -124,11 +136,12 @@ impl Shell for SymfonyShell {
         .await?;
         log.line("info", "JWT keypair generated");
 
-        let init_command = format!(
-            "php bin/console app:init -- {}",
-            shell_quote(mysql_password)
-        );
-        Self::run_command(&init_command, &target_path, &log).await?;
+        Self::run_php_command(
+            &["bin/console", "app:init", "--", mysql_password],
+            &target_path,
+            &log,
+        )
+        .await?;
         log.line("info", "Database and user initialized");
 
         log.line("done", "Backend ready");
@@ -139,14 +152,6 @@ impl Shell for SymfonyShell {
         let target_path = Path::new(project_path).join("backend");
         Self::start_server(&target_path)?;
         Ok(())
-    }
-}
-
-fn shell_quote(value: &str) -> String {
-    if cfg!(windows) {
-        format!("\"{}\"", value.replace('"', "\\\""))
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 
@@ -369,6 +374,69 @@ fn run_command_blocking(command: &str, cwd: &Path, log: &ProgressLog) -> LlmResu
         let message = format!("command failed with {status}: {command}\n{details}");
         log.line("error", format!("`{command}` exited with {status}"));
         return Err(io::Error::other(message).into());
+    }
+    Ok(())
+}
+
+fn run_process_blocking(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    log: &ProgressLog,
+) -> LlmResult<()> {
+    let display_command = format!("{} {}", program, args.join(" "));
+    log.line("command", format!("$ {display_command}"));
+    println!(
+        "SymfonyShell: running \"{display_command}\" in {}",
+        cwd.display()
+    );
+
+    let mut process = Command::new(program);
+    process
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_environment(&mut process);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        process.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = process.spawn().inspect_err(|error| {
+        log.line(
+            "error",
+            format!("`{display_command}` could not be started: {error}"),
+        );
+    })?;
+    let stderr = child.stderr.take();
+    let stderr_log = log.clone();
+    let reader = std::thread::spawn(move || {
+        stderr
+            .map(|pipe| pump_output(pipe, "stderr", &stderr_log))
+            .unwrap_or_default()
+    });
+    let stdout_lines = child
+        .stdout
+        .take()
+        .map(|pipe| pump_output(pipe, "stdout", log))
+        .unwrap_or_default();
+    let stderr_lines = reader.join().unwrap_or_default();
+    let status = child.wait()?;
+    if !status.success() {
+        let details = if stderr_lines.is_empty() {
+            stdout_lines.join("\n")
+        } else {
+            stderr_lines.join("\n")
+        };
+        log.line("error", format!("`{display_command}` exited with {status}"));
+        return Err(io::Error::other(format!(
+            "command failed with {status}: {display_command}\n{details}"
+        ))
+        .into());
     }
     Ok(())
 }

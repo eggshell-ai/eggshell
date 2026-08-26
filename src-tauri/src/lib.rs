@@ -1152,12 +1152,12 @@ fn start_managed_mysql(mysql: &config::MysqlConfig, log: &ProgressLog) {
         return;
     }
 
-    // Every path and the port are passed explicitly, so the running server matches
-    // config.yaml even when a stale my.ini from an earlier install says otherwise.
+    // Keep MySQL's paths in the configuration file created by setup. In particular,
+    // --defaults-file must be the first option so mysqld reads basedir/datadir from
+    // the managed install's my.ini rather than relying on its working directory.
     let mut command = Command::new(&daemon);
     command
-        .arg(format!("--basedir={}", base.display()))
-        .arg(format!("--datadir={}", data.display()))
+        .arg(format!("--defaults-file={}", base.join("my.ini").display()))
         .arg(format!("--port={}", mysql.port))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
