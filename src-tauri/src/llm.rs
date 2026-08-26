@@ -4,10 +4,14 @@ use serde_json::{Map, Value};
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use std::sync::RwLock;
 
 use crate::config::OllamaConfig;
+use crate::progress::ProgressLog;
 
-use crate::tools::{LoadSkillTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool, WritePageTool};
+use crate::tools::{
+    LoadSkillTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool, WritePageTool,
+};
 
 #[path = "symfony.rs"]
 mod symfony;
@@ -80,7 +84,17 @@ impl App for AdminPanelApp {
 }
 
 /// Creates the selected project directory and runs the initial agent setup.
-pub async fn initialize_project(project_path: &str, _slug: &str) -> LlmResult<()> {
+///
+/// The shells run one after another rather than side by side, so `log` reaches
+/// each of them in turn — the window's frontend tab stays empty until the backend
+/// is finished.
+pub async fn initialize_project(
+    project_path: &str,
+    _slug: &str,
+    template_root: &Path,
+    log: &ProgressLog,
+    mysql_password: &str,
+) -> LlmResult<()> {
     let path = Path::new(project_path);
     fs::create_dir_all(path)?;
 
@@ -90,7 +104,10 @@ pub async fn initialize_project(project_path: &str, _slug: &str) -> LlmResult<()
     // Initialize each shell against the project directory. SymfonyShell creates
     // the backend and ReactShell creates the frontend under project_path.
     for shell in &shells {
-        if let Err(error) = shell.init(project_path).await {
+        if let Err(error) = shell
+            .init(project_path, template_root, log, mysql_password)
+            .await
+        {
             return Err(error);
         }
     }
@@ -161,8 +178,9 @@ pub struct MockLlmService;
 pub struct OllamaService {
     client: reqwest::Client,
     api_url: String,
-    api_key: String,
-    model: String,
+    /// The setup screen can rewrite the model and key while Eggshell is running,
+    /// so these are read per request instead of being fixed at start-up.
+    settings: RwLock<OllamaConfig>,
 }
 
 impl OllamaService {
@@ -170,12 +188,29 @@ impl OllamaService {
         Self {
             client: reqwest::Client::new(),
             api_url: "https://ollama.com/api".to_string(),
-            api_key: config.api_key,
-            model: config.model,
+            settings: RwLock::new(config),
         }
     }
 
-    fn request(&self, endpoint: &str) -> reqwest::RequestBuilder {
+    /// Replaces the provider settings used by every later request.
+    pub fn apply(&self, config: OllamaConfig) {
+        *self
+            .settings
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = config;
+    }
+
+    /// A poisoned lock only means an earlier writer panicked partway through;
+    /// the settings behind it are still a whole value, so read them rather than
+    /// taking every later prompt down with it.
+    fn settings(&self) -> OllamaConfig {
+        self.settings
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+
+    fn request(&self, endpoint: &str, api_key: &str) -> reqwest::RequestBuilder {
         let request = self
             .client
             .post(format!(
@@ -184,10 +219,10 @@ impl OllamaService {
                 endpoint
             ))
             .header("Content-Type", "application/json");
-        if self.api_key.is_empty() || self.api_key == "..." {
+        if api_key.is_empty() || api_key == "..." {
             request
         } else {
-            request.bearer_auth(&self.api_key)
+            request.bearer_auth(api_key)
         }
     }
 
@@ -211,10 +246,11 @@ impl LLMService for OllamaService {
         prompt: &str,
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<String> {
+        let settings = self.settings();
         let response = self
-            .request("generate")
+            .request("generate", &settings.api_key)
             .json(&serde_json::json!({
-                "model": self.model,
+                "model": settings.model,
                 "prompt": Self::prompt_with_context(prompt, context),
                 "stream": false,
             }))
@@ -257,7 +293,8 @@ impl LLMService for OllamaService {
             ollama_messages.push(value);
         }
         let tool_definitions = tools.iter().map(|tool| serde_json::json!({ "type": "function", "function": { "name": tool.name(), "description": tool.description(), "parameters": tool.parameters() } })).collect::<Vec<_>>();
-        let response = self.request("chat").json(&serde_json::json!({ "model": self.model, "messages": ollama_messages, "stream": false, "tools": tool_definitions })).send().await?.error_for_status()?.json::<Value>().await?;
+        let settings = self.settings();
+        let response = self.request("chat", &settings.api_key).json(&serde_json::json!({ "model": settings.model, "messages": ollama_messages, "stream": false, "tools": tool_definitions })).send().await?.error_for_status()?.json::<Value>().await?;
         let message = response.get("message").cloned().unwrap_or_default();
         let calls = message
             .get("tool_calls")
@@ -301,7 +338,16 @@ pub trait App: Send + Sync {
 /// A shell that can be initialized for a project.
 #[async_trait]
 pub trait Shell: Send + Sync {
-    async fn init(&self, project_path: &str) -> LlmResult<()>;
+    /// Builds this shell's half of a project, reporting to `log` as it goes. Each
+    /// implementation logs under a channel of its own, so the window can tab
+    /// between them.
+    async fn init(
+        &self,
+        project_path: &str,
+        template_root: &Path,
+        log: &ProgressLog,
+        _mysql_password: &str,
+    ) -> LlmResult<()>;
     async fn start(&self, project_path: &str) -> LlmResult<()>;
 }
 

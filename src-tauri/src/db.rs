@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Manager};
 
 use crate::llm::{self, AgentOptions, AgentService, App, LLMMessage, LLMMessageRole};
+use crate::progress::ProgressLog;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -53,6 +55,9 @@ impl ProjectsRepository {
     pub async fn create(
         pool: &SqlitePool,
         project: NewProject,
+        template_root: &Path,
+        log: &ProgressLog,
+        mysql_password: &str,
     ) -> Result<Project, Box<dyn std::error::Error + Send + Sync>> {
         let NewProject { title, slug, path } = project;
         let title = title.trim().to_string();
@@ -62,7 +67,7 @@ impl ProjectsRepository {
             None => Self::next_slug(pool, &title).await?,
         };
 
-        llm::initialize_project(&path, &slug).await?;
+        llm::initialize_project(&path, &slug, template_root, log, mysql_password).await?;
 
         let id = sqlx::query("INSERT INTO projects (title, slug, path) VALUES (?, ?, ?)")
             .bind(&title)
@@ -129,7 +134,10 @@ impl SessionsRepository {
 
     pub async fn delete(pool: &SqlitePool, project_id: i64, id: i64) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM sessions WHERE id = ? AND project_id = ?")
-            .bind(id).bind(project_id).execute(pool).await?;
+            .bind(id)
+            .bind(project_id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
@@ -142,12 +150,24 @@ impl SessionsRepository {
         event_sink: Arc<dyn Fn(Value) + Send + Sync>,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
         let existing_history = match session_id {
-            Some(id) => sqlx::query_scalar::<_, String>("SELECT conversation_history FROM sessions WHERE id = ? AND project_id = ?")
-                .bind(id).bind(project_id).fetch_one(pool).await?,
+            Some(id) => {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT conversation_history FROM sessions WHERE id = ? AND project_id = ?",
+                )
+                .bind(id)
+                .bind(project_id)
+                .fetch_one(pool)
+                .await?
+            }
             None => "[]".to_string(),
         };
-        let mut messages: Vec<ChatMessage> = serde_json::from_str(&existing_history).unwrap_or_default();
-        messages.push(ChatMessage { role: "user".to_string(), content: user_message.clone(), data: None });
+        let mut messages: Vec<ChatMessage> =
+            serde_json::from_str(&existing_history).unwrap_or_default();
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: user_message.clone(),
+            data: None,
+        });
         let id = match session_id {
             Some(id) => {
                 let history = serde_json::to_string(&messages)?;
@@ -166,41 +186,84 @@ impl SessionsRepository {
         let streamed_messages = Arc::new(Mutex::new(Vec::new()));
         let callback_messages = Arc::clone(&streamed_messages);
         let callback_sink = Arc::clone(&event_sink);
-        let result = agent.run_agent(
-            conversation_messages(&messages, &app.system_prompt()),
-            app.tools(),
-            AgentOptions {
-                on_event: Some(Box::new(move |event| {
-                    let event_type = event.get("type").and_then(Value::as_str).unwrap_or("event");
-                    if event_type != "complete" {
-                        callback_messages.lock().expect("agent event lock poisoned").push(ChatMessage {
-                            role: event_type.to_string(), content: event_content(&event), data: event.get("data").cloned(),
-                        });
-                    }
-                    callback_sink(json!({ "projectId": project_id, "sessionId": id, "event": event }));
-                })),
-                ..Default::default()
-            },
-        ).await?;
+        let result = agent
+            .run_agent(
+                conversation_messages(&messages, &app.system_prompt()),
+                app.tools(),
+                AgentOptions {
+                    on_event: Some(Box::new(move |event| {
+                        let event_type =
+                            event.get("type").and_then(Value::as_str).unwrap_or("event");
+                        if event_type != "complete" {
+                            callback_messages
+                                .lock()
+                                .expect("agent event lock poisoned")
+                                .push(ChatMessage {
+                                    role: event_type.to_string(),
+                                    content: event_content(&event),
+                                    data: event.get("data").cloned(),
+                                });
+                        }
+                        callback_sink(
+                            json!({ "projectId": project_id, "sessionId": id, "event": event }),
+                        );
+                    })),
+                    ..Default::default()
+                },
+            )
+            .await?;
 
-        messages.extend(streamed_messages.lock().expect("agent event lock poisoned").clone());
-        messages.push(ChatMessage { role: "assistant".to_string(), content: result.content, data: None });
+        messages.extend(
+            streamed_messages
+                .lock()
+                .expect("agent event lock poisoned")
+                .clone(),
+        );
+        messages.push(ChatMessage {
+            role: "assistant".to_string(),
+            content: result.content,
+            data: None,
+        });
         let history = serde_json::to_string(&messages)?;
-        let title = messages.iter().find(|message| message.role == "user")
+        let title = messages
+            .iter()
+            .find(|message| message.role == "user")
             .map(|message| message.content.chars().take(48).collect::<String>())
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| "New chat".to_string());
         sqlx::query("UPDATE sessions SET title = ?, conversation_history = ? WHERE id = ? AND project_id = ?")
             .bind(&title).bind(&history).bind(id).bind(project_id).execute(pool).await?;
-        Ok(Session { id, title, conversation_history: history })
+        Ok(Session {
+            id,
+            title,
+            conversation_history: history,
+        })
     }
 }
 
 fn conversation_messages(history: &[ChatMessage], system_prompt: &str) -> Vec<LLMMessage> {
-    let mut messages = vec![LLMMessage { role: LLMMessageRole::System, content: system_prompt.to_string(), tool_call_id: None, tool_name: None, tool_args: None, tool_calls: None }];
+    let mut messages = vec![LLMMessage {
+        role: LLMMessageRole::System,
+        content: system_prompt.to_string(),
+        tool_call_id: None,
+        tool_name: None,
+        tool_args: None,
+        tool_calls: None,
+    }];
     messages.extend(history.iter().filter_map(|message| {
-        let role = match message.role.as_str() { "user" => LLMMessageRole::User, "assistant" => LLMMessageRole::Assistant, _ => return None };
-        Some(LLMMessage { role, content: message.content.clone(), tool_call_id: None, tool_name: None, tool_args: None, tool_calls: None })
+        let role = match message.role.as_str() {
+            "user" => LLMMessageRole::User,
+            "assistant" => LLMMessageRole::Assistant,
+            _ => return None,
+        };
+        Some(LLMMessage {
+            role,
+            content: message.content.clone(),
+            tool_call_id: None,
+            tool_name: None,
+            tool_args: None,
+            tool_calls: None,
+        })
     }));
     messages
 }
@@ -208,9 +271,21 @@ fn conversation_messages(history: &[ChatMessage], system_prompt: &str) -> Vec<LL
 fn event_content(event: &Value) -> String {
     let data = event.get("data").cloned().unwrap_or(Value::Null);
     match event.get("type").and_then(Value::as_str) {
-        Some("thought") => data.get("content").and_then(Value::as_str).unwrap_or_default().to_string(),
-        Some("tool_call") => format!("{}({})", data.get("name").and_then(Value::as_str).unwrap_or("tool"), data.get("arguments").cloned().unwrap_or(Value::Null)),
-        Some("tool_result") => format!("{} returned {}", data.get("name").and_then(Value::as_str).unwrap_or("tool"), data.get("result").cloned().unwrap_or(Value::Null)),
+        Some("thought") => data
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        Some("tool_call") => format!(
+            "{}({})",
+            data.get("name").and_then(Value::as_str).unwrap_or("tool"),
+            data.get("arguments").cloned().unwrap_or(Value::Null)
+        ),
+        Some("tool_result") => format!(
+            "{} returned {}",
+            data.get("name").and_then(Value::as_str).unwrap_or("tool"),
+            data.get("result").cloned().unwrap_or(Value::Null)
+        ),
         _ => data.to_string(),
     }
 }
@@ -239,8 +314,9 @@ fn slugify(title: &str) -> String {
     }
 }
 
-pub async fn initialize() -> Result<SqlitePool, Box<dyn std::error::Error>> {
-    let data_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
+pub async fn initialize(app: &AppHandle) -> Result<SqlitePool, Box<dyn std::error::Error>> {
+    let data_directory = app.path().app_data_dir()?;
+
     std::fs::create_dir_all(&data_directory)?;
 
     let options = SqliteConnectOptions::new()

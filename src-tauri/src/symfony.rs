@@ -1,10 +1,15 @@
 use crate::llm::{LlmResult, Shell};
+use crate::progress::{pump_output, ProgressLog};
 use async_trait::async_trait;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// The channel Symfony's output is logged under, which the window shows as its
+/// backend tab.
+const CHANNEL: &str = "symfony";
 
 /// Initializes the Symfony backend included with an AdminPanel project.
 pub struct SymfonyShell;
@@ -14,11 +19,8 @@ impl SymfonyShell {
         Self
     }
 
-    fn template_path() -> io::Result<PathBuf> {
-        Ok(std::env::current_dir()?
-            .join("..")
-            .join("templates")
-            .join("backend"))
+    fn template_path(template_root: &Path) -> PathBuf {
+        template_root.join("backend")
     }
 
     fn copy_template(template_path: &Path, target_path: &Path) -> io::Result<()> {
@@ -36,12 +38,26 @@ impl SymfonyShell {
         copy_directory(template_path, target_path, template_path)
     }
 
-    async fn run_command(command: &str, cwd: &Path) -> LlmResult<()> {
+    async fn run_command(command: &str, cwd: &Path, log: &ProgressLog) -> LlmResult<()> {
         let command = command.to_string();
         let cwd = cwd.to_path_buf();
-        tauri::async_runtime::spawn_blocking(move || run_command_blocking(&command, &cwd))
+        // The blocking task outlives this borrow, so it takes a copy of the log.
+        let log = log.clone();
+        tauri::async_runtime::spawn_blocking(move || run_command_blocking(&command, &cwd, &log))
             .await
             .map_err(|error| io::Error::other(format!("command task failed: {error}")))??;
+        Ok(())
+    }
+
+    async fn run_php_command(args: &[&str], cwd: &Path, log: &ProgressLog) -> LlmResult<()> {
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let cwd = cwd.to_path_buf();
+        let log = log.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            run_process_blocking("php", &args, &cwd, &log)
+        })
+        .await
+        .map_err(|error| io::Error::other(format!("command task failed: {error}")))??;
         Ok(())
     }
 
@@ -85,31 +101,50 @@ impl Default for SymfonyShell {
 
 #[async_trait]
 impl Shell for SymfonyShell {
-    async fn init(&self, project_dir: &str) -> LlmResult<()> {
-        let template_path = Self::template_path()?;
+    async fn init(
+        &self,
+        project_dir: &str,
+        template_root: &Path,
+        log: &ProgressLog,
+        mysql_password: &str,
+    ) -> LlmResult<()> {
+        let log = log.for_channel(CHANNEL);
+        let template_path = Self::template_path(template_root);
         let target_path = Path::new(project_dir).join("backend");
 
-        println!(
-            "SymfonyShell: Copying template from {} to {}",
-            template_path.display(),
-            target_path.display()
+        log.line(
+            "info",
+            format!(
+                "Copying template from {} to {}",
+                template_path.display(),
+                target_path.display()
+            ),
         );
-        Self::copy_template(&template_path, &target_path)?;
-        println!("SymfonyShell: Template copied successfully");
+        Self::copy_template(&template_path, &target_path).inspect_err(|error| {
+            log.line("error", format!("Could not copy the template: {error}"))
+        })?;
+        log.line("info", "Template copied successfully");
 
-        Self::run_command("composer install", &target_path).await?;
-        println!("SymfonyShell: Composer install completed");
+        Self::run_command("composer install", &target_path, &log).await?;
+        log.line("info", "Composer install completed");
 
         Self::run_command(
             "php bin/console lexik:jwt:generate-keypair --overwrite",
             &target_path,
+            &log,
         )
         .await?;
-        println!("SymfonyShell: JWT keypair generated");
+        log.line("info", "JWT keypair generated");
 
-        Self::run_command("php bin/console app:init", &target_path).await?;
-        println!("SymfonyShell: Database and user initialized");
+        Self::run_php_command(
+            &["bin/console", "app:init", "--", mysql_password],
+            &target_path,
+            &log,
+        )
+        .await?;
+        log.line("info", "Database and user initialized");
 
+        log.line("done", "Backend ready");
         Ok(())
     }
 
@@ -170,13 +205,114 @@ fn configure_environment(command: &mut Command) {
             command.env(name, value);
         }
     }
+
+    if let Some(directory) = symfony_install_dir() {
+        #[cfg(windows)]
+        persist_on_user_path(&directory);
+        prepend_to_path(command, &directory);
+    }
+
+    #[cfg(windows)]
+    if crate::managed_composer_present() {
+        if let Some(directory) = crate::managed_bin_dir() {
+            prepend_to_path(command, &directory);
+        }
+    }
+
+    #[cfg(windows)]
+    if let Some(directory) = crate::setup::managed_php_dir() {
+        prepend_to_path(command, &directory);
+    }
 }
 
-fn run_command_blocking(command: &str, cwd: &Path) -> LlmResult<()> {
-    println!(
-        "SymfonyShell: Running command \"{command}\" in {}",
-        cwd.display()
+/// Where setup put the Symfony CLI, when it is somewhere PATH does not already
+/// cover: a directory Eggshell owns on Windows, and the prefix the get.symfony.com
+/// installer uses everywhere else. `None` once the CLI is installed system-wide.
+#[cfg(windows)]
+fn symfony_install_dir() -> Option<PathBuf> {
+    let directory = crate::managed_bin_dir()?;
+    directory.join("symfony.exe").is_file().then_some(directory)
+}
+
+#[cfg(not(windows))]
+fn symfony_install_dir() -> Option<PathBuf> {
+    let directory = PathBuf::from(std::env::var_os("HOME")?)
+        .join(".symfony5")
+        .join("bin");
+    directory.join("symfony").is_file().then_some(directory)
+}
+
+fn prepend_to_path(command: &mut Command, directory: &Path) {
+    let mut value = directory.as_os_str().to_os_string();
+    if let Some(existing) = std::env::var_os("PATH").filter(|existing| !existing.is_empty()) {
+        value.push(if cfg!(windows) { ";" } else { ":" });
+        value.push(existing);
+    }
+    command.env("PATH", value);
+}
+
+/// `setx` makes the Symfony CLI Eggshell installed visible to every process the
+/// user starts from now on, including terminals opened outside the app.
+///
+/// It only ever appends to the *user* PATH, only when the directory is missing,
+/// and only while the result still fits setx's 1024 character limit — anything
+/// longer is silently truncated, which would take the user's other entries with
+/// it. The unexpanded registry value is what gets rewritten, so entries written
+/// as `%USERPROFILE%\...` stay that way.
+#[cfg(windows)]
+fn persist_on_user_path(directory: &Path) {
+    static PERSISTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if PERSISTED.set(()).is_err() {
+        return;
+    }
+
+    let quoted_directory = directory.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$directory = '{quoted_directory}'; \
+         $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment'); \
+         $current = if ($key) {{ [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames') }} else {{ '' }}; \
+         if ($current -split ';' | Where-Object {{ $_.Trim().TrimEnd('\\') -ieq $directory.TrimEnd('\\') }}) {{ exit 0 }}; \
+         $updated = if ($current) {{ \"$current;$directory\" }} else {{ $directory }}; \
+         if ($updated.Length -gt 1024) {{ exit 3 }}; \
+         setx PATH $updated | Out-Null; \
+         exit $LASTEXITCODE"
     );
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!("SymfonyShell: {} is on the user PATH", directory.display());
+        }
+        Ok(output) if output.status.code() == Some(3) => {
+            println!(
+                "SymfonyShell: leaving the user PATH alone because adding {} would exceed setx's 1024 character limit",
+                directory.display()
+            );
+        }
+        Ok(output) => {
+            println!(
+                "SymfonyShell: could not add {} to the user PATH: {}",
+                directory.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Err(error) => {
+            println!("SymfonyShell: could not run setx: {error}");
+        }
+    }
+}
+
+/// Runs one command to completion, logging its output line by line as it arrives.
+///
+/// Piped rather than captured: `composer install` takes minutes and has nothing to
+/// show for itself until it finishes, and the log window is where that wait is
+/// explained.
+fn run_command_blocking(command: &str, cwd: &Path, log: &ProgressLog) -> LlmResult<()> {
+    log.line("command", format!("$ {command}"));
+    println!("SymfonyShell: running \"{command}\" in {}", cwd.display());
 
     let mut process = if cfg!(windows) {
         let mut process = Command::new("cmd");
@@ -189,17 +325,116 @@ fn run_command_blocking(command: &str, cwd: &Path) -> LlmResult<()> {
     };
 
     configure_environment(&mut process);
-    let output = process.current_dir(cwd).output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    process
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    if !stdout.is_empty() {
-        println!("SymfonyShell: stdout: {stdout}");
+    // The output is in the app now, so the console this would otherwise flash up
+    // for every command is pure noise.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        process.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
-    if !output.status.success() {
+
+    let mut child = process.spawn().inspect_err(|error| {
+        log.line(
+            "error",
+            format!("`{command}` could not be started: {error}"),
+        );
+    })?;
+
+    // One pipe is drained on a thread of its own: a command that fills stderr while
+    // nobody reads it blocks forever waiting for room, and vice versa.
+    let stderr = child.stderr.take();
+    let stderr_log = log.clone();
+    let reader = std::thread::spawn(move || {
+        stderr
+            .map(|pipe| pump_output(pipe, "stderr", &stderr_log))
+            .unwrap_or_default()
+    });
+    let stdout_lines = child
+        .stdout
+        .take()
+        .map(|pipe| pump_output(pipe, "stdout", log))
+        .unwrap_or_default();
+    let stderr_lines = reader.join().unwrap_or_default();
+
+    let status = child.wait()?;
+    if !status.success() {
+        // stderr says why when it says anything at all; some tools report their
+        // failures on stdout instead.
+        let details = if stderr_lines.is_empty() {
+            stdout_lines.join("\n")
+        } else {
+            stderr_lines.join("\n")
+        };
+        let message = format!("command failed with {status}: {command}\n{details}");
+        log.line("error", format!("`{command}` exited with {status}"));
+        return Err(io::Error::other(message).into());
+    }
+    Ok(())
+}
+
+fn run_process_blocking(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    log: &ProgressLog,
+) -> LlmResult<()> {
+    let display_command = format!("{} {}", program, args.join(" "));
+    log.line("command", format!("$ {display_command}"));
+    println!(
+        "SymfonyShell: running \"{display_command}\" in {}",
+        cwd.display()
+    );
+
+    let mut process = Command::new(program);
+    process
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_environment(&mut process);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        process.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = process.spawn().inspect_err(|error| {
+        log.line(
+            "error",
+            format!("`{display_command}` could not be started: {error}"),
+        );
+    })?;
+    let stderr = child.stderr.take();
+    let stderr_log = log.clone();
+    let reader = std::thread::spawn(move || {
+        stderr
+            .map(|pipe| pump_output(pipe, "stderr", &stderr_log))
+            .unwrap_or_default()
+    });
+    let stdout_lines = child
+        .stdout
+        .take()
+        .map(|pipe| pump_output(pipe, "stdout", log))
+        .unwrap_or_default();
+    let stderr_lines = reader.join().unwrap_or_default();
+    let status = child.wait()?;
+    if !status.success() {
+        let details = if stderr_lines.is_empty() {
+            stdout_lines.join("\n")
+        } else {
+            stderr_lines.join("\n")
+        };
+        log.line("error", format!("`{display_command}` exited with {status}"));
         return Err(io::Error::other(format!(
-            "command failed with {}: {command}\n{stderr}",
-            output.status
+            "command failed with {status}: {display_command}\n{details}"
         ))
         .into());
     }
