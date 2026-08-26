@@ -4,6 +4,7 @@ namespace App\Command;
 
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\Process\Process;
@@ -13,7 +14,6 @@ class InitCommand extends Command
     private const DB_HOST = '127.0.0.1';
     private const DB_PORT = '3306';
     private const DB_ROOT_USER = 'root';
-    private const DB_ROOT_PASSWORD = '';
     private const DB_NAME = 'dummy_project';
     private const DB_USER = 'dummy_project';
     private const DB_PASSWORD = 'dummy_project_password_123';
@@ -24,12 +24,14 @@ class InitCommand extends Command
     {
         $this
             ->setName('app:init')
-            ->setDescription('Initializes the project by creating database, user, and running migrations.');
+            ->setDescription('Initializes the project by creating database, user, and running migrations.')
+            ->addArgument('mysql-password', InputArgument::OPTIONAL, 'The MySQL root password', '');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
+        $this->mysqlPassword = (string) $input->getArgument('mysql-password');
 
         $io->title('Initializing Project');
 
@@ -63,7 +65,7 @@ class InitCommand extends Command
         $dsn = sprintf('mysql:host=%s;port=%s', self::DB_HOST, self::DB_PORT);
         
         try {
-            $pdo = new \PDO($dsn, self::DB_ROOT_USER, self::DB_ROOT_PASSWORD);
+            $pdo = new \PDO($dsn, self::DB_ROOT_USER, $this->getDatabasePassword());
             $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
 
             // Check if database exists
@@ -88,7 +90,7 @@ class InitCommand extends Command
         $dsn = sprintf('mysql:host=%s;port=%s', self::DB_HOST, self::DB_PORT);
         
         try {
-            $pdo = new \PDO($dsn, self::DB_ROOT_USER, self::DB_ROOT_PASSWORD);
+            $pdo = new \PDO($dsn, self::DB_ROOT_USER, $this->getDatabasePassword());
             $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
 
             // Check if user exists and drop it
@@ -111,6 +113,10 @@ class InitCommand extends Command
             throw $e;
         }
     }
+
+    private string $mysqlPassword = '';
+
+    private function getDatabasePassword(): string { return $this->mysqlPassword; }
 
     private function updateEnvFile(SymfonyStyle $io): void
     {

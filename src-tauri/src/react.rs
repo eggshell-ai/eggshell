@@ -89,6 +89,7 @@ impl Shell for ReactShell {
         project_path: &str,
         template_root: &Path,
         log: &ProgressLog,
+        _mysql_password: &str,
     ) -> LlmResult<()> {
         let log = log.for_channel(CHANNEL);
         let template_path = Self::template_path(template_root);
@@ -194,7 +195,9 @@ fn run_command_blocking(args: &[&str], cwd: &Path, log: &ProgressLog) -> LlmResu
     let stderr = child.stderr.take();
     let stderr_log = log.clone();
     let reader = std::thread::spawn(move || {
-        stderr.map(|pipe| pump_output(pipe, "stderr", &stderr_log)).unwrap_or_default()
+        stderr
+            .map(|pipe| pump_output(pipe, "stderr", &stderr_log))
+            .unwrap_or_default()
     });
     let stdout_lines = child
         .stdout
@@ -205,8 +208,11 @@ fn run_command_blocking(args: &[&str], cwd: &Path, log: &ProgressLog) -> LlmResu
 
     let status = child.wait()?;
     if !status.success() {
-        let details =
-            if stderr_lines.is_empty() { stdout_lines.join("\n") } else { stderr_lines.join("\n") };
+        let details = if stderr_lines.is_empty() {
+            stdout_lines.join("\n")
+        } else {
+            stderr_lines.join("\n")
+        };
         let message = format!("command failed with {status}: {label}\n{details}");
         log.line("error", format!("`{label}` exited with {status}"));
         return Err(io::Error::other(message).into());
@@ -284,7 +290,11 @@ fn persist_on_user_path(directory: &Path) {
             println!("ReactShell: leaving the user PATH alone because adding {} would exceed setx's 1024 character limit", directory.display());
         }
         Ok(output) => {
-            println!("ReactShell: could not add {} to the user PATH: {}", directory.display(), String::from_utf8_lossy(&output.stderr).trim());
+            println!(
+                "ReactShell: could not add {} to the user PATH: {}",
+                directory.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
         }
         Err(error) => println!("ReactShell: could not run setx: {error}"),
     }

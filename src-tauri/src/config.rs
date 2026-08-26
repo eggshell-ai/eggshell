@@ -18,10 +18,49 @@ pub struct AppConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct MysqlConfig { #[serde(rename = "type", default = "default_mysql_type")] pub kind: String, #[serde(default = "default_mysql_port")] pub port: u16, #[serde(default = "default_mysql_user")] pub user: String, #[serde(default)] pub pass: String }
-fn default_mysql_type() -> String { "managed".to_string() }
-fn default_mysql_port() -> u16 { 3306 }
-fn default_mysql_user() -> String { "root".to_string() }
+pub struct MysqlConfig {
+    #[serde(rename = "type", default = "default_mysql_type")]
+    pub kind: String,
+    #[serde(default = "default_mysql_port")]
+    pub port: u16,
+    #[serde(default = "default_mysql_user")]
+    pub user: String,
+    #[serde(default)]
+    pub pass: String,
+}
+fn default_mysql_type() -> String {
+    "managed".to_string()
+}
+fn default_mysql_port() -> u16 {
+    3306
+}
+fn default_mysql_user() -> String {
+    "root".to_string()
+}
+
+/// Saves the credentials for a system MySQL installation without marking the
+/// rest of setup as complete.
+#[tauri::command]
+pub fn save_mysql_config(app: tauri::AppHandle, password: String) -> Result<(), String> {
+    // MySQL can be configured before the provider setup is complete. On a
+    // first launch there is no config.yaml yet, so start with the same empty
+    // configuration used by the rest of the setup flow.
+    let mut config = ConfigService::load_default(&app).unwrap_or_else(|_| AppConfig {
+        ollama: OllamaConfig {
+            model: String::new(),
+            api_key: String::new(),
+        },
+        mysql: MysqlConfig::default(),
+        setup_completed: false,
+    });
+    config.mysql = MysqlConfig {
+        kind: "system".to_string(),
+        port: 3306,
+        user: "root".to_string(),
+        pass: password,
+    };
+    ConfigService::save_default(&app, &config).map_err(|error| error.to_string())
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OllamaConfig {
@@ -40,9 +79,12 @@ impl ConfigService {
     /// Returns the per-user, platform-specific configuration path and creates
     /// its parent directory when necessary.
     pub fn default_path<R: Runtime, M: Manager<R>>(manager: &M) -> Result<PathBuf, ConfigError> {
-        let directory = manager.path().app_config_dir().map_err(|error| ConfigError::Path {
-            message: error.to_string(),
-        })?;
+        let directory = manager
+            .path()
+            .app_config_dir()
+            .map_err(|error| ConfigError::Path {
+                message: error.to_string(),
+            })?;
         fs::create_dir_all(&directory).map_err(|source| ConfigError::Directory {
             path: directory.clone(),
             source,
@@ -80,7 +122,10 @@ impl ConfigService {
         })
     }
 
-    pub fn save_default<R: Runtime, M: Manager<R>>(manager: &M, config: &AppConfig) -> Result<(), ConfigError> {
+    pub fn save_default<R: Runtime, M: Manager<R>>(
+        manager: &M,
+        config: &AppConfig,
+    ) -> Result<(), ConfigError> {
         Self::save(Self::default_path(manager)?, config)
     }
 }

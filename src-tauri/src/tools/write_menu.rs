@@ -81,7 +81,10 @@ impl Tool for WriteMenuTool {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("content").join("dummy-project"));
 
-        let menu_path = project_path.join("frontend").join("schemas").join("menu.json");
+        let menu_path = project_path
+            .join("frontend")
+            .join("schemas")
+            .join("menu.json");
         if let Some(parent) = menu_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -101,12 +104,19 @@ impl Tool for WriteMenuTool {
             menu_item["permission"] = Value::String(permission);
         }
 
-        if let Some(index) = items.iter().position(|item| item.get("name").and_then(Value::as_str) == Some(name.as_str())) {
+        if let Some(index) = items
+            .iter()
+            .position(|item| item.get("name").and_then(Value::as_str) == Some(name.as_str()))
+        {
             items[index] = menu_item;
         } else {
             let insert_index = after
                 .as_deref()
-                .and_then(|value| items.iter().position(|item| item.get("name").and_then(Value::as_str) == Some(value)))
+                .and_then(|value| {
+                    items
+                        .iter()
+                        .position(|item| item.get("name").and_then(Value::as_str) == Some(value))
+                })
                 .map(|index| index + 1)
                 .unwrap_or_else(|| items.len().saturating_sub(1));
             items.insert(insert_index, menu_item);

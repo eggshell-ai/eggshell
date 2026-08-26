@@ -1,14 +1,14 @@
-mod db;
-mod setup;
 pub mod config;
+mod db;
 pub mod llm;
 pub mod progress;
+mod setup;
 mod tools;
 
 use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository};
 use progress::ProgressLog;
-use sqlx::SqlitePool;
 use serde::Serialize;
+use sqlx::SqlitePool;
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -21,10 +21,21 @@ fn greet(name: &str) -> String {
 }
 
 #[derive(Debug, Serialize)]
-struct DependencyStatus { node: bool, php: bool, composer: bool, symfony: bool, mysql: bool }
+struct DependencyStatus {
+    node: bool,
+    php: bool,
+    composer: bool,
+    symfony: bool,
+    mysql: bool,
+}
 
 #[derive(Debug, Serialize)]
-struct InstallOutcome { installed: bool, already_present: bool, command: String, restart_required: bool }
+struct InstallOutcome {
+    installed: bool,
+    already_present: bool,
+    command: String,
+    restart_required: bool,
+}
 
 /// Commands that install one dependency: `preparation` runs first and may fail
 /// harmlessly (index refreshes), then the first `attempts` entry that leaves the
@@ -70,15 +81,23 @@ fn add_managed_tools_to_process_path() {
     {
         let mut directories = Vec::new();
         if setup::managed_node_present() {
-            if let Some(directory) = setup::managed_node_dir() { directories.push(directory); }
+            if let Some(directory) = setup::managed_node_dir() {
+                directories.push(directory);
+            }
         }
         if managed_composer_present() {
-            if let Some(directory) = managed_bin_dir() { directories.push(directory); }
+            if let Some(directory) = managed_bin_dir() {
+                directories.push(directory);
+            }
         }
         if setup::managed_php_present() {
-            if let Some(directory) = setup::managed_php_dir() { directories.push(directory); }
+            if let Some(directory) = setup::managed_php_dir() {
+                directories.push(directory);
+            }
         }
-        if directories.is_empty() { return; }
+        if directories.is_empty() {
+            return;
+        }
 
         let existing = std::env::var_os("PATH").unwrap_or_default();
         let mut paths = directories;
@@ -96,15 +115,23 @@ fn add_managed_tools_to_command_path(command: &mut Command) {
     {
         let mut directories = Vec::new();
         if setup::managed_node_present() {
-            if let Some(directory) = setup::managed_node_dir() { directories.push(directory); }
+            if let Some(directory) = setup::managed_node_dir() {
+                directories.push(directory);
+            }
         }
         if managed_composer_present() {
-            if let Some(directory) = managed_bin_dir() { directories.push(directory); }
+            if let Some(directory) = managed_bin_dir() {
+                directories.push(directory);
+            }
         }
         if setup::managed_php_present() {
-            if let Some(directory) = setup::managed_php_dir() { directories.push(directory); }
+            if let Some(directory) = setup::managed_php_dir() {
+                directories.push(directory);
+            }
         }
-        if directories.is_empty() { return; }
+        if directories.is_empty() {
+            return;
+        }
 
         let existing = std::env::var_os("PATH").unwrap_or_default();
         directories.extend(std::env::split_paths(&existing));
@@ -188,22 +215,6 @@ fn executable_in_path(executable: &str) -> bool {
 /// MySQL's Windows installer unpacks the server into a versioned directory under
 /// Program Files and leaves PATH untouched, so a finished install is invisible to
 /// both `where mysql` and the environment the installer wrote.
-#[cfg(windows)]
-fn mysql_in_program_files() -> bool {
-    ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
-        .into_iter()
-        .filter_map(std::env::var_os)
-        .filter_map(|root| std::fs::read_dir(std::path::PathBuf::from(root).join("MySQL")).ok())
-        .flatten()
-        .filter_map(Result::ok)
-        .any(|entry| entry.path().join("bin").join("mysql.exe").is_file())
-}
-
-#[cfg(not(windows))]
-fn mysql_in_program_files() -> bool {
-    false
-}
-
 /// The daemon setup's fallback route downloaded, when that route ran. `None` when
 /// MySQL arrived through winget, Homebrew or apt instead: those register a service
 /// that owns the daemon, and a copy started behind its back would do nothing but
@@ -211,7 +222,11 @@ fn mysql_in_program_files() -> bool {
 fn managed_mysqld() -> Option<std::path::PathBuf> {
     let daemon = setup::managed_mysql_dir()?
         .join("bin")
-        .join(if cfg!(windows) { "mysqld.exe" } else { "mysqld" });
+        .join(if cfg!(windows) {
+            "mysqld.exe"
+        } else {
+            "mysqld"
+        });
     daemon.is_file().then_some(daemon)
 }
 
@@ -221,7 +236,7 @@ fn managed_mysqld() -> Option<std::path::PathBuf> {
 fn mysql_present() -> bool {
     executable_in_path("mysql")
         || executable_in_path("mysqld")
-        || mysql_in_program_files()
+        || setup::mysql_in_program_files()
         || managed_mysqld().is_some()
 }
 
@@ -244,7 +259,13 @@ fn detect_dependencies(log: tauri::State<'_, ProgressLog>) -> DependencyStatus {
         ("Symfony CLI", status.symfony),
         ("MySQL", status.mysql),
     ] {
-        log.line("info", format!("{name} {}", if present { "is ready" } else { "was not found" }));
+        log.line(
+            "info",
+            format!(
+                "{name} {}",
+                if present { "is ready" } else { "was not found" }
+            ),
+        );
     }
     status
 }
@@ -282,11 +303,21 @@ fn dependency_present(dependency: &str, executable: &str) -> bool {
 /// prepends its directory to PATH every time it runs a command. Projects reach
 /// MySQL over TCP rather than by running its client, so PATH never matters there.
 fn requires_restart(dependency: &str, executable: &str) -> bool {
-    if dependency == "node" && setup::managed_node_present() { return false; }
-    if dependency == "php" && setup::managed_php_present() { return false; }
-    if dependency == "composer" && managed_composer_present() { return false; }
-    if dependency == "symfony" && managed_symfony_present() { return false; }
-    if dependency == "mysql" { return false; }
+    if dependency == "node" && setup::managed_node_present() {
+        return false;
+    }
+    if dependency == "php" && setup::managed_php_present() {
+        return false;
+    }
+    if dependency == "composer" && managed_composer_present() {
+        return false;
+    }
+    if dependency == "symfony" && managed_symfony_present() {
+        return false;
+    }
+    if dependency == "mysql" {
+        return false;
+    }
     !executable_in_process_path(executable)
 }
 
@@ -374,40 +405,40 @@ fn composer_download_plan() -> Result<InstallPlan, String> {
     })
 }
 
-/// MySQL registers a service only when its installer also configures the server,
-/// so Eggshell asks for automatic start-up and gives up quietly when the winget
-/// package left nothing to start.
-#[cfg(windows)]
-fn mysql_service_commands() -> Vec<Vec<String>> {
-    let script = "$service = Get-Service -Name 'MySQL*' -ErrorAction SilentlyContinue | Select-Object -First 1; \
-         if (-not $service) { Write-Error 'no MySQL service is registered'; exit 1 }; \
-         Set-Service -Name $service.Name -StartupType Automatic; \
-         if ($service.Status -ne 'Running') { Start-Service -Name $service.Name }";
-
-    vec![vec![
-        "powershell".to_string(),
-        "-NoProfile".to_string(),
-        "-NonInteractive".to_string(),
-        "-Command".to_string(),
-        script.to_string(),
-    ]]
-}
-
 #[cfg(windows)]
 fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
-    if dependency == "symfony" { return symfony_download_plan(); }
-    if dependency == "composer" { return composer_download_plan(); }
+    if dependency == "symfony" {
+        return symfony_download_plan();
+    }
+    if dependency == "composer" {
+        return composer_download_plan();
+    }
 
     if dependency == "node" && !executable_in_path("winget") {
-        return Ok(InstallPlan { preparation: Vec::new(), attempts: vec![setup::node_fallback_command()], follow_up: Vec::new(), hint: "Eggshell downloads portable Node JS from nodejs.org.".to_string() });
+        return Ok(InstallPlan {
+            preparation: Vec::new(),
+            attempts: vec![setup::node_fallback_command()],
+            follow_up: Vec::new(),
+            hint: "Eggshell downloads portable Node JS from nodejs.org.".to_string(),
+        });
     }
 
     if dependency == "mysql" && !executable_in_path("winget") {
-        return Ok(InstallPlan { preparation: Vec::new(), attempts: vec![setup::mysql_fallback_command()], follow_up: Vec::new(), hint: "Eggshell downloads the portable MySQL server from cdn.mysql.com.".to_string() });
+        return Ok(InstallPlan {
+            preparation: Vec::new(),
+            attempts: vec![setup::mysql_fallback_command()],
+            follow_up: Vec::new(),
+            hint: "Eggshell downloads the portable MySQL server from cdn.mysql.com.".to_string(),
+        });
     }
 
     if dependency == "php" && !executable_in_path("winget") {
-        return Ok(InstallPlan { preparation: Vec::new(), attempts: vec![setup::php_fallback_command()], follow_up: Vec::new(), hint: "Eggshell downloads portable PHP from downloads.php.net.".to_string() });
+        return Ok(InstallPlan {
+            preparation: Vec::new(),
+            attempts: vec![setup::php_fallback_command()],
+            follow_up: Vec::new(),
+            hint: "Eggshell downloads portable PHP from downloads.php.net.".to_string(),
+        });
     }
 
     if !executable_in_path("winget") {
@@ -445,15 +476,24 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
             .to_vec()
         })
         .collect();
-    if dependency == "mysql" { attempts.push(setup::mysql_fallback_command()); }
-    if dependency == "php" { attempts.push(setup::php_fallback_command()); }
-    if dependency == "node" { attempts.push(setup::node_fallback_command()); }
+    if dependency == "mysql" {
+        attempts.push(setup::mysql_fallback_command());
+    }
+    if dependency == "php" {
+        attempts.push(setup::php_fallback_command());
+    }
+    if dependency == "node" {
+        attempts.push(setup::node_fallback_command());
+    }
 
     Ok(InstallPlan {
         preparation: Vec::new(),
         attempts,
-        follow_up: if dependency == "mysql" { mysql_service_commands() } else { Vec::new() },
-        hint: "winget may ask for administrator approval; accept the prompt when it appears.".to_string(),
+        // winget's MySQL package no longer registers a Windows service. Never
+        // enable or start a service as an installation side effect.
+        follow_up: Vec::new(),
+        hint: "winget may ask for administrator approval; accept the prompt when it appears."
+            .to_string(),
     })
 }
 
@@ -479,7 +519,10 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
         .find(|path| std::path::Path::new(path).is_file())
         .map(String::from)
         .or_else(|| executable_in_process_path("brew").then(|| "brew".to_string()))
-        .ok_or_else(|| "Homebrew was not found. Install it from https://brew.sh, then run setup again.".to_string())?;
+        .ok_or_else(|| {
+            "Homebrew was not found. Install it from https://brew.sh, then run setup again."
+                .to_string()
+        })?;
 
     let formula = match dependency {
         "node" => "node",
@@ -492,7 +535,12 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
     // `brew services` registers a launchd job, so MySQL comes back after a reboot
     // the way the enabled systemd unit does on Linux.
     let follow_up = match dependency {
-        "mysql" => vec![vec![brew.clone(), "services".to_string(), "start".to_string(), "mysql".to_string()]],
+        "mysql" => vec![vec![
+            brew.clone(),
+            "services".to_string(),
+            "start".to_string(),
+            "mysql".to_string(),
+        ]],
         _ => Vec::new(),
     };
 
@@ -515,15 +563,28 @@ fn elevation_prefix() -> Result<Vec<String>, String> {
         .map(|output| String::from_utf8_lossy(&output.stdout).trim() == "0")
         .unwrap_or(false);
 
-    if is_root { return Ok(Vec::new()); }
-    if executable_in_path("pkexec") { return Ok(vec!["pkexec".to_string()]); }
-    if executable_in_path("sudo") { return Ok(vec!["sudo".to_string(), "-n".to_string()]); }
-    Err("Installing packages needs root access, but neither pkexec nor sudo is available.".to_string())
+    if is_root {
+        return Ok(Vec::new());
+    }
+    if executable_in_path("pkexec") {
+        return Ok(vec!["pkexec".to_string()]);
+    }
+    if executable_in_path("sudo") {
+        return Ok(vec!["sudo".to_string(), "-n".to_string()]);
+    }
+    Err(
+        "Installing packages needs root access, but neither pkexec nor sudo is available."
+            .to_string(),
+    )
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn elevated(elevation: &[String], command: Vec<&str>) -> Vec<String> {
-    elevation.iter().cloned().chain(command.into_iter().map(String::from)).collect()
+    elevation
+        .iter()
+        .cloned()
+        .chain(command.into_iter().map(String::from))
+        .collect()
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -553,7 +614,14 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
         let install = |package| {
             elevated(
                 &elevation,
-                vec!["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", package],
+                vec![
+                    "env",
+                    "DEBIAN_FRONTEND=noninteractive",
+                    "apt-get",
+                    "install",
+                    "-y",
+                    package,
+                ],
             )
         };
 
@@ -572,32 +640,78 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
     let manager = ["apt-get", "dnf", "pacman", "zypper"]
         .into_iter()
         .find(|manager| executable_in_path(manager))
-        .ok_or_else(|| "No supported package manager was found (apt-get, dnf, pacman or zypper).".to_string())?;
+        .ok_or_else(|| {
+            "No supported package manager was found (apt-get, dnf, pacman or zypper).".to_string()
+        })?;
 
     let (preparation, attempts): (Vec<Vec<&str>>, Vec<Vec<&str>>) = match (manager, dependency) {
-        ("apt-get", "node") => (vec![vec!["apt-get", "update"]], vec![vec!["apt-get", "install", "-y", "nodejs", "npm"]]),
-        ("apt-get", "php") => (vec![vec!["apt-get", "update"]], vec![vec!["apt-get", "install", "-y", "php-cli"]]),
-        ("apt-get", "composer") => (vec![vec!["apt-get", "update"]], vec![vec!["apt-get", "install", "-y", "composer"]]),
-        ("dnf", "node") => (Vec::new(), vec![vec!["dnf", "install", "-y", "nodejs", "npm"]]),
+        ("apt-get", "node") => (
+            vec![vec!["apt-get", "update"]],
+            vec![vec!["apt-get", "install", "-y", "nodejs", "npm"]],
+        ),
+        ("apt-get", "php") => (
+            vec![vec!["apt-get", "update"]],
+            vec![vec!["apt-get", "install", "-y", "php-cli"]],
+        ),
+        ("apt-get", "composer") => (
+            vec![vec!["apt-get", "update"]],
+            vec![vec!["apt-get", "install", "-y", "composer"]],
+        ),
+        ("dnf", "node") => (
+            Vec::new(),
+            vec![vec!["dnf", "install", "-y", "nodejs", "npm"]],
+        ),
         ("dnf", "php") => (Vec::new(), vec![vec!["dnf", "install", "-y", "php-cli"]]),
         ("dnf", "composer") => (Vec::new(), vec![vec!["dnf", "install", "-y", "composer"]]),
-        ("pacman", "node") => (Vec::new(), vec![vec!["pacman", "-Sy", "--noconfirm", "nodejs", "npm"]]),
-        ("pacman", "php") => (Vec::new(), vec![vec!["pacman", "-Sy", "--noconfirm", "php"]]),
-        ("pacman", "composer") => (Vec::new(), vec![vec!["pacman", "-Sy", "--noconfirm", "composer"]]),
-        ("zypper", "node") => (Vec::new(), vec![vec!["zypper", "--non-interactive", "install", "nodejs", "npm"]]),
+        ("pacman", "node") => (
+            Vec::new(),
+            vec![vec!["pacman", "-Sy", "--noconfirm", "nodejs", "npm"]],
+        ),
+        ("pacman", "php") => (
+            Vec::new(),
+            vec![vec!["pacman", "-Sy", "--noconfirm", "php"]],
+        ),
+        ("pacman", "composer") => (
+            Vec::new(),
+            vec![vec!["pacman", "-Sy", "--noconfirm", "composer"]],
+        ),
+        ("zypper", "node") => (
+            Vec::new(),
+            vec![vec![
+                "zypper",
+                "--non-interactive",
+                "install",
+                "nodejs",
+                "npm",
+            ]],
+        ),
         ("zypper", "php") => (
             Vec::new(),
-            vec![vec!["zypper", "--non-interactive", "install", "php8-cli"], vec!["zypper", "--non-interactive", "install", "php-cli"]],
+            vec![
+                vec!["zypper", "--non-interactive", "install", "php8-cli"],
+                vec!["zypper", "--non-interactive", "install", "php-cli"],
+            ],
         ),
-        ("zypper", "composer") => (Vec::new(), vec![vec!["zypper", "--non-interactive", "install", "composer"]]),
+        ("zypper", "composer") => (
+            Vec::new(),
+            vec![vec!["zypper", "--non-interactive", "install", "composer"]],
+        ),
         (_, other) => return Err(unsupported_dependency(other)),
     };
 
     Ok(InstallPlan {
-        preparation: preparation.into_iter().map(|command| elevated(&elevation, command)).collect(),
-        attempts: attempts.into_iter().map(|command| elevated(&elevation, command)).collect(),
+        preparation: preparation
+            .into_iter()
+            .map(|command| elevated(&elevation, command))
+            .collect(),
+        attempts: attempts
+            .into_iter()
+            .map(|command| elevated(&elevation, command))
+            .collect(),
         follow_up: Vec::new(),
-        hint: format!("{manager} needs root access; approve the authentication prompt when it appears."),
+        hint: format!(
+            "{manager} needs root access; approve the authentication prompt when it appears."
+        ),
     })
 }
 
@@ -605,7 +719,9 @@ fn install_plan(dependency: &str) -> Result<InstallPlan, String> {
 fn installer_tail(details: &str) -> String {
     let cleaned = details.split_whitespace().collect::<Vec<_>>().join(" ");
     let length = cleaned.chars().count();
-    if length <= 300 { return cleaned; }
+    if length <= 300 {
+        return cleaned;
+    }
     cleaned.chars().skip(length - 300).collect()
 }
 
@@ -637,7 +753,9 @@ fn run_installer(command: &[String], log: &ProgressLog) -> Result<(), String> {
     let stderr = child.stderr.take();
     let stderr_log = log.clone();
     let reader = std::thread::spawn(move || {
-        stderr.map(|pipe| progress::pump_output(pipe, "stderr", &stderr_log)).unwrap_or_default()
+        stderr
+            .map(|pipe| progress::pump_output(pipe, "stderr", &stderr_log))
+            .unwrap_or_default()
     });
     let stdout_lines = child
         .stdout
@@ -652,9 +770,15 @@ fn run_installer(command: &[String], log: &ProgressLog) -> Result<(), String> {
     if !status.success() {
         // stderr says why when it says anything at all; winget reports its failures
         // on stdout instead.
-        let details =
-            if stderr_lines.is_empty() { stdout_lines.join(" ") } else { stderr_lines.join(" ") };
-        let message = format!("`{label}` exited with {status}. {}", installer_tail(&details));
+        let details = if stderr_lines.is_empty() {
+            stdout_lines.join(" ")
+        } else {
+            stderr_lines.join(" ")
+        };
+        let message = format!(
+            "`{label}` exited with {status}. {}",
+            installer_tail(&details)
+        );
         log.line("error", message.clone());
         return Err(message);
     }
@@ -669,7 +793,10 @@ fn install_dependency_blocking(
 ) -> Result<InstallOutcome, String> {
     let executable = executable_for(dependency)?;
     if dependency_present(dependency, executable) {
-        log.line("info", format!("{dependency} is already installed, skipping"));
+        log.line(
+            "info",
+            format!("{dependency} is already installed, skipping"),
+        );
         return Ok(InstallOutcome {
             installed: true,
             already_present: true,
@@ -682,7 +809,10 @@ fn install_dependency_blocking(
     let plan = install_plan(dependency).inspect_err(|error| log.line("error", error.clone()))?;
     for command in &plan.preparation {
         if let Err(error) = run_installer(command, log) {
-            log.line("info", format!("preparation step failed, continuing anyway: {error}"));
+            log.line(
+                "info",
+                format!("preparation step failed, continuing anyway: {error}"),
+            );
         }
     }
 
@@ -697,7 +827,10 @@ fn install_dependency_blocking(
             // so a failure here is logged rather than turned into a failed install.
             for command in &plan.follow_up {
                 if let Err(error) = run_installer(command, log) {
-                    log.line("info", format!("follow-up step failed, continuing anyway: {error}"));
+                    log.line(
+                        "info",
+                        format!("follow-up step failed, continuing anyway: {error}"),
+                    );
                 }
             }
 
@@ -711,8 +844,7 @@ fn install_dependency_blocking(
         }
         match outcome {
             Ok(()) => {
-                let message =
-                    format!("`{label}` succeeded but {executable} is still not on PATH.");
+                let message = format!("`{label}` succeeded but {executable} is still not on PATH.");
                 log.line("error", message.clone());
                 failures.push(message);
             }
@@ -750,20 +882,30 @@ const CONFIG_PLACEHOLDER: &str = "...";
 /// What the setup screen needs to know at launch: whether to appear at all, and
 /// what to prefill. The API key is deliberately not sent back to the frontend.
 #[derive(Debug, Serialize)]
-struct SetupState { setup_completed: bool, model: String }
+struct SetupState {
+    setup_completed: bool,
+    model: String,
+}
 
 #[tauri::command]
 fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -> SetupState {
     match config::ConfigService::load_default(&app) {
         Ok(config) => SetupState {
             setup_completed: config.setup_completed,
-            model: if config.ollama.model == CONFIG_PLACEHOLDER { String::new() } else { config.ollama.model },
+            model: if config.ollama.model == CONFIG_PLACEHOLDER {
+                String::new()
+            } else {
+                config.ollama.model
+            },
         },
         // A first launch has no configuration to read yet, which is exactly when
         // setup has to run.
         Err(error) => {
             log.line("info", format!("{error}; treating setup as incomplete"));
-            SetupState { setup_completed: false, model: String::new() }
+            SetupState {
+                setup_completed: false,
+                model: String::new(),
+            }
         }
     }
 }
@@ -790,7 +932,14 @@ fn save_provider_config(
     // read, so an unreadable configuration is replaced rather than fatal.
     let mut config = config::ConfigService::load_default(&app).unwrap_or_else(|error| {
         log.line("info", format!("{error}; writing a fresh configuration"));
-        config::AppConfig { ollama: config::OllamaConfig { model: String::new(), api_key: String::new() }, mysql: config::MysqlConfig::default(), setup_completed: false }
+        config::AppConfig {
+            ollama: config::OllamaConfig {
+                model: String::new(),
+                api_key: String::new(),
+            },
+            mysql: config::MysqlConfig::default(),
+            setup_completed: false,
+        }
     });
     config.ollama = config::OllamaConfig { model, api_key };
     config.setup_completed = true;
@@ -803,7 +952,10 @@ fn save_provider_config(
     // The agent was built from the configuration read at start-up, so without
     // this the credentials just entered would only take effect after a restart.
     ollama.apply(config.ollama.clone());
-    log.line("info", format!("saved {provider} with model {}", config.ollama.model));
+    log.line(
+        "info",
+        format!("saved {provider} with model {}", config.ollama.model),
+    );
     Ok(())
 }
 
@@ -815,7 +967,8 @@ async fn list_projects(pool: tauri::State<'_, SqlitePool>) -> Result<Vec<Project
 }
 
 fn bundled_template_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let resource_dir = app.path()
+    let resource_dir = app
+        .path()
         .resource_dir()
         .map_err(|error| format!("Could not locate bundled resources: {error}"))?;
 
@@ -856,7 +1009,10 @@ async fn create_project(
     // read by different windows, and this one's channels are the shells.
     let log = ProgressLog::new(app.clone(), "project-log", "project");
 
-    ProjectsRepository::create(pool.inner(), project, &template_root, &log)
+    let mysql_password = config::ConfigService::load_default(&app)
+        .map(|config| config.mysql.pass)
+        .unwrap_or_default();
+    ProjectsRepository::create(pool.inner(), project, &template_root, &log, &mysql_password)
         .await
         .map_err(|error| error.to_string())
 }
@@ -876,21 +1032,52 @@ async fn start_project(id: i64, pool: tauri::State<'_, SqlitePool>) -> Result<()
 }
 
 #[tauri::command]
-async fn list_sessions(project_id: i64, pool: tauri::State<'_, SqlitePool>) -> Result<Vec<Session>, String> {
-    SessionsRepository::list(pool.inner(), project_id).await.map_err(|error| error.to_string())
+async fn list_sessions(
+    project_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<Session>, String> {
+    SessionsRepository::list(pool.inner(), project_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn delete_session(project_id: i64, id: i64, pool: tauri::State<'_, SqlitePool>) -> Result<(), String> {
-    SessionsRepository::delete(pool.inner(), project_id, id).await.map_err(|error| error.to_string())
+async fn delete_session(
+    project_id: i64,
+    id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    SessionsRepository::delete(pool.inner(), project_id, id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn send_message(project_id: i64, session_id: Option<i64>, message: String, app: tauri::AppHandle, pool: tauri::State<'_, SqlitePool>, agent: tauri::State<'_, llm::AgentService>) -> Result<Session, String> {
+async fn send_message(
+    project_id: i64,
+    session_id: Option<i64>,
+    message: String,
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, SqlitePool>,
+    agent: tauri::State<'_, llm::AgentService>,
+) -> Result<Session, String> {
     let message = message.trim().to_string();
-    if message.is_empty() { return Err("A message is required.".to_string()); }
-    let event_sink = Arc::new(move |payload| { let _ = app.emit("agent-event", payload); });
-    SessionsRepository::save_exchange(pool.inner(), project_id, session_id, message, agent.inner(), event_sink).await.map_err(|error| error.to_string())
+    if message.is_empty() {
+        return Err("A message is required.".to_string());
+    }
+    let event_sink = Arc::new(move |payload| {
+        let _ = app.emit("agent-event", payload);
+    });
+    SessionsRepository::save_exchange(
+        pool.inner(),
+        project_id,
+        session_id,
+        message,
+        agent.inner(),
+        event_sink,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// The question a project asks of MySQL too, so it is the one worth asking here:
@@ -915,11 +1102,23 @@ const MYSQL_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// dead end is logged and returned from.
 fn start_managed_mysql(mysql: &config::MysqlConfig, log: &ProgressLog) {
     if mysql.kind != "managed" {
-        log.line("info", format!("mysql: configured as \"{}\", so starting the server is left to whoever owns it", mysql.kind));
+        log.line(
+            "info",
+            format!(
+                "mysql: configured as \"{}\", so starting the server is left to whoever owns it",
+                mysql.kind
+            ),
+        );
         return;
     }
     if mysql_accepting_connections(mysql.port) {
-        log.line("info", format!("mysql: already accepting connections on 127.0.0.1:{}", mysql.port));
+        log.line(
+            "info",
+            format!(
+                "mysql: already accepting connections on 127.0.0.1:{}",
+                mysql.port
+            ),
+        );
         return;
     }
 
@@ -928,7 +1127,13 @@ fn start_managed_mysql(mysql: &config::MysqlConfig, log: &ProgressLog) {
         return;
     };
     let Some(daemon) = managed_mysqld() else {
-        log.line("info", format!("mysql: no server has been downloaded to {} yet; run setup to install one", base.display()));
+        log.line(
+            "info",
+            format!(
+                "mysql: no server has been downloaded to {} yet; run setup to install one",
+                base.display()
+            ),
+        );
         return;
     };
 
@@ -937,7 +1142,13 @@ fn start_managed_mysql(mysql: &config::MysqlConfig, log: &ProgressLog) {
     // cause, so name the fix rather than letting the daemon exit unexplained.
     let data = base.join("data");
     if !data.join("mysql").is_dir() {
-        log.line("error", format!("mysql: {} has not been initialized; run setup again to rebuild it", data.display()));
+        log.line(
+            "error",
+            format!(
+                "mysql: {} has not been initialized; run setup again to rebuild it",
+                data.display()
+            ),
+        );
         return;
     }
 
@@ -963,12 +1174,22 @@ fn start_managed_mysql(mysql: &config::MysqlConfig, log: &ProgressLog) {
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            log.line("error", format!("mysql: could not start {}: {error}", daemon.display()));
+            log.line(
+                "error",
+                format!("mysql: could not start {}: {error}", daemon.display()),
+            );
             return;
         }
     };
     let pid = child.id();
-    log.line("info", format!("mysql: starting {} on port {} (PID {pid})", daemon.display(), mysql.port));
+    log.line(
+        "info",
+        format!(
+            "mysql: starting {} on port {} (PID {pid})",
+            daemon.display(),
+            mysql.port
+        ),
+    );
 
     // mysqld reports a locked data directory or a taken port by exiting, so wait
     // for the port before calling this a success — a silent failure here would
@@ -977,14 +1198,26 @@ fn start_managed_mysql(mysql: &config::MysqlConfig, log: &ProgressLog) {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                log.line("error", format!("mysql: PID {pid} exited with {status}; the error log in {} says why", data.display()));
+                log.line(
+                    "error",
+                    format!(
+                        "mysql: PID {pid} exited with {status}; the error log in {} says why",
+                        data.display()
+                    ),
+                );
                 return;
             }
             Ok(None) => {}
-            Err(error) => log.line("info", format!("mysql: could not check on PID {pid}: {error}")),
+            Err(error) => log.line(
+                "info",
+                format!("mysql: could not check on PID {pid}: {error}"),
+            ),
         }
         if mysql_accepting_connections(mysql.port) {
-            log.line("info", format!("mysql: accepting connections on 127.0.0.1:{}", mysql.port));
+            log.line(
+                "info",
+                format!("mysql: accepting connections on 127.0.0.1:{}", mysql.port),
+            );
             return;
         }
         if Instant::now() >= deadline {
@@ -1013,9 +1246,15 @@ pub fn run() {
 
             // A missing or unconfigured file is what a first launch looks like.
             let config = config::ConfigService::load_default(app).unwrap_or_else(|error| {
-                log.line("info", format!("{error}; starting with empty provider settings"));
+                log.line(
+                    "info",
+                    format!("{error}; starting with empty provider settings"),
+                );
                 config::AppConfig {
-                    ollama: config::OllamaConfig { model: String::new(), api_key: String::new() },
+                    ollama: config::OllamaConfig {
+                        model: String::new(),
+                        api_key: String::new(),
+                    },
                     mysql: config::MysqlConfig::default(),
                     setup_completed: false,
                 }
@@ -1036,6 +1275,7 @@ pub fn run() {
             install_dependency,
             setup_log_history,
             load_setup_state,
+            config::save_mysql_config,
             save_provider_config,
             list_projects,
             create_project,

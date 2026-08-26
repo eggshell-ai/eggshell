@@ -56,13 +56,23 @@ pub struct ProgressLog {
 
 impl ProgressLog {
     pub fn new(app: tauri::AppHandle, event: &'static str, channel: &'static str) -> Self {
-        Self { app, event, channel, state: Arc::new(Mutex::new(LogState::default())) }
+        Self {
+            app,
+            event,
+            channel,
+            state: Arc::new(Mutex::new(LogState::default())),
+        }
     }
 
     /// The same log under a different channel. The sequence counter is shared, so
     /// lines from every channel stay in one order however many of them there are.
     pub fn for_channel(&self, channel: &'static str) -> Self {
-        Self { app: self.app.clone(), event: self.event, channel, state: Arc::clone(&self.state) }
+        Self {
+            app: self.app.clone(),
+            event: self.event,
+            channel,
+            state: Arc::clone(&self.state),
+        }
     }
 
     pub fn line(&self, stream: &'static str, text: impl Into<String>) {
@@ -72,7 +82,12 @@ impl ProgressLog {
         let line = {
             let mut state = self.lock();
             state.next_seq += 1;
-            let line = LogLine { seq: state.next_seq, channel: self.channel, stream, text };
+            let line = LogLine {
+                seq: state.next_seq,
+                channel: self.channel,
+                stream,
+                text,
+            };
             if state.lines.len() == LOG_CAPACITY {
                 state.lines.pop_front();
             }
@@ -91,7 +106,9 @@ impl ProgressLog {
     /// poisoned lock costs at most one garbled line, so the guard is recovered rather
     /// than unwrapped.
     fn lock(&self) -> MutexGuard<'_, LogState> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -118,7 +135,10 @@ pub fn pump_output(source: impl Read, stream: &'static str, log: &ProgressLog) -
             }
         };
         pending.extend_from_slice(&chunk[..read]);
-        while let Some(position) = pending.iter().position(|byte| matches!(byte, b'\n' | b'\r')) {
+        while let Some(position) = pending
+            .iter()
+            .position(|byte| matches!(byte, b'\n' | b'\r'))
+        {
             let line: Vec<u8> = pending.drain(..=position).collect();
             if let Some(text) = presentable(&line) {
                 log.line(stream, text.clone());

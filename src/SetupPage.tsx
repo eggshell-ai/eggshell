@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { message } from "@tauri-apps/plugin-dialog";
 
 type DependencyStatus = { node: boolean; php: boolean; composer: boolean; symfony: boolean; mysql: boolean };
 type DependencyKey = keyof DependencyStatus;
@@ -40,6 +41,9 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
   const [provider, setProvider] = useState<Provider["key"] | null>(null);
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [mysqlPassword, setMysqlPassword] = useState("");
+  const [showMysqlPassword, setShowMysqlPassword] = useState(false);
+  const [isSavingMysql, setIsSavingMysql] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [logLines, setLogLines] = useState<LogLine[]>([]);
   const [isLogOpen, setIsLogOpen] = useState(false);
@@ -115,9 +119,12 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     const pending = dependencies
       .map((dependency, index) => ({ dependency, index }))
       .filter(({ index }) => !checked[index]);
+    const mysqlIndex = dependencies.findIndex(({ key }) => key === "mysql");
+    const mysqlAlreadyDetected = checked[mysqlIndex] === true;
     console.info("[SetupPage] Setup button clicked", { pending: pending.map(({ dependency }) => dependency.key) });
 
     const nextFailures: string[] = [];
+    let mysqlPasswordRequired = false;
     for (const { dependency, index } of pending) {
       const startedAt = performance.now();
       console.info("[SetupPage] install_dependency started", { dependency: dependency.key });
@@ -130,6 +137,17 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
         setChecked((current) => replaceAt(current, index, true));
         setInstallStates((current) => replaceAt(current, index, "idle"));
         if (outcome.restart_required) setNeedsRestart(true);
+        if (dependency.key === "mysql" && (outcome.already_present || outcome.command.startsWith("winget "))) {
+          const installedByEggshell = !outcome.already_present && outcome.command.startsWith("winget ");
+          await message(installedByEggshell
+            ? "MySQL has been installed with winget. Launch and configure the service manually, then enter the root password below. Leave it blank if root has no password."
+            : "MySQL is already installed on this computer. Make sure its service is running, then enter the root password below. Leave it blank if root has no password.", {
+            title: "MySQL setup warning",
+            kind: "warning",
+          });
+          setShowMysqlPassword(true);
+          mysqlPasswordRequired = true;
+        }
       } catch (reason) {
         console.error("[SetupPage] install_dependency rejected", {
           dependency: dependency.key, reason, elapsedMs: Math.round(performance.now() - startedAt),
@@ -146,8 +164,32 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
       setFailures(nextFailures); setIsSettingUp(false);
       return;
     }
+    if (mysqlAlreadyDetected) {
+      await message(
+        "MySQL is already installed on this computer. Make sure its service is running, then enter the root password below. Leave it blank if root has no password.",
+        { title: "MySQL setup warning", kind: "warning" },
+      );
+      setShowMysqlPassword(true);
+      setIsSettingUp(false);
+      return;
+    }
+    if (mysqlPasswordRequired) {
+      setIsSettingUp(false);
+      return;
+    }
     console.info("[SetupPage] All installable dependencies ready; moving to provider setup");
     window.setTimeout(() => { setIsSettingUp(false); setStep("provider"); }, 450);
+  }
+
+  async function saveMysqlPassword() {
+    setIsSavingMysql(true); setFailures([]);
+    try {
+      await invoke("save_mysql_config", { password: mysqlPassword });
+      setShowMysqlPassword(false);
+      setStep("provider");
+    } catch (reason) {
+      setFailures([`The MySQL settings could not be saved. ${String(reason)}`]);
+    } finally { setIsSavingMysql(false); }
   }
 
   async function saveProvider() {
@@ -244,7 +286,16 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     {failures.length > 0 && <div className="setup-error" role="alert">
       {failures.map((failure) => <p key={failure}>{failure}</p>)}
     </div>}
-    <button className="setup-button" type="button" onClick={() => void setup()} disabled={isSettingUp || isDetecting}>
+    {showMysqlPassword && <div className="provider-form" role="dialog" aria-labelledby="mysql-password-title">
+      <h2 id="mysql-password-title">MySQL root password</h2>
+      <p className="setup-intro">Enter the password configured for the MySQL <code>root</code> user.</p>
+      <label>Password<input value={mysqlPassword} type="password" autoFocus autoComplete="off"
+        onChange={(event) => setMysqlPassword(event.target.value)} /></label>
+      <button className="setup-button" type="button" onClick={() => void saveMysqlPassword()} disabled={isSavingMysql}>
+        {isSavingMysql ? "Saving…" : "Continue"}
+      </button>
+    </div>}
+    <button className="setup-button" type="button" onClick={() => void setup()} disabled={isSettingUp || isDetecting || showMysqlPassword}>
       {buttonLabel}
     </button>
     {restartNote}

@@ -9,7 +9,9 @@ use std::sync::RwLock;
 use crate::config::OllamaConfig;
 use crate::progress::ProgressLog;
 
-use crate::tools::{LoadSkillTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool, WritePageTool};
+use crate::tools::{
+    LoadSkillTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool, WritePageTool,
+};
 
 #[path = "symfony.rs"]
 mod symfony;
@@ -91,6 +93,7 @@ pub async fn initialize_project(
     _slug: &str,
     template_root: &Path,
     log: &ProgressLog,
+    mysql_password: &str,
 ) -> LlmResult<()> {
     let path = Path::new(project_path);
     fs::create_dir_all(path)?;
@@ -101,7 +104,10 @@ pub async fn initialize_project(
     // Initialize each shell against the project directory. SymfonyShell creates
     // the backend and ReactShell creates the frontend under project_path.
     for shell in &shells {
-        if let Err(error) = shell.init(project_path, template_root, log).await {
+        if let Err(error) = shell
+            .init(project_path, template_root, log, mysql_password)
+            .await
+        {
             return Err(error);
         }
     }
@@ -340,6 +346,7 @@ pub trait Shell: Send + Sync {
         project_path: &str,
         template_root: &Path,
         log: &ProgressLog,
+        _mysql_password: &str,
     ) -> LlmResult<()>;
     async fn start(&self, project_path: &str) -> LlmResult<()>;
 }

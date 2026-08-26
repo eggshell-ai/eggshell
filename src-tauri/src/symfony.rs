@@ -94,6 +94,7 @@ impl Shell for SymfonyShell {
         project_dir: &str,
         template_root: &Path,
         log: &ProgressLog,
+        mysql_password: &str,
     ) -> LlmResult<()> {
         let log = log.for_channel(CHANNEL);
         let template_path = Self::template_path(template_root);
@@ -123,7 +124,11 @@ impl Shell for SymfonyShell {
         .await?;
         log.line("info", "JWT keypair generated");
 
-        Self::run_command("php bin/console app:init", &target_path, &log).await?;
+        let init_command = format!(
+            "php bin/console app:init -- {}",
+            shell_quote(mysql_password)
+        );
+        Self::run_command(&init_command, &target_path, &log).await?;
         log.line("info", "Database and user initialized");
 
         log.line("done", "Backend ready");
@@ -134,6 +139,14 @@ impl Shell for SymfonyShell {
         let target_path = Path::new(project_path).join("backend");
         Self::start_server(&target_path)?;
         Ok(())
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    if cfg!(windows) {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 
@@ -266,10 +279,7 @@ fn persist_on_user_path(directory: &Path) {
 
     match output {
         Ok(output) if output.status.success() => {
-            println!(
-                "SymfonyShell: {} is on the user PATH",
-                directory.display()
-            );
+            println!("SymfonyShell: {} is on the user PATH", directory.display());
         }
         Ok(output) if output.status.code() == Some(3) => {
             println!(
@@ -325,7 +335,10 @@ fn run_command_blocking(command: &str, cwd: &Path, log: &ProgressLog) -> LlmResu
     }
 
     let mut child = process.spawn().inspect_err(|error| {
-        log.line("error", format!("`{command}` could not be started: {error}"));
+        log.line(
+            "error",
+            format!("`{command}` could not be started: {error}"),
+        );
     })?;
 
     // One pipe is drained on a thread of its own: a command that fills stderr while
@@ -333,7 +346,9 @@ fn run_command_blocking(command: &str, cwd: &Path, log: &ProgressLog) -> LlmResu
     let stderr = child.stderr.take();
     let stderr_log = log.clone();
     let reader = std::thread::spawn(move || {
-        stderr.map(|pipe| pump_output(pipe, "stderr", &stderr_log)).unwrap_or_default()
+        stderr
+            .map(|pipe| pump_output(pipe, "stderr", &stderr_log))
+            .unwrap_or_default()
     });
     let stdout_lines = child
         .stdout
@@ -346,8 +361,11 @@ fn run_command_blocking(command: &str, cwd: &Path, log: &ProgressLog) -> LlmResu
     if !status.success() {
         // stderr says why when it says anything at all; some tools report their
         // failures on stdout instead.
-        let details =
-            if stderr_lines.is_empty() { stdout_lines.join("\n") } else { stderr_lines.join("\n") };
+        let details = if stderr_lines.is_empty() {
+            stdout_lines.join("\n")
+        } else {
+            stderr_lines.join("\n")
+        };
         let message = format!("command failed with {status}: {command}\n{details}");
         log.line("error", format!("`{command}` exited with {status}"));
         return Err(io::Error::other(message).into());
