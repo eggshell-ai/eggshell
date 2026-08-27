@@ -1260,7 +1260,8 @@ pub fn run() {
                 }
             });
             let ollama = Arc::new(llm::OllamaService::new(config.ollama));
-            app.manage(llm::AgentService::new(ollama.clone()));
+            let llm_service = Arc::new(llm::MockLlmService::new(ollama.clone()));
+            app.manage(llm::AgentService::new(llm_service));
             app.manage(ollama);
 
             // Probing the port and waiting for the daemon both block, and the

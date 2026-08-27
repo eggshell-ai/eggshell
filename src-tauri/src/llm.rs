@@ -23,6 +23,18 @@ mod react;
 mod agent;
 pub use agent::{AgentRunResult, AgentService};
 
+#[path = "mock_llm.rs"]
+mod mock_llm;
+pub use mock_llm::MockLlmService;
+
+#[path = "crud_creation.rs"]
+mod crud_creation;
+pub use crud_creation::CrudCreationSkill;
+
+#[path = "analytics_and_reporting.rs"]
+mod analytics_and_reporting;
+pub use analytics_and_reporting::AnalyticsAndReportingSkill;
+
 pub type LlmResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 /// An event emitted while an agent is running.
@@ -90,7 +102,7 @@ impl App for AdminPanelApp {
 /// is finished.
 pub async fn initialize_project(
     project_path: &str,
-    _slug: &str,
+    slug: &str,
     template_root: &Path,
     log: &ProgressLog,
     mysql_password: &str,
@@ -105,7 +117,7 @@ pub async fn initialize_project(
     // the backend and ReactShell creates the frontend under project_path.
     for shell in &shells {
         if let Err(error) = shell
-            .init(project_path, template_root, log, mysql_password)
+            .init(project_path, slug, template_root, log, mysql_password)
             .await
         {
             return Err(error);
@@ -169,11 +181,6 @@ pub trait LLMService: Send + Sync {
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value>;
 }
-
-/// Temporary local implementation used while the production LLM client is
-/// being built. It deliberately ignores the supplied conversation and returns
-/// a deterministic response, but exercises the exact same AgentService path.
-pub struct MockLlmService;
 
 pub struct OllamaService {
     client: reqwest::Client,
@@ -307,26 +314,6 @@ impl LLMService for OllamaService {
     }
 }
 
-#[async_trait]
-impl LLMService for MockLlmService {
-    async fn execute_prompt(
-        &self,
-        _prompt: &str,
-        _context: Option<&Map<String, Value>>,
-    ) -> LlmResult<String> {
-        Ok("Pong".to_string())
-    }
-
-    async fn execute_prompt_with_tools(
-        &self,
-        _messages: &[LLMMessage],
-        _tools: &[Box<dyn Tool>],
-        _context: Option<&Map<String, Value>>,
-    ) -> LlmResult<Value> {
-        Ok(serde_json::json!({ "content": "Pong", "tool_calls": [] }))
-    }
-}
-
 /// Defines the shells, tools, skills, and system prompt available to the LLM.
 pub trait App: Send + Sync {
     fn shells(&self) -> Vec<Box<dyn Shell>>;
@@ -344,6 +331,7 @@ pub trait Shell: Send + Sync {
     async fn init(
         &self,
         project_path: &str,
+        slug: &str,
         template_root: &Path,
         log: &ProgressLog,
         _mysql_password: &str,
@@ -358,99 +346,6 @@ pub trait Skill: Send + Sync {
     fn content(&self) -> &str;
     fn category(&self) -> Option<&str>;
     fn tags(&self) -> &[String];
-}
-
-/// Skill for creating a complete CRUD interface across the application stack.
-pub struct CrudCreationSkill {
-    tags: Vec<String>,
-}
-
-impl CrudCreationSkill {
-    pub fn new() -> Self {
-        Self {
-            tags: vec![
-                "crud".to_string(),
-                "database".to_string(),
-                "frontend".to_string(),
-                "backend".to_string(),
-                "symfony".to_string(),
-                "react".to_string(),
-            ],
-        }
-    }
-}
-
-impl Default for CrudCreationSkill {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Skill for CrudCreationSkill {
-    fn name(&self) -> &str {
-        "crud_creation"
-    }
-
-    fn description(&self) -> &str {
-        "Teaches the agent how to create a complete CRUD interface with database schema, backend controller, frontend pages, and menu integration."
-    }
-
-    fn content(&self) -> &str {
-        ""
-    }
-
-    fn category(&self) -> Option<&str> {
-        Some("development")
-    }
-
-    fn tags(&self) -> &[String] {
-        &self.tags
-    }
-}
-
-/// Skill for creating backend analytics aggregators and dashboards.
-pub struct AnalyticsAndReportingSkill {
-    tags: Vec<String>,
-}
-
-impl AnalyticsAndReportingSkill {
-    pub fn new() -> Self {
-        Self {
-            tags: vec![
-                "analytics".to_string(),
-                "reporting".to_string(),
-                "dashboard".to_string(),
-            ],
-        }
-    }
-}
-
-impl Default for AnalyticsAndReportingSkill {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Skill for AnalyticsAndReportingSkill {
-    fn name(&self) -> &str {
-        "analytics_and_reporting"
-    }
-
-    fn description(&self) -> &str {
-        "Teaches the agent how to create backend analytics aggregators and dashboards"
-    }
-
-    fn content(&self) -> &str {
-        ""
-    }
-
-    fn category(&self) -> Option<&str> {
-        Some("analytics")
-    }
-
-    fn tags(&self) -> &[String] {
-        &self.tags
-    }
 }
 
 /// Returns the skills bundled with the application by default.
