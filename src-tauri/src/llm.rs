@@ -44,6 +44,8 @@ pub type AgentEvent = Value;
 pub struct AgentOptions {
     pub max_turns: Option<u32>,
     pub context: Option<Map<String, Value>>,
+    /// The project directory tools must operate on for this agent run.
+    pub project_path: Option<String>,
     pub on_event: Option<Box<dyn Fn(AgentEvent) + Send + Sync>>,
     pub log_conversation: bool,
     pub log_dir: Option<String>,
@@ -54,6 +56,7 @@ impl Default for AgentOptions {
         Self {
             max_turns: None,
             context: None,
+            project_path: None,
             on_event: None,
             log_conversation: true,
             log_dir: None,

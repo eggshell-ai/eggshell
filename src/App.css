@@ -96,15 +96,45 @@
   gap: 4px;
 }
 
+.session-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 9px;
+}
+
+.session-row:hover {
+  background: #eeebf8;
+}
+
 .session-item {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .session-item.active {
   color: #4e35ce;
   background: #e9e5ff;
+}
+
+.session-delete-button {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 7px;
+  color: #858291;
+  background: transparent;
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.session-delete-button:hover {
+  color: #9e2d42;
+  background: #f8e8ec;
 }
 
 .sessions-empty {

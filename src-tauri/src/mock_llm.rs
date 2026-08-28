@@ -35,8 +35,10 @@ impl LLMService for MockLlmService {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value> {
+        println!("Length of messages");
+        println!("{}", messages.len().to_string());
         match messages.len() {
-            1 => Ok(serde_json::json!({
+            2 => Ok(serde_json::json!({
                 "content": "",
                 "tool_calls": [{
                     "id": "mock-load-skill",
@@ -47,7 +49,7 @@ impl LLMService for MockLlmService {
                     }
                 }]
             })),
-            3 => Ok(serde_json::json!({
+            4 => Ok(serde_json::json!({
                 "content": "",
                 "tool_calls": [{
                     "id": "mock-sync-schema",
@@ -63,13 +65,16 @@ impl LLMService for MockLlmService {
                                     { "field": "email", "name": "email", "type": "string" },
                                     { "field": "phone", "name": "phone", "type": "string" }
                                 ],
-                                "name": "Customer"
+                                "name": "customers"
                             }]
                         }
                     }
                 }]
             })),
-            _ => self.fallback.execute_prompt_with_tools(messages, tools, context).await,
+            _ => Ok(serde_json::json!({
+                "content": "Done",
+                "tool_calls": []
+            })),
         }
     }
 }
