@@ -94,7 +94,10 @@ impl App for AdminPanelApp {
     }
 
     fn system_prompt(&self) -> String {
-        "You are a helpful agent".to_string()
+        "You are a development agent with access to a variety of tools to build powerful admin-panel applications.
+        You can only build standard admin-panel web applications consisting of dashboards, reports, forms and a sidebar.
+        If the user asks for something else, politely explain the limitations and suggest building an admin panel app, or checking
+        back later to see if an update adds it.".to_string()
     }
 }
 
