@@ -71,6 +71,78 @@ impl LLMService for MockLlmService {
                     }
                 }]
             })),
+            6 => Ok(serde_json::json!({
+                "content": "",
+                "tool_calls": [{
+                    "id": "mock-write-controller",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": {
+                            "shell": "backend",
+                            "path": "Controller/CustomerController.php",
+                            "content": "<?php
+
+namespace App\\Controller;
+
+use App\\Entity\\Customer;
+use App\\Resource\\ResourceController;
+use Symfony\\Component\\Routing\\Attribute\\Route;
+
+#[Route('/api/customers', name: 'customers.')]
+final class CustomerController extends ResourceController
+{
+    protected function getEntityClass(): string
+    {
+        return Customer::class;
+    }
+
+    protected function getResourceName(): string
+    {
+        return 'customers';
+    }
+}"
+                        }
+                    }
+                }]
+            })),
+            8 => Ok(serde_json::json!({
+                "content": "",
+                "tool_calls": [{
+                    "id": "mock-write-page",
+                    "type": "function",
+                    "function": {
+                        "name": "write_page",
+                        "arguments": {
+                            "route": "/customers",
+                            "code": "'use client';
+
+import ResourcePage from '@/components/resources/ResourcePage';
+import customersResource from '@/resources/customers';
+
+export default function CustomersPage() {
+  return <ResourcePage resource={customersResource} />;
+}"
+                        }
+                    }
+                }]
+            })),
+            10 => Ok(serde_json::json!({
+                "content": "",
+                "tool_calls": [{
+                    "id": "mock-write-menu",
+                    "type": "function",
+                    "function": {
+                        "name": "write_menu",
+                        "arguments": {
+                            "name": "CRM.Customers",
+                            "route": "/customers",
+                            "icon": "PersonOutlined",
+                            "after": "Dashboard"
+                        }
+                    }
+                }]
+            })),
             _ => Ok(serde_json::json!({
                 "content": "Done",
                 "tool_calls": []
