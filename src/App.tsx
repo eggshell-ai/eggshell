@@ -136,13 +136,28 @@ function App() {
   const messages: ChatMessage[] = isSending
     ? [...persistedMessages, { role: "user", content: draft }, ...streamedMessages]
     : persistedMessages;
+  const lastAssistantIndex = messages.map(({ role }) => role).lastIndexOf("assistant");
+  const lastThoughtIndex = messages.map(({ role }) => role).lastIndexOf("thought");
+  const finalAssistantContent = lastAssistantIndex >= 0 ? messages[lastAssistantIndex].content.trim() : "";
+  const visibleMessages = messages.filter((message, messageIndex) => {
+    if (
+      messageIndex === lastThoughtIndex &&
+      finalAssistantContent &&
+      message.content.trim() === finalAssistantContent
+    ) return false;
+    if (message.content.trim()) return true;
+    if (!message.data || typeof message.data !== "object") return false;
+
+    const toolCalls = (message.data as { tool_calls?: unknown }).tool_calls;
+    return Array.isArray(toolCalls) && toolCalls.length > 0;
+  });
   // The log replaces the form while the shells run, and stays put afterwards when
   // they failed — the dialog is the only thing that can set an error while it is
   // open, so the lines and the reason belong together.
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
   if (!isSetupComplete) return <SetupPage onComplete={() => setIsSetupComplete(true)} />;
-  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={messages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} />;
+  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} />;
 
   return (
     <main className="home">
