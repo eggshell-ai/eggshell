@@ -101,22 +101,21 @@ impl AgentService {
                     continue;
                 };
 
-                emit(
-                    &options,
-                    "tool_call",
-                    json!({ "name": name, "arguments": args }),
-                );
-                log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_call", "toolName": name, "toolArgs": args }));
-                let call_id = tool_call
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-
                 // The project selected by the caller is authoritative. Tool
                 // schemas expose projectPath for compatibility, but relying on
                 // the model to supply it allows filesystem writes to fall back
                 // to a path relative to the app's current working directory.
                 let tool_args = with_project_path(args.clone(), options.project_path.as_deref());
+                emit(
+                    &options,
+                    "tool_call",
+                    json!({ "name": name, "arguments": tool_args }),
+                );
+                log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_call", "toolName": name, "toolArgs": tool_args }));
+                let call_id = tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 match tool.execute(tool_args.clone()).await {
                     Ok(result) => {
                         emit(
