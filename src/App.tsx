@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
 import SetupPage from "./SetupPage";
 import ProjectLogPanel, { ProgressLine } from "./ProjectLogPanel";
@@ -119,6 +120,7 @@ function App() {
     try {
       await invoke("start_project", { id: activeProject.id });
       await new Promise((resolve) => window.setTimeout(resolve, 3000));
+      await openUrl("http://localhost:4000");
     } catch (reason) { setError(String(reason)); }
     finally { setIsStarting(false); }
   }
