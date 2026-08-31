@@ -30,6 +30,7 @@ pub(crate) fn managed_node_present() -> bool {
     managed_node_dir().is_some_and(|directory| directory.join("node.exe").is_file())
 }
 
+#[cfg(windows)]
 pub(crate) fn managed_php_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("APPDATA").map(|root| {
         std::path::PathBuf::from(root)
@@ -38,6 +39,7 @@ pub(crate) fn managed_php_dir() -> Option<std::path::PathBuf> {
     })
 }
 
+#[cfg(windows)]
 pub(crate) fn managed_php_present() -> bool {
     managed_php_dir().is_some_and(|directory| directory.join("php.exe").is_file())
 }
