@@ -23,10 +23,6 @@ mod react;
 mod agent;
 pub use agent::{AgentRunResult, AgentService};
 
-#[path = "mock_llm.rs"]
-mod mock_llm;
-pub use mock_llm::MockLlmService;
-
 #[path = "crud_creation.rs"]
 mod crud_creation;
 pub use crud_creation::CrudCreationSkill;
