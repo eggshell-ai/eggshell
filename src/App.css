@@ -733,6 +733,25 @@ button {
 
 .report-options button:hover { background: #f2efff; color: #4e35ce; }
 
+.report-dialog {
+  width: min(100%, 460px);
+  padding: 28px;
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 22px 55px #1713244d;
+}
+
+.diagnostics-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 14px;
+  color: #4d4a58;
+  font-size: .9rem;
+}
+
+.diagnostics-check input { width: 16px; height: 16px; accent-color: #6246ea; }
+
 .page-header {
   display: flex;
   align-items: flex-end;

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { message } from "@tauri-apps/plugin-dialog";
+import ReportMenu from "./ReportMenu";
 
 type DependencyStatus = { node: boolean; php: boolean; composer: boolean; symfony: boolean; mysql: boolean };
 type DependencyKey = keyof DependencyStatus;
@@ -267,6 +268,7 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     </button>
     {restartNote}
     {logSection}
+    <ReportMenu screenName="provider" />
   </section></main>;
 
   return <main className="setup-page"><section className={cardClass} aria-labelledby="setup-title">
@@ -300,5 +302,6 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     </button>
     {restartNote}
     {logSection}
+    <ReportMenu screenName="Setup" />
   </section></main>;
 }
