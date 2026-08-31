@@ -1,6 +1,7 @@
 pub mod config;
 mod db;
 pub mod llm;
+pub mod logger;
 pub mod progress;
 mod setup;
 mod tools;
@@ -875,6 +876,17 @@ fn setup_log_history(log: tauri::State<'_, ProgressLog>) -> Vec<progress::LogLin
     log.history()
 }
 
+/// The accumulated central-log entries, oldest first, so a report can quote what
+/// the application has done since it started. Sensitive entries are excluded
+/// unless the caller explicitly asks for them.
+#[tauri::command]
+fn read_logs(
+    log: tauri::State<'_, ProgressLog>,
+    include_sensitive: Option<bool>,
+) -> Vec<logger::LogEntry> {
+    progress::read_logs(log.logger(), include_sensitive.unwrap_or(false))
+}
+
 /// What the repository ships in `config.yaml` where a real value belongs, so the
 /// setup screen offers an empty field rather than a placeholder to correct.
 const CONFIG_PLACEHOLDER: &str = "...";
@@ -1260,7 +1272,11 @@ pub fn run() {
                 }
             });
             let ollama = Arc::new(llm::OllamaService::new(config.ollama));
-            app.manage(llm::AgentService::new(ollama.clone()));
+            // The agent shares the central logger so its prompts and tool calls
+            // land in the same log the report menu reads from.
+            let agent =
+                llm::AgentService::new(ollama.clone()).with_logger(log.logger().clone());
+            app.manage(agent);
             app.manage(ollama);
 
             // Probing the port and waiting for the daemon both block, and the
@@ -1274,6 +1290,7 @@ pub fn run() {
             detect_dependencies,
             install_dependency,
             setup_log_history,
+            read_logs,
             load_setup_state,
             config::save_mysql_config,
             save_provider_config,

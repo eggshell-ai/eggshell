@@ -11,6 +11,8 @@ use std::io::{BufReader, Read};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::Emitter;
 
+use crate::logger::{LogEntry, LogLevel, Logger};
+
 /// How much of the past the log keeps for a window that has not been opened yet.
 /// Installers are chatty, and only the recent past explains what they did.
 const LOG_CAPACITY: usize = 800;
@@ -52,6 +54,10 @@ pub struct ProgressLog {
     event: &'static str,
     channel: &'static str,
     state: Arc<Mutex<LogState>>,
+    /// The central application logger. Every line is mirrored into it so the
+    /// accumulated entries survive this log's ring buffer and can be read back
+    /// for diagnostics and reporting.
+    logger: Logger,
 }
 
 impl ProgressLog {
@@ -61,6 +67,7 @@ impl ProgressLog {
             event,
             channel,
             state: Arc::new(Mutex::new(LogState::default())),
+            logger: Logger::new(),
         }
     }
 
@@ -72,7 +79,14 @@ impl ProgressLog {
             event: self.event,
             channel,
             state: Arc::clone(&self.state),
+            logger: self.logger.clone(),
         }
+    }
+
+    /// The central logger this log mirrors into, so the rest of the application
+    /// can record entries of its own next to the setup output.
+    pub fn logger(&self) -> &Logger {
+        &self.logger
     }
 
     pub fn line(&self, stream: &'static str, text: impl Into<String>) {
@@ -86,7 +100,7 @@ impl ProgressLog {
                 seq: state.next_seq,
                 channel: self.channel,
                 stream,
-                text,
+                text: text.clone(),
             };
             if state.lines.len() == LOG_CAPACITY {
                 state.lines.pop_front();
@@ -94,6 +108,9 @@ impl ProgressLog {
             state.lines.push_back(line.clone());
             line
         };
+        // The central logger keeps the entry for reporting; the level follows the
+        // stream, so an error line is an error entry everywhere it is read.
+        self.logger.push(level_for_stream(stream), line_text(&self.channel, stream, &text), false);
         // No window to emit to is not a reason to stop working.
         let _ = self.app.emit(self.event, line);
     }
@@ -110,6 +127,31 @@ impl ProgressLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// Maps a progress stream onto a logger level: only `error` lines are errors,
+/// `stderr` is a warning about whatever the command complained of, and the rest
+/// is information.
+fn level_for_stream(stream: &str) -> LogLevel {
+    match stream {
+        "error" => LogLevel::Error,
+        "stderr" => LogLevel::Warning,
+        _ => LogLevel::Info,
+    }
+}
+
+/// One line as the central logger records it: the channel and stream travel with
+/// the text so a report can tell a command from the output it produced.
+fn line_text(channel: &str, stream: &str, text: &str) -> String {
+    format!("{channel}[{stream}]: {text}")
+}
+
+/// Reads the accumulated central-log entries, oldest first, for reporting.
+/// Sensitive entries are excluded: a report should not carry secrets.
+pub fn read_logs(logger: &Logger, include_sensitive: bool) -> Vec<LogEntry> {
+    let mut entries = logger.read(usize::MAX, include_sensitive);
+    entries.reverse();
+    entries
 }
 
 /// Reads one of a child process's pipes to the end, logging each line as it
