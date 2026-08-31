@@ -58,6 +58,14 @@ impl Logger {
         }
     }
 
+    /// The process-wide logger, so code without a [`Logger`] handed to it —
+    /// dependency checks, shells, dev-only mocks — still accumulates its output
+    /// in the same central place instead of the terminal.
+    pub fn global() -> Logger {
+        static GLOBAL: std::sync::OnceLock<Logger> = std::sync::OnceLock::new();
+        GLOBAL.get_or_init(Logger::new).clone()
+    }
+
     pub fn info(&self, message: impl Into<String>, sensitive: bool) {
         self.push(LogLevel::Info, message.into(), sensitive);
     }
@@ -97,7 +105,8 @@ impl Logger {
         }
     }
 
-    fn push(&self, level: LogLevel, message: String, sensitive: bool) {
+    /// Pushes a log entry. `sensitive` entries are hidden from non-privileged streams.
+    pub fn push(&self, level: LogLevel, message: String, sensitive: bool) {
         let entry = LogEntry {
             level,
             message,

@@ -62,7 +62,10 @@ impl SymfonyShell {
     }
 
     fn start_server(cwd: &Path) -> io::Result<()> {
-        println!("SymfonyShell: Starting Symfony server in {}", cwd.display());
+        crate::logger::Logger::global().info(
+            format!("SymfonyShell: Starting Symfony server in {}", cwd.display()),
+            false,
+        );
 
         let mut command = if cfg!(windows) {
             let mut command = Command::new("cmd");
@@ -87,7 +90,10 @@ impl SymfonyShell {
         }
 
         let child = command.spawn()?;
-        println!("SymfonyShell: Symfony server started (PID {})", child.id());
+        crate::logger::Logger::global().info(
+            format!("SymfonyShell: Symfony server started (PID {})", child.id()),
+            false,
+        );
         drop(child);
         Ok(())
     }
@@ -170,20 +176,29 @@ fn copy_directory(source: &Path, destination: &Path, template_root: &Path) -> io
                 .unwrap_or(&source_path);
 
             if [".git", "vendor", "var"].contains(&file_name.as_ref()) {
-                println!("SymfonyShell: Skipping folder {file_name}");
+                crate::logger::Logger::global().info(
+                    format!("SymfonyShell: Skipping folder {file_name}"),
+                    false,
+                );
                 continue;
             }
             if relative_path == Path::new("config").join("jwt")
                 || relative_path.starts_with(Path::new("config").join("jwt"))
             {
-                println!("SymfonyShell: Skipping path {}", relative_path.display());
+                crate::logger::Logger::global().info(
+                    format!("SymfonyShell: Skipping path {}", relative_path.display()),
+                    false,
+                );
                 continue;
             }
 
             fs::create_dir_all(&destination_path)?;
             copy_directory(&source_path, &destination_path, template_root)?;
         } else if file_name == "composer.lock" {
-            println!("SymfonyShell: Skipping file {file_name}");
+            crate::logger::Logger::global().info(
+                format!("SymfonyShell: Skipping file {file_name}"),
+                false,
+            );
         } else {
             fs::copy(&source_path, &destination_path)?;
         }
@@ -285,23 +300,35 @@ fn persist_on_user_path(directory: &Path) {
 
     match output {
         Ok(output) if output.status.success() => {
-            println!("SymfonyShell: {} is on the user PATH", directory.display());
+            crate::logger::Logger::global().info(
+                format!("SymfonyShell: {} is on the user PATH", directory.display()),
+                false,
+            );
         }
         Ok(output) if output.status.code() == Some(3) => {
-            println!(
-                "SymfonyShell: leaving the user PATH alone because adding {} would exceed setx's 1024 character limit",
-                directory.display()
+            crate::logger::Logger::global().warning(
+                format!(
+                    "SymfonyShell: leaving the user PATH alone because adding {} would exceed setx's 1024 character limit",
+                    directory.display()
+                ),
+                false,
             );
         }
         Ok(output) => {
-            println!(
-                "SymfonyShell: could not add {} to the user PATH: {}",
-                directory.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
+            crate::logger::Logger::global().error(
+                format!(
+                    "SymfonyShell: could not add {} to the user PATH: {}",
+                    directory.display(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+                false,
             );
         }
         Err(error) => {
-            println!("SymfonyShell: could not run setx: {error}");
+            crate::logger::Logger::global().error(
+                format!("SymfonyShell: could not run setx: {error}"),
+                false,
+            );
         }
     }
 }
@@ -313,7 +340,6 @@ fn persist_on_user_path(directory: &Path) {
 /// explained.
 fn run_command_blocking(command: &str, cwd: &Path, log: &ProgressLog) -> LlmResult<()> {
     log.line("command", format!("$ {command}"));
-    println!("SymfonyShell: running \"{command}\" in {}", cwd.display());
 
     let mut process = if cfg!(windows) {
         let mut process = Command::new("cmd");
@@ -387,10 +413,6 @@ fn run_process_blocking(
 ) -> LlmResult<()> {
     let display_command = format!("{} {}", program, args.join(" "));
     log.line("command", format!("$ {display_command}"));
-    println!(
-        "SymfonyShell: running \"{display_command}\" in {}",
-        cwd.display()
-    );
 
     let mut process = Command::new(program);
     process

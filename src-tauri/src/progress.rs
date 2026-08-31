@@ -91,7 +91,6 @@ impl ProgressLog {
 
     pub fn line(&self, stream: &'static str, text: impl Into<String>) {
         let text = text.into();
-        println!("{}[{stream}]: {text}", self.channel);
 
         let line = {
             let mut state = self.lock();

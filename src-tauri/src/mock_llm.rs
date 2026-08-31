@@ -35,8 +35,10 @@ impl LLMService for MockLlmService {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value> {
-        println!("Length of messages");
-        println!("{}", messages.len().to_string());
+        crate::logger::Logger::global().info(
+            format!("Length of messages: {}", messages.len()),
+            false,
+        );
         match messages.len() {
             2 => Ok(serde_json::json!({
                 "content": "",

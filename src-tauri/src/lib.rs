@@ -157,7 +157,10 @@ fn executable_in_process_path(executable: &str) -> bool {
     match Command::new(locator).arg(executable).output() {
         Ok(output) => output.status.success(),
         Err(error) => {
-            println!("dependencies: could not run {locator} for {executable}: {error}");
+            logger::Logger::global().warning(
+                format!("dependencies: could not run {locator} for {executable}: {error}"),
+                false,
+            );
             false
         }
     }
@@ -179,7 +182,10 @@ fn executable_in_installed_path(executable: &str) -> bool {
     {
         Ok(output) => output.status.success(),
         Err(error) => {
-            println!("dependencies: could not refresh PATH for {executable}: {error}");
+            logger::Logger::global().warning(
+                format!("dependencies: could not refresh PATH for {executable}: {error}"),
+                false,
+            );
             false
         }
     }

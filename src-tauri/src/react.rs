@@ -51,7 +51,10 @@ impl ReactShell {
     }
 
     fn start_dev_server(cwd: &Path) -> io::Result<()> {
-        println!("ReactShell: Starting dev server in {}", cwd.display());
+        crate::logger::Logger::global().info(
+            format!("ReactShell: Starting dev server in {}", cwd.display()),
+            false,
+        );
 
         let mut command = npm_command(&["run", "dev"]);
         configure_environment(&mut command);
@@ -70,7 +73,10 @@ impl ReactShell {
         }
 
         let child = command.spawn()?;
-        println!("ReactShell: Dev server started (PID {})", child.id());
+        crate::logger::Logger::global().info(
+            format!("ReactShell: Dev server started (PID {})", child.id()),
+            false,
+        );
         drop(child);
         Ok(())
     }
@@ -132,9 +138,9 @@ fn copy_directory(source: &Path, destination: &Path) -> io::Result<()> {
 
         if source_path.is_dir() {
             if [".git", "node_modules"].contains(&file_name.to_string_lossy().as_ref()) {
-                println!(
-                    "ReactShell: Skipping folder {}",
-                    file_name.to_string_lossy()
+                crate::logger::Logger::global().info(
+                    format!("ReactShell: Skipping folder {}", file_name.to_string_lossy()),
+                    false,
                 );
                 continue;
             }
@@ -169,7 +175,6 @@ fn npm_command(args: &[&str]) -> Command {
 fn run_command_blocking(args: &[&str], cwd: &Path, log: &ProgressLog) -> LlmResult<()> {
     let label = format!("npm {}", args.join(" "));
     log.line("command", format!("$ {label}"));
-    println!("ReactShell: running \"{label}\" in {}", cwd.display());
 
     let mut command = npm_command(args);
     configure_environment(&mut command);
@@ -285,18 +290,33 @@ fn persist_on_user_path(directory: &Path) {
         .output()
     {
         Ok(output) if output.status.success() => {
-            println!("ReactShell: {} is on the user PATH", directory.display());
-        }
-        Ok(output) if output.status.code() == Some(3) => {
-            println!("ReactShell: leaving the user PATH alone because adding {} would exceed setx's 1024 character limit", directory.display());
-        }
-        Ok(output) => {
-            println!(
-                "ReactShell: could not add {} to the user PATH: {}",
-                directory.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
+            crate::logger::Logger::global().info(
+                format!("ReactShell: {} is on the user PATH", directory.display()),
+                false,
             );
         }
-        Err(error) => println!("ReactShell: could not run setx: {error}"),
+        Ok(output) if output.status.code() == Some(3) => {
+            crate::logger::Logger::global().warning(
+                format!(
+                    "ReactShell: leaving the user PATH alone because adding {} would exceed setx's 1024 character limit",
+                    directory.display()
+                ),
+                false,
+            );
+        }
+        Ok(output) => {
+            crate::logger::Logger::global().error(
+                format!(
+                    "ReactShell: could not add {} to the user PATH: {}",
+                    directory.display(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+                false,
+            );
+        }
+        Err(error) => crate::logger::Logger::global().error(
+            format!("ReactShell: could not run setx: {error}"),
+            false,
+        ),
     }
 }
