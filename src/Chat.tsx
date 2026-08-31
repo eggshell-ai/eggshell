@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import ReportMenu from "./ReportMenu";
 
 export type ChatMessage = {
   role: "user" | "assistant" | "thought" | "tool_call" | "tool_result";
@@ -115,5 +116,6 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     <aside className="login-details" aria-label="Admin login details"><p className="eyebrow">Admin login</p><dl><div><dt>Username</dt><dd>admin@dummy-project.com</dd></div><div><dt>Password</dt><dd>12345678</dd></div></dl></aside>
     <aside className="chat-sidebar"><button className="back-button" type="button" onClick={onBack}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{projectTitle}</h2></div><button className="start-button" type="button" onClick={onStart} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><button className="new-chat-button" type="button" onClick={onNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSessionId === session.id ? "session-row active" : "session-row"} key={session.id}><button className={activeSessionId === session.id ? "session-item active" : "session-item"} type="button" onClick={() => onSelectSession(session.id)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => onDeleteSession(session.id)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
     <section className="chat-panel"><header className="chat-header"><h1>{sessionTitle ?? "New session"}</h1><p>{sessionTitle ? "Dummy assistant" : "Start a conversation"}</p></header><div className="message-list" aria-live="polite">{!messages.length && <div className="chat-empty"><h2>How can I help?</h2><p>Send a message to begin.</p></div>}{renderedMessages}</div>{error && <p className="chat-error" role="alert">{error}</p>}<form className="composer" onSubmit={onSend}><input value={draft} onChange={(event) => onDraftChange(event.target.value)} disabled={isSending} placeholder="Message Eggshell…" aria-label="Message" /><button className="add-button" disabled={isSending || !draft.trim()} type="submit">{isSending ? "Sending…" : "Send"}</button></form></section>
+    <ReportMenu />
   </main>;
 }

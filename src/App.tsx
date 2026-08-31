@@ -7,6 +7,7 @@ import "./App.css";
 import SetupPage from "./SetupPage";
 import ProjectLogPanel, { ProgressLine } from "./ProjectLogPanel";
 import Chat, { ChatMessage, eventContent } from "./Chat";
+import ReportMenu from "./ReportMenu";
 
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
@@ -186,6 +187,7 @@ function App() {
         {projects.map((project) => <article className="project-tile" key={project.id} onClick={() => void openProject(project)}><div className="project-mark" aria-hidden="true">{project.title.slice(0, 1).toUpperCase()}</div><div className="project-info"><h2>{project.title}</h2><p>/{project.slug}</p><span title={project.path}>{project.path}</span></div><button className="delete-button" type="button" onClick={(event) => { event.stopPropagation(); void removeProject(project); }}>Delete</button></article>)}
         {!projects.length && <div className="empty-state">No projects yet. Add one to get started.</div>}
       </section>
+      <ReportMenu />
     </main>
   );
 }
