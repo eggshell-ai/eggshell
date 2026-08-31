@@ -104,6 +104,7 @@ impl Shell for SymfonyShell {
     async fn init(
         &self,
         project_dir: &str,
+        slug: &str,
         template_root: &Path,
         log: &ProgressLog,
         mysql_password: &str,
@@ -137,7 +138,7 @@ impl Shell for SymfonyShell {
         log.line("info", "JWT keypair generated");
 
         Self::run_php_command(
-            &["bin/console", "app:init", "--", mysql_password],
+            &["bin/console", "app:init", slug, slug, mysql_password],
             &target_path,
             &log,
         )

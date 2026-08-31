@@ -2,13 +2,14 @@ import { FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
 import SetupPage from "./SetupPage";
 import ProjectLogPanel, { ProgressLine } from "./ProjectLogPanel";
+import Chat, { ChatMessage, eventContent } from "./Chat";
 
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
-type Message = { role: "user" | "assistant" | "thought" | "tool_call" | "tool_result"; content: string; data?: unknown };
 type Session = { id: number; title: string; conversation_history: string };
 type SetupState = { setup_completed: boolean; model: string };
 const emptyProject: ProjectForm = { title: "", slug: "", path: "" };
@@ -28,7 +29,7 @@ function App() {
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
-  const [streamedMessages, setStreamedMessages] = useState<Message[]>([]);
+  const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
 
@@ -46,7 +47,7 @@ function App() {
     void listen<{ projectId: number; event: { type: string; data: unknown } }>("agent-event", ({ payload }) => {
       if (payload.projectId !== activeProject?.id || payload.event.type === "complete") return;
       setStreamedMessages((current) => [...current, {
-        role: payload.event.type as Message["role"],
+        role: payload.event.type as ChatMessage["role"],
         content: eventContent(payload.event.type, payload.event.data),
         data: payload.event.data,
       }]);
@@ -119,6 +120,7 @@ function App() {
     try {
       await invoke("start_project", { id: activeProject.id });
       await new Promise((resolve) => window.setTimeout(resolve, 3000));
+      await openUrl("http://localhost:4000");
     } catch (reason) { setError(String(reason)); }
     finally { setIsStarting(false); }
   }
@@ -132,20 +134,32 @@ function App() {
     } catch (reason) { setError(String(reason)); }
     finally { setIsSending(false); }
   }
-  const persistedMessages: Message[] = activeSession ? JSON.parse(activeSession.conversation_history) : [];
-  const messages: Message[] = isSending
+  const persistedMessages: ChatMessage[] = activeSession ? JSON.parse(activeSession.conversation_history) : [];
+  const messages: ChatMessage[] = isSending
     ? [...persistedMessages, { role: "user", content: draft }, ...streamedMessages]
     : persistedMessages;
+  const lastAssistantIndex = messages.map(({ role }) => role).lastIndexOf("assistant");
+  const lastThoughtIndex = messages.map(({ role }) => role).lastIndexOf("thought");
+  const finalAssistantContent = lastAssistantIndex >= 0 ? messages[lastAssistantIndex].content.trim() : "";
+  const visibleMessages = messages.filter((message, messageIndex) => {
+    if (
+      messageIndex === lastThoughtIndex &&
+      finalAssistantContent &&
+      message.content.trim() === finalAssistantContent
+    ) return false;
+    if (message.content.trim()) return true;
+    if (!message.data || typeof message.data !== "object") return false;
+
+    const toolCalls = (message.data as { tool_calls?: unknown }).tool_calls;
+    return Array.isArray(toolCalls) && toolCalls.length > 0;
+  });
   // The log replaces the form while the shells run, and stays put afterwards when
   // they failed — the dialog is the only thing that can set an error while it is
   // open, so the lines and the reason belong together.
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
   if (!isSetupComplete) return <SetupPage onComplete={() => setIsSetupComplete(true)} />;
-  if (activeProject) return <main className="chat-layout">
-    <aside className="chat-sidebar"><button className="back-button" type="button" onClick={() => { setIsStarting(false); setActiveProject(null); }}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{activeProject.title}</h2></div><button className="start-button" type="button" onClick={() => void startProject()} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><button className="new-chat-button" type="button" onClick={startNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSession?.id === session.id ? "session-row active" : "session-row"} key={session.id}><button className="session-item" type="button" onClick={() => setActiveSession(session)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => void removeSession(session)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
-    <section className="chat-panel"><header className="chat-header"><h1>{activeSession?.title ?? "New session"}</h1><p>{activeSession ? "Dummy assistant" : "Start a conversation"}</p></header><div className="message-list" aria-live="polite">{!messages.length && <div className="chat-empty"><h2>How can I help?</h2><p>Send a message to begin.</p></div>}{messages.map((message, index) => <article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Eggshell"}</span><p>{message.content}</p></article>)}</div>{error && <p className="chat-error" role="alert">{error}</p>}<form className="composer" onSubmit={sendMessage}><input value={draft} onChange={(event) => setDraft(event.target.value)} disabled={isSending} placeholder="Message Eggshell…" aria-label="Message" /><button className="add-button" disabled={isSending || !draft.trim()} type="submit">{isSending ? "Sending…" : "Send"}</button></form></section>
-  </main>;
+  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} />;
 
   return (
     <main className="home">
@@ -174,14 +188,6 @@ function App() {
       </section>
     </main>
   );
-}
-
-function eventContent(type: string, data: unknown) {
-  const eventData = data as { content?: string; name?: string; arguments?: unknown; result?: unknown };
-  if (type === "thought") return eventData.content ?? "";
-  if (type === "tool_call") return `${eventData.name ?? "tool"}(${JSON.stringify(eventData.arguments ?? {})})`;
-  if (type === "tool_result") return `${eventData.name ?? "tool"} returned ${JSON.stringify(eventData.result ?? {})}`;
-  return JSON.stringify(data);
 }
 
 export default App;

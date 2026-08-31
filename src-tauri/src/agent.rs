@@ -101,18 +101,22 @@ impl AgentService {
                     continue;
                 };
 
+                // The project selected by the caller is authoritative. Tool
+                // schemas expose projectPath for compatibility, but relying on
+                // the model to supply it allows filesystem writes to fall back
+                // to a path relative to the app's current working directory.
+                let tool_args = with_project_path(args.clone(), options.project_path.as_deref());
                 emit(
                     &options,
                     "tool_call",
-                    json!({ "name": name, "arguments": args }),
+                    json!({ "name": name, "arguments": tool_args }),
                 );
-                log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_call", "toolName": name, "toolArgs": args }));
+                log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_call", "toolName": name, "toolArgs": tool_args }));
                 let call_id = tool_call
                     .get("id")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
-
-                match tool.execute(args.clone()).await {
+                match tool.execute(tool_args.clone()).await {
                     Ok(result) => {
                         emit(
                             &options,
@@ -120,7 +124,7 @@ impl AgentService {
                             json!({ "name": name, "result": result }),
                         );
                         log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_result", "toolName": name, "toolResult": result }));
-                        messages.push(tool_message(call_id, name, args, result));
+                        messages.push(tool_message(call_id, name, tool_args, result));
                     }
                     Err(error) => {
                         let error = error.to_string();
@@ -131,7 +135,7 @@ impl AgentService {
                             json!({ "name": name, "result": result }),
                         );
                         log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_error", "toolName": name, "error": result["error"] }));
-                        messages.push(tool_message(call_id, name, args, result));
+                        messages.push(tool_message(call_id, name, tool_args, result));
                     }
                 }
             }
@@ -262,6 +266,21 @@ fn tool_message(id: Option<String>, name: &str, args: Value, result: Value) -> L
         tool_args: Some(args),
         tool_calls: None,
     }
+}
+
+fn with_project_path(args: Value, project_path: Option<&str>) -> Value {
+    let Some(project_path) = project_path.filter(|path| !path.trim().is_empty()) else {
+        return args;
+    };
+    let mut args = match args {
+        Value::Object(args) => args,
+        args => return args,
+    };
+    args.insert(
+        "projectPath".to_string(),
+        Value::String(project_path.to_owned()),
+    );
+    Value::Object(args)
 }
 
 fn emit(options: &AgentOptions, kind: &str, data: Value) {

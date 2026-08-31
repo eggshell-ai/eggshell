@@ -87,6 +87,7 @@ impl Shell for ReactShell {
     async fn init(
         &self,
         project_path: &str,
+        _slug: &str,
         template_root: &Path,
         log: &ProgressLog,
         _mysql_password: &str,

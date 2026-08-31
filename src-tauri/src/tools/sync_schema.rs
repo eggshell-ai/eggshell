@@ -73,12 +73,12 @@ impl Tool for SyncSchemaTool {
         if resources.is_empty() {
             return Err("resources must contain at least one resource".into());
         }
-        let project = PathBuf::from(
-            args.get("projectPath")
-                .and_then(Value::as_str)
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or("content/dummy-project"),
-        );
+        let project = args
+            .get("projectPath")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("content").join("dummy-project"));
         let mut frontend = Vec::new();
         let mut backend = Vec::new();
         for resource in &resources {

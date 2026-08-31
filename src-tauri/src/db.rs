@@ -183,6 +183,10 @@ impl SessionsRepository {
         };
 
         let app = llm::AdminPanelApp;
+        let project_path = sqlx::query_scalar::<_, String>("SELECT path FROM projects WHERE id = ?")
+            .bind(project_id)
+            .fetch_one(pool)
+            .await?;
         let streamed_messages = Arc::new(Mutex::new(Vec::new()));
         let callback_messages = Arc::clone(&streamed_messages);
         let callback_sink = Arc::clone(&event_sink);
@@ -191,6 +195,7 @@ impl SessionsRepository {
                 conversation_messages(&messages, &app.system_prompt()),
                 app.tools(),
                 AgentOptions {
+                    project_path: Some(project_path),
                     on_event: Some(Box::new(move |event| {
                         let event_type =
                             event.get("type").and_then(Value::as_str).unwrap_or("event");
