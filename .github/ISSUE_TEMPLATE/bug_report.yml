@@ -1,0 +1,60 @@
+name: Bug Report
+description: Report a reproducible problem with the application
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please provide enough detail for us to reproduce and investigate it.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clearly describe the problem and what you expected to happen.
+      placeholder: Tell us what went wrong and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest set of steps that reliably reproduces the issue.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Which version of the application are you using?
+      placeholder: e.g. 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include your operating system and relevant hardware or runtime details.
+      placeholder: e.g. Windows 11, Apple Silicon, Node 22
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant logs or attach screenshots. Please remove sensitive information.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues to make sure this has not already been reported.
+          required: true
+        - label: I have included enough information to reproduce the issue.
+          required: true

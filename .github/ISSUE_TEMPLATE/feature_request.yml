@@ -1,0 +1,43 @@
+name: Feature Request
+description: Suggest an idea or improvement for the application
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Please explain the problem and how your idea would help.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What problem or limitation would this feature address?
+      placeholder: Describe the use case or pain point.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or behavior you would like to see.
+      placeholder: Explain how you think this should work.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What alternative solutions or workarounds have you tried?
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add mockups, examples, links, or any other relevant details.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues to make sure this has not already been requested.
+          required: true
