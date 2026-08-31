@@ -25,16 +25,6 @@ body:
         1. Open ...
         2. Select ...
         3. See ...
-    validations:
-      required: true
-  - type: input
-    id: version
-    attributes:
-      label: Version
-      description: Which version of the application are you using?
-      placeholder: e.g. 1.0.0
-    validations:
-      required: true
   - type: input
     id: environment
     attributes:
