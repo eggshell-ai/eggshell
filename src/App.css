@@ -52,6 +52,10 @@
   padding: 24px 14px;
   border-right: 1px solid #e5e3ed;
   background: #faf9fc;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .back-button,
@@ -250,9 +254,8 @@
 }
 
 .chat-layout { position: relative; }
-.chat-layout > .login-details { position: absolute; z-index: 1; left: 14px; top: 175px; width: 252px; box-sizing: border-box; }
 
-.login-details { padding: 12px; border: 1px solid #e5e3ed; border-radius: 9px; background: #fff; }
+.login-details { margin: 8px 0 16px; padding: 12px; border: 1px solid #e5e3ed; border-radius: 9px; background: #fff; }
 .login-details .eyebrow { margin-bottom: 10px; }
 .login-details dl { display: grid; gap: 8px; margin: 0; }
 .login-details dt { color: #858291; font-size: .7rem; font-weight: 700; text-transform: uppercase; }
