@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { message } from "@tauri-apps/plugin-dialog";
+import ReportMenu from "./ReportMenu";
 
 type DependencyStatus = { node: boolean; php: boolean; composer: boolean; symfony: boolean; mysql: boolean };
 type DependencyKey = keyof DependencyStatus;
@@ -13,6 +14,8 @@ type SetupStep = "dependencies" | "provider";
 type Provider = { key: "ollama"; name: string; detail: string };
 // Mirrors `setup::LogLine`: `stream` is what produced the line, and the panel colours by it.
 type LogLine = { seq: number; stream: "info" | "command" | "stdout" | "stderr" | "error"; text: string };
+// Mirrors `logger::LogEntry`: the central log the backend accumulates for reporting.
+type LogEntry = { level: "info" | "warning" | "error"; message: string; sensitive: boolean };
 
 const dependencies: Dependency[] = [
   { key: "node", name: "Node JS", version: "24+" },
@@ -47,6 +50,7 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [logLines, setLogLines] = useState<LogLine[]>([]);
   const [isLogOpen, setIsLogOpen] = useState(false);
+  const [accumulatedLogs, setAccumulatedLogs] = useState<LogEntry[]>([]);
   const logRef = useRef<HTMLDivElement | null>(null);
   // Following the output is only welcome while the user is already at the bottom;
   // yanking the view away from a line they scrolled back to read is not.
@@ -113,6 +117,16 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
       .then(({ model: configured }) => setModel((current) => current || configured))
       .catch((error: unknown) => console.error("[SetupPage] load_setup_state rejected", { error }));
   }, []);
+
+  // The central logger accumulates everything the backend has recorded, so the
+  // report menu can quote it. Refreshed whenever the log panel is opened, which
+  // is roughly when a person having trouble would go looking.
+  useEffect(() => {
+    if (!isLogOpen) return;
+    void invoke<LogEntry[]>("read_logs")
+      .then(setAccumulatedLogs)
+      .catch((error: unknown) => console.error("[SetupPage] read_logs rejected", { error }));
+  }, [isLogOpen, logLines.length]);
 
   async function setup() {
     setIsSettingUp(true); setFailures([]);
@@ -267,6 +281,7 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     </button>
     {restartNote}
     {logSection}
+    <ReportMenu screenName="provider" accumulatedLogs={accumulatedLogs} />
   </section></main>;
 
   return <main className="setup-page"><section className={cardClass} aria-labelledby="setup-title">
@@ -300,5 +315,6 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     </button>
     {restartNote}
     {logSection}
+    <ReportMenu screenName="Setup" accumulatedLogs={accumulatedLogs} />
   </section></main>;
 }

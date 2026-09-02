@@ -678,10 +678,79 @@ button {
 }
 
 .home {
+  position: relative;
   max-width: 1050px;
   margin: 0 auto;
   padding: 76px 32px;
 }
+
+.report-menu {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.report-button {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: #6246ea;
+  font-size: 1.25rem;
+  box-shadow: 0 8px 20px #6246ea45;
+}
+
+.report-button:hover { background: #5338dd; }
+
+.report-options {
+  display: grid;
+  gap: 4px;
+  min-width: 172px;
+  padding: 6px;
+  border: 1px solid #e5e3ed;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 10px 28px #16142a1c;
+}
+
+.report-options button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #4d4a58;
+  background: transparent;
+  font-size: .84rem;
+  font-weight: 650;
+  text-align: left;
+}
+
+.report-options button:hover { background: #f2efff; color: #4e35ce; }
+
+.report-dialog {
+  width: min(100%, 460px);
+  padding: 28px;
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 22px 55px #1713244d;
+}
+
+.diagnostics-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 14px;
+  color: #4d4a58;
+  font-size: .9rem;
+}
+
+.diagnostics-check input { width: 16px; height: 16px; accent-color: #6246ea; }
 
 .page-header {
   display: flex;
@@ -959,5 +1028,10 @@ input {
 
   .project-dialog {
     padding: 22px;
+  }
+
+  .report-menu {
+    right: 16px;
+    bottom: 16px;
   }
 }

@@ -25,16 +25,6 @@ body:
         1. Open ...
         2. Select ...
         3. See ...
-    validations:
-      required: true
-  - type: input
-    id: version
-    attributes:
-      label: Version
-      description: Which version of the application are you using?
-      placeholder: e.g. 1.0.0
-    validations:
-      required: true
   - type: input
     id: environment
     attributes:
@@ -54,7 +44,5 @@ body:
     attributes:
       label: Checklist
       options:
-        - label: I have searched existing issues to make sure this has not already been reported.
-          required: true
         - label: I have included enough information to reproduce the issue.
           required: true

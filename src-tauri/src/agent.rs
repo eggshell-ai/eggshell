@@ -1,4 +1,5 @@
 use super::{AgentOptions, LLMMessage, LLMMessageRole, LLMService, LlmResult, Skill, Tool};
+use crate::logger::Logger;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -23,6 +24,8 @@ pub struct AgentRunResult {
 pub struct AgentService {
     llm_service: Arc<dyn LLMService>,
     skills: Vec<Box<dyn Skill>>,
+    /// Central logger; agent activity is mirrored into it so reports can quote it.
+    logger: Logger,
 }
 
 impl AgentService {
@@ -34,7 +37,19 @@ impl AgentService {
         Self {
             llm_service,
             skills,
+            logger: Logger::new(),
         }
+    }
+
+    /// Shares the central logger so agent entries land in the same log the rest
+    /// of the application reports from.
+    pub fn with_logger(mut self, logger: Logger) -> Self {
+        self.logger = logger;
+        self
+    }
+
+    pub fn logger(&self) -> &Logger {
+        &self.logger
     }
 
     /// Runs an existing conversation. Include system and user messages in
@@ -46,6 +61,15 @@ impl AgentService {
         options: AgentOptions,
     ) -> LlmResult<AgentRunResult> {
         self.attach_skills_summary(&mut messages);
+
+        // The prompts themselves are sensitive: they only travel into the
+        // diagnostics when the user explicitly opts in.
+        for message in &messages {
+            self.logger.info(
+                format!("agent prompt [{}] {}", role_name(&message.role), message.content),
+                true,
+            );
+        }
 
         let max_turns = options.max_turns.unwrap_or(DEFAULT_MAX_TURNS);
         let context = options.context.clone().unwrap_or_default();
@@ -74,6 +98,7 @@ impl AgentService {
                 .unwrap_or_default();
 
             final_content = content.clone();
+            self.logger.info(format!("agent turn {turn} thought: {content}"), true);
             emit(
                 &options,
                 "thought",
@@ -106,6 +131,10 @@ impl AgentService {
                 // the model to supply it allows filesystem writes to fall back
                 // to a path relative to the app's current working directory.
                 let tool_args = with_project_path(args.clone(), options.project_path.as_deref());
+                self.logger.info(
+                    format!("agent turn {turn} tool call {name}: {tool_args}"),
+                    true,
+                );
                 emit(
                     &options,
                     "tool_call",
@@ -118,6 +147,10 @@ impl AgentService {
                     .map(str::to_owned);
                 match tool.execute(tool_args.clone()).await {
                     Ok(result) => {
+                        self.logger.info(
+                            format!("agent turn {turn} tool result {name}: {result}"),
+                            true,
+                        );
                         emit(
                             &options,
                             "tool_result",
@@ -128,6 +161,8 @@ impl AgentService {
                     }
                     Err(error) => {
                         let error = error.to_string();
+                        self.logger
+                            .error(format!("agent turn {turn} tool {name} failed: {error}"), true);
                         let result = json!({ "error": error });
                         emit(
                             &options,
@@ -232,6 +267,15 @@ impl AgentService {
             serde_json::to_string_pretty(&data)?,
         )?;
         Ok(())
+    }
+}
+
+fn role_name(role: &LLMMessageRole) -> &'static str {
+    match role {
+        LLMMessageRole::System => "system",
+        LLMMessageRole::User => "user",
+        LLMMessageRole::Assistant => "assistant",
+        LLMMessageRole::Tool => "tool",
     }
 }
 
