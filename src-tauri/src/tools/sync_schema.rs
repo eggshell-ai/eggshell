@@ -25,6 +25,7 @@ struct Field {
     password: Option<bool>,
     accept: Option<String>,
     max_size: Option<u64>,
+    min_size: Option<u64>,
     resource: Option<Value>,
     map: Option<String>,
     columns: Option<Value>,
@@ -168,6 +169,12 @@ fn field_js(f: &Field) -> String {
     if let Some(v) = f.length {
         s.push_str(&format!("\n      .length({})", v));
     }
+    if let Some(v) = f.min_size {
+        s.push_str(&format!("\n      .minSize({})", v));
+    }
+    if let Some(v) = f.max_size {
+        s.push_str(&format!("\n      .maxSize({})", v));
+    }
     flag!("required", f.required);
     flag!("email", f.email);
     flag!("unique", f.unique);
@@ -178,13 +185,40 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;";
+    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
     let props = r
         .fields
         .iter()
         .map(|f| {
+            let mut asserts = String::new();
+            if f.required.unwrap_or(false) {
+                asserts.push_str("    #[Assert\\NotBlank]\n");
+            }
+            if f.email.unwrap_or(false) {
+                asserts.push_str(
+                    "    #[Assert\\Email(\n        message: 'The email {{ value }} is not a valid email.',\n    )]\n",
+                );
+            }
+            if f.min_size.is_some() || f.max_size.is_some() {
+                let mut constraint = String::from("    #[Assert\\Length(\n");
+                if let Some(min) = f.min_size {
+                    constraint.push_str(&format!(
+                        "        min: {},\n        minMessage: 'The value must be at least {{{{ limit }}}} characters long',\n",
+                        min
+                    ));
+                }
+                if let Some(max) = f.max_size {
+                    constraint.push_str(&format!(
+                        "        max: {},\n        maxMessage: 'The value can be at most {{{{ limit }}}} characters',\n",
+                        max
+                    ));
+                }
+                constraint.push_str("    )]\n");
+                asserts.push_str(&constraint);
+            }
             format!(
-                "    #[ORM\\Column{}]\n    public ?{} ${} = null;",
+                "{}    #[ORM\\Column{}]\n    public ?{} ${} = null;",
+                asserts,
                 if f.unique.unwrap_or(false) {
                     "(unique: true)"
                 } else {

@@ -11,6 +11,8 @@ export interface FieldConfig {
   required?: boolean;
   columns?: any[];
   map?: string;
+  minSize?: number;
+  maxSize?: number;
   readonly?: boolean;
   compute?: (values: any) => any;
   [key: string]: any;
@@ -28,6 +30,8 @@ export interface Field {
   required(): Field;
   columns(columns: any[]): Field;
   map(map: string): Field;
+  minSize(min: number): Field;
+  maxSize(max: number): Field;
   readonly(isReadonly?: boolean): Field;
   compute(fn: (values: any) => any): Field;
 }

@@ -422,7 +422,46 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
     if (field.type === 'email') {
       rules.push({ type: 'email', message: 'Please enter a valid email' });
     }
-    
+
+    if (field.minSize !== undefined || field.maxSize !== undefined) {
+      const isNumberField = field.type === 'number';
+      const valueLabel = isNumberField ? 'value' : 'length';
+      if (field.minSize !== undefined) {
+        rules.push({
+          validator: (_: any, value: any) => {
+            if (value === undefined || value === null || value === '') {
+              return Promise.resolve();
+            }
+            const length = isNumberField ? Number(value) : String(value).length;
+            if (length < field.minSize!) {
+              const unit = isNumberField ? '' : ' characters';
+              return Promise.reject(
+                new Error(`${field.label || field.name} must be at least ${field.minSize}${unit}`)
+              );
+            }
+            return Promise.resolve();
+          },
+        });
+      }
+      if (field.maxSize !== undefined) {
+        rules.push({
+          validator: (_: any, value: any) => {
+            if (value === undefined || value === null || value === '') {
+              return Promise.resolve();
+            }
+            const length = isNumberField ? Number(value) : String(value).length;
+            if (length > field.maxSize!) {
+              const unit = isNumberField ? '' : ' characters';
+              return Promise.reject(
+                new Error(`${field.label || field.name} must be at most ${field.maxSize}${unit}`)
+              );
+            }
+            return Promise.resolve();
+          },
+        });
+      }
+    }
+
     return rules;
   };
 

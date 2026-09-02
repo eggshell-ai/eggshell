@@ -72,6 +72,16 @@ class FieldBuilder implements Field {
     return this;
   }
 
+  minSize(min: number): Field {
+    this._config.minSize = min;
+    return this;
+  }
+
+  maxSize(max: number): Field {
+    this._config.maxSize = max;
+    return this;
+  }
+
   readonly(isReadonly: boolean = true): Field {
     this._config.readonly = isReadonly;
     return this;
