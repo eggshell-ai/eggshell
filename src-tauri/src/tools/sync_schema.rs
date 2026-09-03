@@ -23,6 +23,7 @@ struct Field {
     source: Option<String>,
     sortable: Option<bool>,
     searchable: Option<bool>,
+    filterable: Option<bool>,
     password: Option<bool>,
     accept: Option<String>,
     max_size: Option<u64>,
@@ -186,6 +187,7 @@ fn field_js(f: &Field) -> String {
     flag!("unique", f.unique);
     flag!("sortable", f.sortable);
     flag!("searchable", f.searchable);
+    flag!("filterable", f.filterable);
     flag!("password", f.password);
     s
 }

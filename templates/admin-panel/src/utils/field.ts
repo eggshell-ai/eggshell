@@ -37,6 +37,11 @@ class FieldBuilder implements Field {
     return this;
   }
 
+  filterable(): Field {
+    this._config.filterable = true;
+    return this;
+  }
+
   required(): Field {
     this._config.validations = {
       ...this._config.validations,

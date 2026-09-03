@@ -1,9 +1,11 @@
 'use client';
 
-import React from 'react';
-import { Form } from 'antd';
+import React, { useState } from 'react';
+import { Form, Button, Space } from 'antd';
+import { FilterOutlined, SearchOutlined } from '@ant-design/icons';
 import type { Resource } from '../../types/resource';
 import FormField from './FormField';
+import FilterField from './FilterField';
 
 interface ResourceFormProps {
   resource: Resource;
@@ -12,6 +14,115 @@ interface ResourceFormProps {
   excludeFields?: string[];
   onFinish?: (values: any) => void | Promise<void>;
 }
+
+interface ResourceFilterFormProps {
+  resource: Resource;
+  filters: Record<string, any> | null;
+  onApply: (filters: Record<string, any> | null) => void;
+}
+
+/**
+ * Filtration form shown when the filter button is clicked.
+ * Only renders fields marked as `filterable: true`.
+ */
+const ResourceFilterForm: React.FC<ResourceFilterFormProps> = ({
+  resource,
+  filters,
+  onApply,
+}) => {
+  const [form] = Form.useForm();
+
+  const filterFields = resource.fields.filter(
+    (field) => field.filterable === true
+  );
+
+  React.useEffect(() => {
+    if (filters) {
+      form.setFieldsValue(filters);
+    } else {
+      form.resetFields();
+    }
+  }, [filters]);
+
+  const handleOk = () => {
+    const values = form.getFieldsValue();
+    const payload = buildFilterPayload(values, filterFields);
+    onApply(Object.keys(payload).length > 0 ? payload : null);
+  };
+
+  const handleReset = () => {
+    form.resetFields();
+    onApply(null);
+  };
+
+  return (
+    <div
+      style={{
+        border: '1px solid #f0f0f0',
+        borderRadius: 8,
+        padding: 16,
+        marginBottom: 16,
+        backgroundColor: '#fafafa',
+      }}
+    >
+      <Form form={form} layout="vertical">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '0 16px' }}>
+          {filterFields.map((field) => (
+            <FilterField key={field.name} field={field} />
+          ))}
+        </div>
+        <Space style={{ marginTop: 8 }}>
+          <Button type="primary" icon={<SearchOutlined />} onClick={handleOk}>
+            OK
+          </Button>
+          <Button onClick={handleReset}>Reset</Button>
+        </Space>
+      </Form>
+    </div>
+  );
+};
+
+/**
+ * Converts raw filter form values into a query payload for the server.
+ *
+ * - Text fields with "Is Empty" checked produce `{ __isEmpty: true }`
+ * - Boolean fields with "yes"/"no" produce `true`/`false`; "any" is skipped
+ * - Empty/undefined values are dropped
+ */
+export const buildFilterPayload = (
+  values: Record<string, any>,
+  fields: any[]
+): Record<string, any> => {
+  const payload: Record<string, any> = {};
+
+  fields.forEach((field) => {
+    const isEmpty = values[`${field.name}__isEmpty`] === true;
+
+    if (isEmpty) {
+      payload[field.name] = { __isEmpty: true };
+      return;
+    }
+
+    const value = values[field.name];
+    if (value === undefined || value === null || value === '') {
+      return;
+    }
+
+    if (field.type === 'boolean') {
+      if (value === 'yes') {
+        payload[field.name] = true;
+      } else if (value === 'no') {
+        payload[field.name] = false;
+      }
+      // 'any' or anything else means no filtering
+      return;
+    }
+
+    payload[field.name] = value;
+  });
+
+  return payload;
+};
 
 const ResourceForm: React.FC<ResourceFormProps> = ({
   resource,
@@ -98,3 +209,5 @@ export const processResourceFormValues = (values: any, fields: any[]) => {
 };
 
 export default ResourceForm;
+
+export { ResourceFilterForm };

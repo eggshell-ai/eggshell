@@ -181,9 +181,7 @@ Use `filterable: true` to generate standard filters:
 }
 ```
 
-Boolean filters should provide All / Active / Inactive behavior.
-
-Search and filters should work together.
+While search allow a single field to fuzzy-search within multiple text fields, filters provide explicit control and easier searching in boolean fields.
 
 ## Detail/View Pages
 

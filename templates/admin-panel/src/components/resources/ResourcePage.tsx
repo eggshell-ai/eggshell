@@ -5,7 +5,7 @@ import { Modal, Form, message, Button, Space } from 'antd';
 import { EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { Resource } from '../../types/resource';
 import ResourceGrid from '../crud/ResourceGrid';
-import ResourceForm, { processResourceFormValues } from './ResourceForm';
+import ResourceForm, { processResourceFormValues, ResourceFilterForm } from './ResourceForm';
 import apiService from '../../api/apiService';
 import authService from '../../services/authService';
 
@@ -19,6 +19,7 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<any>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [filters, setFilters] = useState<Record<string, any> | null>(null);
   const [form] = Form.useForm();
   const [addForm] = Form.useForm();
   const [permissions, setPermissions] = useState({
@@ -149,16 +150,39 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
     ),
   };
 
+  const hasFilterableFields = resource.fields.some(
+    (field) => field.filterable === true
+  );
+
+  const handleApplyFilters = (newFilters: Record<string, any> | null) => {
+    setFilters(newFilters);
+  };
+
+  const handleClearFilters = () => {
+    setFilters(null);
+  };
+
   return (
     <div>
       <h1>{resource.name}</h1>
       <ResourceGrid
-        source={() => resource.service.list()}
+        source={() => resource.service.list(filters ? { params: { filters } } : undefined)}
         fields={resource.fields}
         columns={permissions.canEdit || permissions.canDelete ? [actionsColumn] : undefined}
         onAdd={permissions.canCreate ? handleAdd : undefined}
         onBulkDelete={permissions.canDelete ? handleBulkDelete : undefined}
         searchPlaceholder={`Search ${resource.name}...`}
+        filterPanel={
+          hasFilterableFields ? (
+            <ResourceFilterForm
+              resource={resource}
+              filters={filters}
+              onApply={handleApplyFilters}
+            />
+          ) : undefined
+        }
+        filters={filters}
+        onClearFilters={hasFilterableFields ? handleClearFilters : undefined}
       />
 
       <Modal

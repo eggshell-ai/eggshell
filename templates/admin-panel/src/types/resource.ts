@@ -8,6 +8,7 @@ export interface FieldConfig {
   resource?: Resource | any;
   table?: boolean;
   form?: boolean;
+  filterable?: boolean;
   required?: boolean;
   columns?: any[];
   map?: string;
@@ -28,6 +29,7 @@ export interface Field {
   resource(resource: Resource | any): Field;
   table(): Field;
   form(): Field;
+  filterable(): Field;
   required(): Field;
   columns(columns: any[]): Field;
   map(map: string): Field;

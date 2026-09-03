@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Input, Space, Typography, Tag, Badge, Image } from 'antd';
 import type { ColumnsType, TableProps } from 'antd/es/table';
-import { PlusOutlined } from '@ant-design/icons';
+import { PlusOutlined, FilterOutlined, CloseCircleFilled } from '@ant-design/icons';
 import type { FieldConfig } from '../../types/resource';
 import apiService from '../../api/apiService';
 
@@ -15,6 +15,10 @@ interface ResourceGridProps {
   onAdd?: () => void;
   onBulkDelete?: (selectedRowKeys: React.Key[]) => Promise<void>;
   searchPlaceholder?: string;
+  onSearch?: (value: string) => void;
+  filterPanel?: React.ReactNode;
+  filters?: Record<string, any> | null;
+  onClearFilters?: () => void;
 }
 
 export default function ResourceGrid({
@@ -24,12 +28,20 @@ export default function ResourceGrid({
   rowKey = 'id',
   onAdd,
   onBulkDelete,
-  searchPlaceholder = 'Search...'
+  searchPlaceholder = 'Search...',
+  onSearch,
+  filterPanel,
+  filters,
+  onClearFilters,
 }: ResourceGridProps) {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
+
+  const activeFilterCount = filters ? Object.keys(filters).length : 0;
+  const hasFilterPanel = Boolean(filterPanel);
 
   useEffect(() => {
     fetchData();
@@ -209,6 +221,7 @@ export default function ResourceGrid({
 
   return (
     <div>
+      {filterPanelOpen && filterPanel}
       <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center' }}>
         {selectedRowKeys.length > 0 && (
           <Space style={{ marginRight: 16 }}>
@@ -219,12 +232,36 @@ export default function ResourceGrid({
           </Space>
         )}
         <Space style={{ marginLeft: 'auto' }}>
+          {hasFilterPanel && (
+            <Badge count={activeFilterCount} size="small" offset={[-2, 2]}>
+              <Button
+                icon={<FilterOutlined />}
+                onClick={() => setFilterPanelOpen((open) => !open)}
+              >
+                Filter
+              </Button>
+            </Badge>
+          )}
+          <Input.Search
+            placeholder={searchPlaceholder}
+            style={{ width: 250 }}
+            onSearch={onSearch ? (value) => onSearch(value) : undefined}
+            allowClear
+          />
+          {activeFilterCount > 0 && onClearFilters && (
+            <Button
+              type="text"
+              icon={<CloseCircleFilled style={{ color: '#faad14' }} />}
+              onClick={onClearFilters}
+            >
+              Clear Filters
+            </Button>
+          )}
           {onAdd && (
             <Button type="primary" icon={<PlusOutlined />} onClick={onAdd}>
               Add
             </Button>
           )}
-          <Input.Search placeholder={searchPlaceholder} style={{ width: 250 }} />
         </Space>
       </div>
 
