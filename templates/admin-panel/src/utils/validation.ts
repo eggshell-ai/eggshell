@@ -32,6 +32,7 @@ const buildBaseSchema = (field: FieldConfig): z.ZodTypeAny => {
 export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
   let schema = buildBaseSchema(field);
   const validations = field.validations || {};
+  const messages = field.messages || {};
 
   if (validations.required) {
     // required marker — handled via refine for emptiness
@@ -40,17 +41,17 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
       if (typeof val === 'string') return val.trim().length > 0;
       if (Array.isArray(val)) return val.length > 0;
       return true;
-    }, { message: `Please enter ${field.label || field.name}` });
+    }, { message: messages.required || `Please enter ${field.label || field.name}` });
   }
 
   if (validations.length && field.type !== 'number') {
     const { min, max } = validations.length;
     let strSchema = z.string();
     if (min !== undefined) {
-      strSchema = strSchema.min(min, { message: `${field.label || field.name} must be at least ${min} characters` });
+      strSchema = strSchema.min(min, { message: messages.minLength || `${field.label || field.name} must be at least ${min} characters` });
     }
     if (max !== undefined) {
-      strSchema = strSchema.max(max, { message: `${field.label || field.name} must be at most ${max} characters` });
+      strSchema = strSchema.max(max, { message: messages.maxLength || `${field.label || field.name} must be at most ${max} characters` });
     }
     if (!validations.required) {
       strSchema = strSchema.optional().or(z.literal('')) as any;
@@ -60,12 +61,12 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
 
   if (validations.length && field.type === 'number') {
     const { min, max } = validations.length;
-    let numSchema = z.number({ invalid_type_error: `Please enter a valid ${field.label || field.name}` });
+    let numSchema = z.number({ invalid_type_error: messages.number || `Please enter a valid ${field.label || field.name}` });
     if (min !== undefined) {
-      numSchema = numSchema.min(min, { message: `${field.label || field.name} must be at least ${min}` });
+      numSchema = numSchema.min(min, { message: messages.min || `${field.label || field.name} must be at least ${min}` });
     }
     if (max !== undefined) {
-      numSchema = numSchema.max(max, { message: `${field.label || field.name} must be at most ${max}` });
+      numSchema = numSchema.max(max, { message: messages.max || `${field.label || field.name} must be at most ${max}` });
     }
     if (!validations.required) {
       numSchema = numSchema.optional() as any;
@@ -75,7 +76,7 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
 
   // Built-in type rules
   if (field.type === 'email' || validations.email) {
-    let emailSchema = z.string().email({ message: 'Please enter a valid email' });
+    let emailSchema = z.string().email({ message: messages.email || 'Please enter a valid email' });
     if (!validations.required) {
       emailSchema = emailSchema.optional().or(z.literal('')) as any;
     }
@@ -85,7 +86,7 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
   // Phone (E.164) validation
   if (field.type === 'phone' || validations.phone) {
     let phoneSchema = z.string().regex(/^\+[1-9]\d{1,14}$/, {
-      message: `Please enter a valid phone number (E.164 format, e.g. +14155552671)`,
+      message: messages.phone || `Please enter a valid phone number (E.164 format, e.g. +14155552671)`,
     });
     if (!validations.required) {
       phoneSchema = phoneSchema.optional().or(z.literal('')) as any;

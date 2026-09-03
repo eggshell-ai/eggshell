@@ -35,6 +35,7 @@ struct Field {
     default: Option<Value>,
     true_label: Option<String>,
     false_label: Option<String>,
+    messages: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +173,9 @@ fn field_js(f: &Field) -> String {
     }
     if let Some(v) = &f.default {
         s.push_str(&format!("\n      .default({})", serde_json::to_string(v).unwrap_or_default()));
+    }
+    if let Some(v) = &f.messages {
+        s.push_str(&format!("\n      .messages({})", serde_json::to_string(v).unwrap_or_default()));
     }
     if f.field_type != "table" {
         flag!("table", f.table);

@@ -1,4 +1,4 @@
-import { Field, FieldConfig } from '../types/resource';
+import { Field, FieldConfig, FieldMessages } from '../types/resource';
 
 /**
  * Field builder class
@@ -130,6 +130,14 @@ class FieldBuilder implements Field {
 
   default(value: any): Field {
     this._config.default = value;
+    return this;
+  }
+
+  messages(messages: FieldMessages): Field {
+    this._config.messages = {
+      ...this._config.messages,
+      ...messages,
+    };
     return this;
   }
 
