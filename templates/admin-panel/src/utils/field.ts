@@ -37,6 +37,11 @@ class FieldBuilder implements Field {
     return this;
   }
 
+  detail(): Field {
+    this._config.detail = true;
+    return this;
+  }
+
   filterable(): Field {
     this._config.filterable = true;
     return this;

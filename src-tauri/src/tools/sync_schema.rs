@@ -15,6 +15,7 @@ struct Field {
     label: Option<String>,
     table: Option<bool>,
     form: Option<bool>,
+    detail: Option<bool>,
     length: Option<u64>,
     required: Option<bool>,
     unique: Option<bool>,
@@ -172,6 +173,7 @@ fn field_js(f: &Field) -> String {
         flag!("table", f.table);
     }
     flag!("form", f.form);
+    flag!("detail", f.detail);
     if let Some(v) = f.length {
         s.push_str(&format!("\n      .length({})", v));
     }

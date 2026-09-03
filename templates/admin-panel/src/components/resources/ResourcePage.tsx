@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { Modal, Form, message, Button, Space } from 'antd';
-import { EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { EditOutlined, DeleteOutlined, EyeOutlined } from '@ant-design/icons';
 import type { Resource } from '../../types/resource';
 import ResourceGrid from '../crud/ResourceGrid';
 import ResourceForm, { processResourceFormValues, ResourceFilterForm } from './ResourceForm';
+import ViewField from './ViewField';
 import apiService from '../../api/apiService';
 import authService from '../../services/authService';
 
@@ -17,6 +18,9 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [addModalOpen, setAddModalOpen] = useState(false);
+  const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [viewRecord, setViewRecord] = useState<any>(null);
+  const [viewLoading, setViewLoading] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<any>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [filters, setFilters] = useState<Record<string, any> | null>(null);
@@ -76,6 +80,21 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       console.error('Error deleting record:', error);
     } finally {
       setDeleteLoading(false);
+    }
+  };
+
+  const handleView = async (record: any) => {
+    setViewModalOpen(true);
+    setViewLoading(true);
+    try {
+      // Fetch the full record via the show endpoint; fall back to grid row data
+      const full = await resource.service.get(record.id);
+      setViewRecord(full);
+    } catch (error) {
+      console.error('Error fetching record details:', error);
+      setViewRecord(record);
+    } finally {
+      setViewLoading(false);
     }
   };
 
@@ -140,6 +159,12 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
     key: 'actions',
     render: (_: any, record: any) => (
       <Space>
+        <Button
+          type="link"
+          size="small"
+          icon={<EyeOutlined />}
+          onClick={() => handleView(record)}
+        />
         {permissions.canEdit && (
           <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
         )}
@@ -149,6 +174,17 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       </Space>
     ),
   };
+
+  const hasDetailFields = resource.fields.some(
+    (field) => field.detail === true
+  );
+
+  const markedDetailFields = resource.fields.filter(
+    (field) => field.detail === true
+  );
+
+  // Fall back to all fields when none are explicitly marked for detail view
+  const detailFields = markedDetailFields.length > 0 ? markedDetailFields : resource.fields;
 
   const hasFilterableFields = resource.fields.some(
     (field) => field.filterable === true
@@ -168,7 +204,9 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       <ResourceGrid
         source={() => resource.service.list(filters ? { params: { filters } } : undefined)}
         fields={resource.fields}
-        columns={permissions.canEdit || permissions.canDelete ? [actionsColumn] : undefined}
+        columns={
+          permissions.canEdit || permissions.canDelete || hasDetailFields ? [actionsColumn] : undefined
+        }
         onAdd={permissions.canCreate ? handleAdd : undefined}
         onBulkDelete={permissions.canDelete ? handleBulkDelete : undefined}
         searchPlaceholder={`Search ${resource.name}...`}
@@ -184,6 +222,36 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
         filters={filters}
         onClearFilters={hasFilterableFields ? handleClearFilters : undefined}
       />
+
+      <Modal
+        title="View Record"
+        open={viewModalOpen}
+        onCancel={() => {
+          setViewModalOpen(false);
+          setViewRecord(null);
+        }}
+        footer={null}
+        width="65%"
+      >
+        {viewLoading ? (
+          <p>Loading...</p>
+        ) : viewRecord ? (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+              gap: '0 24px',
+              paddingTop: 8,
+            }}
+          >
+            {detailFields.map((field) => (
+              <ViewField key={field.name} field={field} record={viewRecord} />
+            ))}
+          </div>
+        ) : (
+          <p>No record selected.</p>
+        )}
+      </Modal>
 
       <Modal
         title="Delete Record"
