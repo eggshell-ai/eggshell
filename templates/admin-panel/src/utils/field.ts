@@ -38,7 +38,26 @@ class FieldBuilder implements Field {
   }
 
   required(): Field {
-    this._config.required = true;
+    this._config.validations = {
+      ...this._config.validations,
+      required: {},
+    };
+    return this;
+  }
+
+  minSize(min: number): Field {
+    this._config.validations = {
+      ...this._config.validations,
+      minSize: { min },
+    };
+    return this;
+  }
+
+  maxSize(max: number): Field {
+    this._config.validations = {
+      ...this._config.validations,
+      maxSize: { max },
+    };
     return this;
   }
 
@@ -69,16 +88,6 @@ class FieldBuilder implements Field {
 
   map(map: string): Field {
     this._config.map = map;
-    return this;
-  }
-
-  minSize(min: number): Field {
-    this._config.minSize = min;
-    return this;
-  }
-
-  maxSize(max: number): Field {
-    this._config.maxSize = max;
     return this;
   }
 
