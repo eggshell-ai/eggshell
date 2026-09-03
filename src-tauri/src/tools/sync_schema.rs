@@ -196,7 +196,7 @@ fn backend_code(r: &Resource, class: &str) -> String {
             if f.required.unwrap_or(false) {
                 asserts.push_str("    #[Assert\\NotBlank]\n");
             }
-            if f.email.unwrap_or(false) {
+            if f.email.unwrap_or(false) || f.field_type == "email" {
                 asserts.push_str(
                     "    #[Assert\\Email(\n        message: 'The email {{ value }} is not a valid email.',\n    )]\n",
                 );

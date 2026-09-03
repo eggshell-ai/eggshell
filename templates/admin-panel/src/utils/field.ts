@@ -61,6 +61,14 @@ class FieldBuilder implements Field {
     return this;
   }
 
+  email(): Field {
+    this._config.validations = {
+      ...this._config.validations,
+      email: {},
+    };
+    return this;
+  }
+
   phone(): Field {
     this._config.type = 'phone';
     this._config.validations = {

@@ -74,7 +74,7 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
   }
 
   // Built-in type rules
-  if (field.type === 'email') {
+  if (field.type === 'email' || validations.email) {
     let emailSchema = z.string().email({ message: 'Please enter a valid email' });
     if (!validations.required) {
       emailSchema = emailSchema.optional().or(z.literal('')) as any;
