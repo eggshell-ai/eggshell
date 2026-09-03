@@ -147,7 +147,7 @@ export default function ResourceGrid({
         return (
           <Badge 
             status={value ? 'success' : 'default'} 
-            text={value ? 'Yes' : 'No'} 
+            text={value ? (field.trueLabel || 'Yes') : (field.falseLabel || 'No')} 
           />
         );
       

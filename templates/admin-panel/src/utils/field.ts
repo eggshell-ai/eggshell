@@ -132,6 +132,16 @@ class FieldBuilder implements Field {
     this._config.default = value;
     return this;
   }
+
+  trueLabel(label: string): Field {
+    this._config.trueLabel = label;
+    return this;
+  }
+
+  falseLabel(label: string): Field {
+    this._config.falseLabel = label;
+    return this;
+  }
 }
 
 /**

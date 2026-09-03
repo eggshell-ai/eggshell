@@ -39,7 +39,10 @@ const ViewField: React.FC<ViewFieldProps> = ({ field, record, noLabel }) => {
   const renderValue = (): React.ReactNode => {
     switch (field.type) {
       case 'boolean':
-        return value ? 'Yes' : 'No';
+        if (value === undefined || value === null || value === '') return '-';
+        return value
+          ? field.trueLabel || 'Yes'
+          : field.falseLabel || 'No';
 
       case 'date':
         if (!value) return '-';

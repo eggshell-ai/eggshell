@@ -18,6 +18,8 @@ export interface FieldConfig {
   readonly?: boolean;
   compute?: (values: any) => any;
   default?: any;
+  trueLabel?: string;
+  falseLabel?: string;
   [key: string]: any;
 }
 
@@ -41,6 +43,8 @@ export interface Field {
   readonly(isReadonly?: boolean): Field;
   compute(fn: (values: any) => any): Field;
   default(value: any): Field;
+  trueLabel(label: string): Field;
+  falseLabel(label: string): Field;
 }
 
 /**

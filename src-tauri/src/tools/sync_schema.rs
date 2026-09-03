@@ -33,6 +33,8 @@ struct Field {
     map: Option<String>,
     columns: Option<Value>,
     default: Option<Value>,
+    true_label: Option<String>,
+    false_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +159,8 @@ fn field_js(f: &Field) -> String {
         };
     }
     call!("label", f.label.as_deref());
+    call!("trueLabel", f.true_label.as_deref());
+    call!("falseLabel", f.false_label.as_deref());
     call!("source", f.source.as_deref());
     call!("accept", f.accept.as_deref());
     call!("map", f.map.as_deref());
