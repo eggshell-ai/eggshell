@@ -19,6 +19,7 @@ struct Field {
     required: Option<bool>,
     unique: Option<bool>,
     email: Option<bool>,
+    phone: Option<bool>,
     source: Option<String>,
     sortable: Option<bool>,
     searchable: Option<bool>,
@@ -177,6 +178,7 @@ fn field_js(f: &Field) -> String {
     }
     flag!("required", f.required);
     flag!("email", f.email);
+    flag!("phone", f.phone);
     flag!("unique", f.unique);
     flag!("sortable", f.sortable);
     flag!("searchable", f.searchable);
@@ -185,7 +187,7 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
+    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
     let props = r
         .fields
         .iter()
@@ -197,6 +199,11 @@ fn backend_code(r: &Resource, class: &str) -> String {
             if f.email.unwrap_or(false) {
                 asserts.push_str(
                     "    #[Assert\\Email(\n        message: 'The email {{ value }} is not a valid email.',\n    )]\n",
+                );
+            }
+            if f.phone.unwrap_or(false) || f.field_type == "phone" {
+                asserts.push_str(
+                    "    #[PhoneConstraint(\n        message: 'The value {{ value }} is not a valid phone number. It must be in E.164 format (e.g. +14155552671).',\n    )]\n",
                 );
             }
             if f.min_size.is_some() || f.max_size.is_some() {
@@ -217,8 +224,14 @@ fn backend_code(r: &Resource, class: &str) -> String {
                 asserts.push_str(&constraint);
             }
             format!(
-                "{}    #[ORM\\Column{}]\n    public ?{} ${} = null;",
+                "{}    #[Form(type: '{}')]{}\n    #[ORM\\Column{}]\n    public ?{} ${} = null;",
                 asserts,
+                f.field_type,
+                if f.phone.unwrap_or(false) || f.field_type == "phone" {
+                    "\n    #[PhoneAttribute]"
+                } else {
+                    ""
+                },
                 if f.unique.unwrap_or(false) {
                     "(unique: true)"
                 } else {

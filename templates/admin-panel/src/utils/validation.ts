@@ -82,6 +82,17 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
     schema = emailSchema;
   }
 
+  // Phone (E.164) validation
+  if (field.type === 'phone' || validations.phone) {
+    let phoneSchema = z.string().regex(/^\+[1-9]\d{1,14}$/, {
+      message: `Please enter a valid phone number (E.164 format, e.g. +14155552671)`,
+    });
+    if (!validations.required) {
+      phoneSchema = phoneSchema.optional().or(z.literal('')) as any;
+    }
+    schema = phoneSchema;
+  }
+
   return schema;
 };
 

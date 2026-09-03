@@ -61,6 +61,15 @@ class FieldBuilder implements Field {
     return this;
   }
 
+  phone(): Field {
+    this._config.type = 'phone';
+    this._config.validations = {
+      ...this._config.validations,
+      phone: {},
+    };
+    return this;
+  }
+
   searchable(): Field {
     this._config.searchable = true;
     return this;
@@ -113,6 +122,12 @@ export const field = {
 
   email(name: string): Field {
     return new FieldBuilder('email', name);
+  },
+
+  phone(name: string): Field {
+    const builder = new FieldBuilder('phone', name);
+    builder.phone();
+    return builder;
   },
 
   select(name: string): Field {

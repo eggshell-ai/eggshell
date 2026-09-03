@@ -32,6 +32,7 @@ export interface Field {
   map(map: string): Field;
   minSize(min: number): Field;
   maxSize(max: number): Field;
+  phone(): Field;
   readonly(isReadonly?: boolean): Field;
   compute(fn: (values: any) => any): Field;
 }
