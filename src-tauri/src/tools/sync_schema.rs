@@ -203,7 +203,7 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
+    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
     let props = r
         .fields
         .iter()
@@ -221,6 +221,23 @@ fn backend_code(r: &Resource, class: &str) -> String {
                 asserts.push_str(
                     "    #[PhoneConstraint(\n        message: 'The value {{ value }} is not a valid phone number. It must be in E.164 format (e.g. +14155552671).',\n    )]\n",
                 );
+            }
+            if f.unique.unwrap_or(false) {
+                let unique_message = f
+                    .messages
+                    .as_ref()
+                    .and_then(|m| m.get("unique"))
+                    .and_then(Value::as_str)
+                    .map(|s| format!("\n        message: '{}',", s.replace('\'', "\\'")))
+                    .unwrap_or_default();
+                asserts.push_str(&format!(
+                    "    #[UniqueConstraint{}]\n",
+                    if unique_message.is_empty() {
+                        String::new()
+                    } else {
+                        format!("({}\n    )", unique_message)
+                    }
+                ));
             }
             if f.min_size.is_some() || f.max_size.is_some() {
                 let mut constraint = String::from("    #[Assert\\Length(\n");

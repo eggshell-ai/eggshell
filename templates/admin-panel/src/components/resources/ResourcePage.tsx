@@ -104,6 +104,38 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
     setEditModalOpen(true);
   };
 
+  /**
+   * Map backend validation errors (422 response: { message, errors: { field: [messages] } })
+   * onto the corresponding form fields. Returns true when errors were applied.
+   */
+  const applyBackendValidationErrors = (formInstance: any, error: any): boolean => {
+    const errors = error?.response?.data?.errors;
+    if (!errors || typeof errors !== 'object') {
+      return false;
+    }
+
+    const fieldNames = new Set(resource.fields.map((f) => f.name));
+    const formErrors: { name: any; errors: string[] }[] = [];
+
+    Object.entries(errors).forEach(([path, messages]) => {
+      if (!Array.isArray(messages) || messages.length === 0) {
+        return;
+      }
+      // Only map errors for known top-level fields (skip nested paths like table rows)
+      if (!fieldNames.has(path)) {
+        return;
+      }
+      formErrors.push({ name: path, errors: messages as string[] });
+    });
+
+    if (formErrors.length === 0) {
+      return false;
+    }
+
+    formInstance.setFields(formErrors);
+    return true;
+  };
+
   const handleEditSubmit = async () => {
     try {
       const values = await form.validateFields();
@@ -115,6 +147,9 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       form.resetFields();
     } catch (error: any) {
       if (error.errorFields) {
+        return;
+      }
+      if (applyBackendValidationErrors(form, error)) {
         return;
       }
       message.error('Failed to update record');
@@ -136,6 +171,9 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       addForm.resetFields();
     } catch (error: any) {
       if (error.errorFields) {
+        return;
+      }
+      if (applyBackendValidationErrors(addForm, error)) {
         return;
       }
       message.error('Failed to create record');
