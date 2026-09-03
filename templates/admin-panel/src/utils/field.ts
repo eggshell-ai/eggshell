@@ -117,6 +117,11 @@ class FieldBuilder implements Field {
     this._config.compute = fn;
     return this;
   }
+
+  default(value: any): Field {
+    this._config.default = value;
+    return this;
+  }
 }
 
 /**

@@ -30,6 +30,7 @@ struct Field {
     resource: Option<Value>,
     map: Option<String>,
     columns: Option<Value>,
+    default: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +163,9 @@ fn field_js(f: &Field) -> String {
     }
     if let Some(v) = &f.columns {
         s.push_str(&format!("\n      .columns({})", v));
+    }
+    if let Some(v) = &f.default {
+        s.push_str(&format!("\n      .default({})", serde_json::to_string(v).unwrap_or_default()));
     }
     if f.field_type != "table" {
         flag!("table", f.table);

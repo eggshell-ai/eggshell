@@ -131,6 +131,15 @@ const TableWidget: React.FC<{
   const visibleColumns = parsedColumns.filter((c) => !c.isHidden);
   const hiddenColumns = parsedColumns.filter((c) => c.isHidden);
 
+  // Build default values object for new table rows from column field configs
+  const rowDefaults = (resourceFields || []).reduce((acc: Record<string, any>, f: FieldConfig) => {
+    if (f.default !== undefined) {
+      acc[f.name] = f.default;
+    }
+    return acc;
+  }, {});
+  const hasRowDefaults = Object.keys(rowDefaults).length > 0;
+
   return (
     <div style={{ marginBottom: 24 }}>
       {field.label && (
@@ -236,7 +245,7 @@ const TableWidget: React.FC<{
             <div style={{ padding: '8px 12px', borderTop: '1px solid #f0f0f0', backgroundColor: '#fafafa' }}>
               <Button
                 type="dashed"
-                onClick={() => add()}
+                onClick={() => add(hasRowDefaults ? rowDefaults : undefined)}
                 icon={<PlusOutlined />}
                 block
               >
@@ -290,6 +299,16 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
       fetchOptions();
     }
   }, [field]);
+
+  // Apply default value for new records (only if no value is currently set)
+  useEffect(() => {
+    if (field.default !== undefined && form) {
+      const currentValue = form.getFieldValue(fullPath);
+      if (currentValue === undefined || currentValue === null) {
+        form.setFieldValue(fullPath, field.default);
+      }
+    }
+  }, [field.default, form, fullPath]);
 
   const fetchOptions = async () => {
     try {

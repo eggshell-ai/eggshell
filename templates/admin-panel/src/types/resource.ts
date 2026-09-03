@@ -15,6 +15,7 @@ export interface FieldConfig {
   maxSize?: number;
   readonly?: boolean;
   compute?: (values: any) => any;
+  default?: any;
   [key: string]: any;
 }
 
@@ -35,6 +36,7 @@ export interface Field {
   phone(): Field;
   readonly(isReadonly?: boolean): Field;
   compute(fn: (values: any) => any): Field;
+  default(value: any): Field;
 }
 
 /**
