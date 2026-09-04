@@ -120,7 +120,7 @@ Supported validation behavior:
 * `unique: true` - Value must be unique; enforce in backend/database
 * `type: \"email\"` - Validate email format
 * `type: \"phone\"` - Accept reasonable local/international phone formats
-* `messages: {...}` - Optional custom validation messages
+* `messages: {...}` - Optional custom validation messages. In most cases, you should skip this unless explicitly asked. \"Helpful validation messages\" are automatically provided by the app.
 * `minSize: n` - optional minimum value length
 * `maxSize: n` - Optional maximum value length
 
