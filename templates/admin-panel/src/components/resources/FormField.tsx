@@ -402,7 +402,11 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
         return <DatePicker disabled={isReadOnly} style={{ width: '100%' }} />;
       
       case 'boolean':
-        return <Checkbox disabled={isReadOnly} />;
+        return (
+          <Checkbox disabled={isReadOnly}>
+            {noLabel ? undefined : (field.label || field.name)}
+          </Checkbox>
+        );
 
       case 'file':
         return (
@@ -454,7 +458,7 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
     <>
       {field.compute && <ComputedWatcher field={field} form={form} fieldName={fullPath} />}
       <Form.Item
-        label={noLabel ? undefined : (field.label || field.name)}
+        label={noLabel || field.type === 'boolean' ? undefined : (field.label || field.name)}
         name={fieldName}
         rules={buildRules()}
         valuePropName={field.type === 'boolean' ? 'checked' : field.type === 'file' ? 'fileList' : 'value'}
