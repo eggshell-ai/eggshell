@@ -1,3 +1,15 @@
+export interface FieldMessages {
+  required?: string;
+  email?: string;
+  phone?: string;
+  unique?: string;
+  minLength?: string;
+  maxLength?: string;
+  min?: string;
+  max?: string;
+  [key: string]: string | undefined;
+}
+
 /**
  * Field configuration interface
  */
@@ -8,11 +20,19 @@ export interface FieldConfig {
   resource?: Resource | any;
   table?: boolean;
   form?: boolean;
+  detail?: boolean;
+  filterable?: boolean;
   required?: boolean;
   columns?: any[];
   map?: string;
+  minSize?: number;
+  maxSize?: number;
   readonly?: boolean;
   compute?: (values: any) => any;
+  default?: any;
+  messages?: FieldMessages;
+  trueLabel?: string;
+  falseLabel?: string;
   [key: string]: any;
 }
 
@@ -25,11 +45,20 @@ export interface Field {
   resource(resource: Resource | any): Field;
   table(): Field;
   form(): Field;
+  detail(): Field;
+  filterable(): Field;
   required(): Field;
   columns(columns: any[]): Field;
   map(map: string): Field;
+  minSize(min: number): Field;
+  maxSize(max: number): Field;
+  phone(): Field;
   readonly(isReadonly?: boolean): Field;
   compute(fn: (values: any) => any): Field;
+  default(value: any): Field;
+  messages(messages: FieldMessages): Field;
+  trueLabel(label: string): Field;
+  falseLabel(label: string): Field;
 }
 
 /**

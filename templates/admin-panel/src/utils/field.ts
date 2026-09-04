@@ -1,4 +1,4 @@
-import { Field, FieldConfig } from '../types/resource';
+import { Field, FieldConfig, FieldMessages } from '../types/resource';
 
 /**
  * Field builder class
@@ -37,8 +37,54 @@ class FieldBuilder implements Field {
     return this;
   }
 
+  detail(): Field {
+    this._config.detail = true;
+    return this;
+  }
+
+  filterable(): Field {
+    this._config.filterable = true;
+    return this;
+  }
+
   required(): Field {
-    this._config.required = true;
+    this._config.validations = {
+      ...this._config.validations,
+      required: {},
+    };
+    return this;
+  }
+
+  minSize(min: number): Field {
+    this._config.validations = {
+      ...this._config.validations,
+      minSize: { min },
+    };
+    return this;
+  }
+
+  maxSize(max: number): Field {
+    this._config.validations = {
+      ...this._config.validations,
+      maxSize: { max },
+    };
+    return this;
+  }
+
+  email(): Field {
+    this._config.validations = {
+      ...this._config.validations,
+      email: {},
+    };
+    return this;
+  }
+
+  phone(): Field {
+    this._config.type = 'phone';
+    this._config.validations = {
+      ...this._config.validations,
+      phone: {},
+    };
     return this;
   }
 
@@ -81,6 +127,29 @@ class FieldBuilder implements Field {
     this._config.compute = fn;
     return this;
   }
+
+  default(value: any): Field {
+    this._config.default = value;
+    return this;
+  }
+
+  messages(messages: FieldMessages): Field {
+    this._config.messages = {
+      ...this._config.messages,
+      ...messages,
+    };
+    return this;
+  }
+
+  trueLabel(label: string): Field {
+    this._config.trueLabel = label;
+    return this;
+  }
+
+  falseLabel(label: string): Field {
+    this._config.falseLabel = label;
+    return this;
+  }
 }
 
 /**
@@ -94,6 +163,12 @@ export const field = {
 
   email(name: string): Field {
     return new FieldBuilder('email', name);
+  },
+
+  phone(name: string): Field {
+    const builder = new FieldBuilder('phone', name);
+    builder.phone();
+    return builder;
   },
 
   select(name: string): Field {

@@ -7,80 +7,219 @@ This skill explains how to create a complete CRUD (Create, Read, Update, Delete)
 
 ## Overview
 
-To create a CRUD interface, you need to coordinate several tools in sequence:
+To create a CRUD interface, coordinate these tools in sequence:
 
-1. **sync_schema** - Define the data model and generate both frontend resource and backend entity
+1. **sync_schema** - Define the data model and generate frontend resource, backend entity, validation, and migrations
 2. **write_controller** - Create the Symfony backend controller extending ResourceController
-3. **write_page** - Create React frontend page using ResourcePage component
-4. **write_menu** - Add the menu item to navigate to the new pages
+3. **write_page** - Create React frontend page using ResourcePage
+4. **write_menu** - Add the menu item
 
-## Step-by-Step Process
+Prefer declarative resource configuration over custom frontend/backend code whenever possible.
 
-### Step 1: Define the Schema with sync_schema
+## Step 1: Define the Schema with sync_schema
 
-Use the `sync_schema` tool to define your data model. This tool generates:
-- Frontend resource definition in `frontend/src/resources/{name}.ts`
-- Backend PHP entity in `backend/src/Entity/{ClassName}.php`
-- Runs database migrations
+`sync_schema` accepts structured JSON resource definitions via the `resources` parameter (an array of resource objects). Each resource object has a `name`, an `endpoint`, and a `fields` array. Each field object has a `name` and a `type`, plus optional declarative options.
 
-Example schema definition (pass the pure JavaScript string for `code` without outer backticks):
+Example:
+
 ```javascript
 sync_schema({
-  code: `defineResource({
-  name: \"products\",
-  endpoint: \"/products\", // Note: Never include /api here, it's included automatically
-  permissions: {
-    'view': 'products.view',
-    'create': 'products.create',
-    'edit': 'products.edit',
-    'delete': 'products.delete'
-  },
-  fields: [
-    field.text(\"name\")
-      .label(\"Product Name\")
-      .table()
-      .form()
-      .required()
-      .searchable(),
-    field.text(\"sku\")
-      .label(\"SKU\")
-      .table()
-      .form()
-      .required()
-      .unique(),
-    field.number(\"price\")
-      .label(\"Price\")
-      .table()
-      .form()
-      .required(),
-    field.file(\"image\")
-      .label(\"Product Image\")
-      .table()
-      .form()
-      .accept(\"image/*\")
-      .maxSize(2),
-    field.textarea(\"description\")
-      .label(\"Description\")
-      .form(),
-    field.boolean(\"active\")
-      .label(\"Active\")
-      .table()
-      .form(),
-    field.table(\"items\")
-      .label(\"Line Items\")
-      .resource(\"invoice_items\")
-      .columns(['id', 'product', 'qty', 'rate', { name: 'amount', value: (data) => data.rate * data.qty }])
-      .form()
+  resources: [
+    {
+      name: \"products\",
+      endpoint: \"/products\",
+      fields: [
+        {
+          name: \"name\",
+          type: \"text\",
+          label: \"Product Name\",
+          table: true,
+          form: true,
+          required: true,
+          searchable: true
+        },
+        {
+          name: \"sku\",
+          type: \"text\",
+          label: \"SKU\",
+          table: true,
+          form: true,
+          required: true,
+          unique: true
+        },
+        {
+          name: \"price\",
+          type: \"number\",
+          label: \"Price\",
+          table: true,
+          form: true,
+          required: true
+        },
+        {
+          name: \"active\",
+          type: \"boolean\",
+          label: \"Status\",
+          table: true,
+          form: true
+        },
+        {
+          name: \"image\",
+          type: \"file\",
+          label: \"Product Image\",
+          table: true,
+          form: true,
+          accept: \"image/*\",
+          maxSize: 2
+        }
+      ],
+      titleExpression: \"{name}\"
+    }
   ]
-})`
 })
 ```
 
-### Step 2: Create Backend Controller with write_controller
+An optional `projectPath` string may also be provided to target a specific project.
 
-After the schema is synced, create a Symfony controller extending `ResourceController`. This base class handles all standard CRUD operations automatically.
+`sync_schema` should generate:
 
-Example controller:
+* Frontend resource definition
+* Backend entity
+* Database migrations
+* Backend validation corresponding to declarative field rules
+
+Validation must be enforced on the backend as well as the frontend.
+
+## Validation
+
+Use field options for ordinary validation:
+
+```javascript
+{
+  name: \"fullName\",
+  type: \"text\",
+  required: true,
+  minSize: 2
+}
+
+{
+  name: \"email\",
+  type: \"email\",
+  required: true,
+  unique: true
+}
+
+{
+  name: \"phone\",
+  type: \"phone\"
+}
+```
+
+Supported validation behavior:
+
+* `required: true` - Value is required
+* `unique: true` - Value must be unique; enforce in backend/database
+* `type: \"email\"` - Validate email format
+* `type: \"phone\"` - Accept reasonable local/international phone formats
+* `messages: {...}` - Optional custom validation messages. In most cases, you should skip this unless explicitly asked. \"Helpful validation messages\" are automatically provided by the app.
+* `minSize: n` - optional minimum value length
+* `maxSize: n` - Optional maximum value length
+
+Example:
+
+```javascript
+{
+  name: \"email\",
+  type: \"email\",
+  required: true,
+  unique: true,
+  messages: {
+    required: \"Email is required.\",
+    email: \"Enter a valid email address.\",
+    unique: \"This email address is already in use.\"
+  }
+}
+```
+
+Backend validation errors should be returned per field so ResourcePage can display them beside the corresponding input.
+
+## Defaults
+
+Use `default` for new-record defaults:
+
+```javascript
+{
+  name: \"active\",
+  type: \"boolean\",
+  default: true
+}
+```
+
+Defaults apply when creating records and must not overwrite values during editing.
+
+## Search
+
+Use `searchable: true` to include a field in standard resource search:
+
+```javascript
+{ name: \"fullName\", type: \"text\", searchable: true }
+{ name: \"email\", type: \"email\", searchable: true }
+```
+
+Search should operate server-side and match any searchable field.
+
+## Filtering
+
+Use `filterable: true` to generate standard filters:
+
+```javascript
+{
+  name: \"active\",
+  type: \"boolean\",
+  trueLabel: \"Active\",
+  falseLabel: \"Inactive\",
+  filterable: true
+}
+```
+
+While search allow a single field to fuzzy-search within multiple text fields, filters provide explicit control and easier searching in boolean fields.
+
+## Detail/View Pages
+
+Use `detail: true` to show a field in the standard record view:
+
+```javascript
+{
+  name: \"fullName\",
+  type: \"text\",
+  table: true,
+  detail: true,
+  form: true
+}
+```
+
+If detail fields are defined, ResourcePage should provide a standard View action automatically.
+
+## Boolean Labels
+
+Use:
+
+```javascript
+{
+  name: \"active\",
+  type: \"boolean\",
+  trueLabel: \"Active\",
+  falseLabel: \"Inactive\"
+}
+```
+
+to display domain-specific labels while storing boolean values.
+
+These labels should be used consistently in tables, forms, filters, and detail views.
+
+## Step 2: Create Backend Controller with write_controller
+
+Create a Symfony controller extending `ResourceController`.
+
 ```php
 write_controller({
   controllerName: \"Product\",
@@ -109,22 +248,23 @@ final class ProductController extends ResourceController
 })
 ```
 
-The `ResourceController` base class automatically provides:
-- `index()` - List all records
-- `show()` - Get a single record
-- `store()` - Create a new record
-- `update()` - Update an existing record
-- `destroy()` - Delete a record
+`ResourceController` automatically provides:
 
-You only need to define:
-- `getEntityClass()` - Return the fully qualified entity class name
-- `getResourceName()` - Return the plural resource name
+* List
+* View
+* Create
+* Update
+* Delete
+* Search
+* Filtering
+* Sorting
+* Validation handling
 
-Optional: Add `beforeSave()` hook for custom logic (e.g., password hashing).
+Use custom controller code only for behavior that cannot be expressed declaratively.
 
-### Step 3: Create Frontend Page with write_page
+## Step 3: Create Frontend Page with write_page
 
-Create a single page using the `ResourcePage` component which handles all CRUD operations (list, create, edit, delete) automatically.
+Use `ResourcePage` for standard CRUD interfaces.
 
 ```tsx
 write_page({
@@ -141,17 +281,23 @@ export default function ProductsPage() {
 })
 ```
 
-The `ResourcePage` component automatically provides:
-- Data table with sorting and search
-- Add/Edit modals with form validation
-- Delete confirmation
-- Permission-based access control
-- Bulk operations
+ResourcePage automatically provides:
 
-### Step 4: Add Menu Item with write_menu
+* Data table
+* Search
+* Filters
+* Add/Edit forms
+* View action
+* Validation messages
+* Delete confirmation
+* Permission-based access control
+* Bulk operations
 
-Add the menu item to make it accessible from the sidebar:
-```
+Do not build custom forms or tables when ResourcePage supports the required behavior.
+
+## Step 4: Add Menu Item with write_menu
+
+```javascript
 write_menu({
   name: \"Inventory.Products\",
   route: \"/products\",
@@ -160,88 +306,141 @@ write_menu({
 })
 ```
 
+## Example: Customer Management
+
+```javascript
+sync_schema({
+  resources: [
+    {
+      name: \"customers\",
+      endpoint: \"/customers\",
+      fields: [
+        {
+          name: \"fullName\",
+          type: \"text\",
+          label: \"Full Name\",
+          table: true,
+          detail: true,
+          form: true,
+          required: true,
+          minSize: 2,
+          searchable: true
+        },
+        {
+          name: \"email\",
+          type: \"email\",
+          label: \"Email Address\",
+          table: true,
+          detail: true,
+          form: true,
+          required: true,
+          unique: true,
+          searchable: true
+        },
+        {
+          name: \"phone\",
+          type: \"phone\",
+          label: \"Phone Number\",
+          table: true,
+          detail: true,
+          form: true
+        },
+        {
+          name: \"companyName\",
+          type: \"text\",
+          label: \"Company Name\",
+          table: true,
+          detail: true,
+          form: true
+        },
+        {
+          name: \"active\",
+          type: \"boolean\",
+          label: \"Status\",
+          table: true,
+          detail: true,
+          form: true,
+          default: true,
+          trueLabel: \"Active\",
+          falseLabel: \"Inactive\",
+          filterable: true
+        }
+      ]
+    }
+  ]
+})
+```
+
+This should require no custom controller or page logic beyond the standard ResourceController and ResourcePage.
+
 ## Best Practices
 
-1. **Always start with sync_schema** - This creates the foundation for both frontend and backend
-2. **Use consistent naming** - Keep resource names, endpoints, and routes aligned (singular for class, plural for routes)
-3. **Define field properties carefully** - Use `table()` for list views, `form()` for forms, `required()` for validation
-4. **Use ResourceController** - Don't write manual CRUD methods, extend ResourceController instead
-5. **Use ResourcePage** - Don't write custom pages, use the ResourcePage component
-6. **Add menu items** - Always add menu items to make new features discoverable
-7. **Set permissions** - Define permissions in the resource for access control
-8. **Test each step** - Verify each tool call succeeds before proceeding to the next
-
-## Common Patterns
-
-### For simple entities:
-- Use basic field types: text, number, boolean, date, textarea
-- Extend ResourceController with just the three required methods
-- Use ResourcePage for the frontend
-- Define basic CRUD permissions
-
-### For entities with relationships:
-- Use `field.select(name).resource(resource)` for foreign key relationships
-- Use `field.tags(name).resource(resource)` for many-to-many relationships
-- Add custom validation in the entity if needed
-- Consider adding custom hooks in the controller
-
-### For Line-Item Grids / Tables:
-- Use `field.table(name)` to render an ERP-style line item grid inside forms
-- Specify target resource using `.resource(res)`
-- Define column names and calculated fields using `.columns([...])`:
-  ```javascript
-  field.table('items')
-    .label('Invoice Items')
-    .resource('invoice_items')
-    .columns(['id', 'product', 'qty', 'rate', { name: 'amount', value: (data) => data.rate * data.qty }])
-    .form()
-  ```
-- Automatically maintains `id` as a hidden field and supports dynamic auto-calculated fields (e.g., `amount: rate * qty`).
-
-### For file uploads:
-- Use `field.file(name)` with `.accept(\"image/*\")` and `.maxSize(2)` (size in MB)
-- Show in form using `.form()` and optionally in tables using `.table()`
-
-### For complex entities:
-- Add `beforeSave()` hook in controller for custom logic (password hashing, timestamps)
-- Add custom validation attributes in the entity
-- Override serialization groups if needed
-- Add additional permissions for specific actions
-
-## Tool Reference
-
-- **sync_schema**: Generates schema, entity, and runs migrations
-- **write_controller**: Creates Symfony backend controllers (extend ResourceController)
-- **write_page**: Creates React page components (use ResourcePage)
-- **write_menu**: Adds/updates menu items in the navigation
+1. **Always start with sync_schema**
+2. **Prefer declarative resource configuration over custom code**
+3. **Enforce validation on both frontend and backend**
+4. **Use database constraints for uniqueness**
+5. **Use `searchable` and `filterable` instead of custom query code**
+6. **Use `default` instead of hardcoding form defaults**
+7. **Use `detail` for standard record views**
+8. **Use ResourceController for standard CRUD**
+9. **Use ResourcePage for standard frontend CRUD**
+10. **Keep naming consistent across resource, route, controller, and permissions**
+11. **Test each tool call before proceeding**
 
 ## Available Field Types
 
-- `field.text(name)` - Text input
-- `field.textarea(name)` - Multi-line text input
-- `field.email(name)` - Email input with validation
-- `field.password(name)` - Password input
-- `field.number(name)` - Numeric input
-- `field.boolean(name)` - Boolean/checkbox input
-- `field.date(name)` - Date picker
-- `field.file(name)` - File upload input
-- `field.select(name).resource(resource)` - Dropdown with remote data source
-- `field.tags(name).resource(resource)` - Multi-select tags with remote data source
-- `field.table(name)` - Line-item grid table widget for ERP-style line items
+Use these as the `type` value of a field object:
 
-## Field Chainable Methods
+* `\"text\"` - Text input
+* `\"textarea\"` - Multi-line text input
+* `\"email\"` - Email input with validation
+* `\"phone\"` - Phone input with permissive phone validation
+* `\"password\"` - Password input
+* `\"number\"` - Numeric input
+* `\"boolean\"` - Boolean/checkbox input
+* `\"date\"` - Date picker
+* `\"file\"` - File upload input
+* `\"select\"` - Remote dropdown (pair with `resource`)
+* `\"tags\"` - Multi-select tags (pair with `resource`)
+* `\"table\"` - Line-item grid (pair with `columns`)
 
-- `.label(\"Display Name\")` - Set the field label
-- `.table()` - Show in data table
-- `.form()` - Show in create/edit form
-- `.required()` - Mark as required
-- `.unique()` - Add unique constraint
-- `.searchable()` - Enable search in table
-- `.sortable()` - Enable sorting in table
-- `.accept(\"image/*\")` - Restrict file upload types
-- `.maxSize(2)` - Set maximum file upload size in MB
-- `.resource(resource)` - Set target resource (object or name string)
-- `.columns([...])` - Define column names and calculated fields for table widgets";
+## Field Options
+
+Each field object supports:
+
+* `name` (required) - Field identifier
+* `type` (required) - One of the field types above
+* `label: \"Display Name\"`
+* `table: true`
+* `detail: true`
+* `form: true`
+* `required: true`
+* `unique: true`
+* `default: value`
+* `searchable: true`
+* `sortable: true`
+* `filterable: true`
+* `messages: {...}`
+* `trueLabel: \"Label\"`
+* `falseLabel: \"Label\"`
+* `accept: \"image/*\"`
+* `minSize: 2`
+* `maxSize: 2`
+* `resource: {...}`
+* `columns: [...]`
+
+## Custom Code
+
+Use custom controller hooks or custom pages only for behavior such as:
+
+* Complex cross-field validation
+* Workflow/state transitions
+* External API calls
+* Multi-record operations
+* Specialized UI behavior
+
+Ordinary validation, defaults, search, filtering, detail views, uniqueness, and delete confirmation should remain declarative.
+";
 
 /// Skill for creating a complete CRUD interface across the application stack.
 pub struct CrudCreationSkill {

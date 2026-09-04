@@ -107,12 +107,18 @@ abstract class ResourceController extends AbstractController
     }
 
     #[Route('', name: 'index', methods: ['GET'])]
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
         $this->checkPermission('index');
 
         $repository = $this->entityManager->getRepository($this->getEntityClass());
-        $records = $repository->findAll();
+
+        $filters = $this->extractFilters($request);
+        if (!empty($filters)) {
+            $records = $this->findFiltered($repository, $filters);
+        } else {
+            $records = $repository->findAll();
+        }
 
         foreach ($records as $record) {
             $this->loadChildRelations($record);
@@ -124,7 +130,97 @@ abstract class ResourceController extends AbstractController
 
         return JsonResponse::fromJsonString($json);
     }
+    /**
+     * Extract filter definitions from the request.
+     *
+     * Supported formats:
+     *  - filters[active]=1&filters[name]=foo        (query string array)
+     *  - filters={"active":true,"name":"foo"}       (JSON string)
+     *
+     * Each filter value may be:
+     *  - a scalar (string/bool/int) -> equality / LIKE match
+     *  - an array with __isEmpty=true -> IS NULL check
+     */
+    protected function extractFilters(Request $request): array
+    {
+        $raw = $request->query->get('filters');
 
+        if (is_string($raw)) {
+            $decoded = json_decode($raw, true);
+            $raw = is_array($decoded) ? $decoded : null;
+        }
+
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $filters = [];
+        foreach ($raw as $field => $value) {
+            if (!is_string($field) || $field === '') {
+                continue;
+            }
+            $filters[$field] = $value;
+        }
+
+        return $filters;
+    }
+
+    /**
+     * Build and execute a filtered query.
+     *
+     * - Text-like values use LIKE '%value%' (case-insensitive)
+     * - Boolean values use strict equality
+     * - Arrays with __isEmpty=true use IS NULL
+     */
+    protected function findFiltered(\Doctrine\ORM\EntityRepository $repository, array $filters): array
+    {
+        $entityClass = $this->getEntityClass();
+        $metadata = $this->entityManager->getClassMetadata($entityClass);
+
+        $qb = $repository->createQueryBuilder('e');
+        $expr = $qb->expr();
+        $parameterIndex = 0;
+
+        foreach ($filters as $field => $value) {
+            // Only allow filtering on real, non-association entity fields
+            if (!$metadata->hasField($field) || $metadata->hasAssociation($field)) {
+                continue;
+            }
+
+            $parameterName = 'filter_' . $parameterIndex++;
+
+            if (is_array($value) && ($value['__isEmpty'] ?? null) === true) {
+                $qb->andWhere($expr->isNull('e.' . $field));
+                continue;
+            }
+
+            $type = $metadata->getTypeOfField($field);
+
+            if ($type === 'boolean') {
+                // Boolean filters use strict equality
+                $boolValue = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+                if ($boolValue === null) {
+                    continue;
+                }
+                $qb->andWhere($expr->eq('e.' . $field, ':' . $parameterName))
+                   ->setParameter($parameterName, $boolValue);
+                continue;
+            }
+
+            if (in_array($type, ['string', 'text'], true)) {
+                // Text filters use a case-insensitive LIKE match
+                $qb->andWhere($expr->like('LOWER(e.' . $field . ')', ':' . $parameterName))
+                   ->setParameter($parameterName, '%' . mb_strtolower((string) $value) . '%');
+                continue;
+            }
+
+            // Other types (integers, dates, etc.) fall back to equality
+            $qb->andWhere($expr->eq('e.' . $field, ':' . $parameterName))
+               ->setParameter($parameterName, $value);
+        }
+
+        return $qb->getQuery()->getResult();
+    }
     #[Route('/{id}', name: 'show', requirements: ['id' => '\d+'], methods: ['GET'])]
     public function show(int $id): JsonResponse
     {

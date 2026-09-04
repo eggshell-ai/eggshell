@@ -31,6 +31,10 @@ pub use crud_creation::CrudCreationSkill;
 mod analytics_and_reporting;
 pub use analytics_and_reporting::AnalyticsAndReportingSkill;
 
+#[path = "mock_llm.rs"]
+mod mock_llm;
+pub use mock_llm::MockLlmService;
+
 pub type LlmResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 /// An event emitted while an agent is running.

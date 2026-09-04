@@ -15,19 +15,27 @@ struct Field {
     label: Option<String>,
     table: Option<bool>,
     form: Option<bool>,
+    detail: Option<bool>,
     length: Option<u64>,
     required: Option<bool>,
     unique: Option<bool>,
     email: Option<bool>,
+    phone: Option<bool>,
     source: Option<String>,
     sortable: Option<bool>,
     searchable: Option<bool>,
+    filterable: Option<bool>,
     password: Option<bool>,
     accept: Option<String>,
     max_size: Option<u64>,
+    min_size: Option<u64>,
     resource: Option<Value>,
     map: Option<String>,
     columns: Option<Value>,
+    default: Option<Value>,
+    true_label: Option<String>,
+    false_label: Option<String>,
+    messages: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,6 +160,8 @@ fn field_js(f: &Field) -> String {
         };
     }
     call!("label", f.label.as_deref());
+    call!("trueLabel", f.true_label.as_deref());
+    call!("falseLabel", f.false_label.as_deref());
     call!("source", f.source.as_deref());
     call!("accept", f.accept.as_deref());
     call!("map", f.map.as_deref());
@@ -161,34 +171,113 @@ fn field_js(f: &Field) -> String {
     if let Some(v) = &f.columns {
         s.push_str(&format!("\n      .columns({})", v));
     }
+    if let Some(v) = &f.default {
+        s.push_str(&format!("\n      .default({})", serde_json::to_string(v).unwrap_or_default()));
+    }
+    if let Some(v) = &f.messages {
+        s.push_str(&format!("\n      .messages({})", serde_json::to_string(v).unwrap_or_default()));
+    }
     if f.field_type != "table" {
         flag!("table", f.table);
     }
     flag!("form", f.form);
+    flag!("detail", f.detail);
     if let Some(v) = f.length {
         s.push_str(&format!("\n      .length({})", v));
     }
+    if let Some(v) = f.min_size {
+        s.push_str(&format!("\n      .minSize({})", v));
+    }
+    if let Some(v) = f.max_size {
+        s.push_str(&format!("\n      .maxSize({})", v));
+    }
     flag!("required", f.required);
     flag!("email", f.email);
+    flag!("phone", f.phone);
     flag!("unique", f.unique);
     flag!("sortable", f.sortable);
     flag!("searchable", f.searchable);
+    flag!("filterable", f.filterable);
     flag!("password", f.password);
     s
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;";
+    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
     let props = r
         .fields
         .iter()
         .map(|f| {
+            let mut asserts = String::new();
+            if f.required.unwrap_or(false) {
+                asserts.push_str("    #[Assert\\NotBlank]\n");
+            }
+            if f.email.unwrap_or(false) || f.field_type == "email" {
+                asserts.push_str(
+                    "    #[Assert\\Email(\n        message: 'The email {{ value }} is not a valid email.',\n    )]\n",
+                );
+            }
+            if f.phone.unwrap_or(false) || f.field_type == "phone" {
+                asserts.push_str(
+                    "    #[PhoneConstraint(\n        message: 'The value {{ value }} is not a valid phone number. It must be in E.164 format (e.g. +14155552671).',\n    )]\n",
+                );
+            }
+            if f.unique.unwrap_or(false) {
+                let unique_message = f
+                    .messages
+                    .as_ref()
+                    .and_then(|m| m.get("unique"))
+                    .and_then(Value::as_str)
+                    .map(|s| format!("\n        message: '{}',", s.replace('\'', "\\'")))
+                    .unwrap_or_default();
+                asserts.push_str(&format!(
+                    "    #[UniqueConstraint{}]\n",
+                    if unique_message.is_empty() {
+                        String::new()
+                    } else {
+                        format!("({}\n    )", unique_message)
+                    }
+                ));
+            }
+            if f.min_size.is_some() || f.max_size.is_some() {
+                let mut constraint = String::from("    #[Assert\\Length(\n");
+                if let Some(min) = f.min_size {
+                    constraint.push_str(&format!(
+                        "        min: {},\n        minMessage: 'The value must be at least {{{{ limit }}}} characters long',\n",
+                        min
+                    ));
+                }
+                if let Some(max) = f.max_size {
+                    constraint.push_str(&format!(
+                        "        max: {},\n        maxMessage: 'The value can be at most {{{{ limit }}}} characters',\n",
+                        max
+                    ));
+                }
+                constraint.push_str("    )]\n");
+                asserts.push_str(&constraint);
+            }
             format!(
-                "    #[ORM\\Column{}]\n    public ?{} ${} = null;",
-                if f.unique.unwrap_or(false) {
-                    "(unique: true)"
+                "{}    #[Form(type: '{}')]{}\n    #[ORM\\Column{}]\n    public ?{} ${} = null;",
+                asserts,
+                f.field_type,
+                if f.phone.unwrap_or(false) || f.field_type == "phone" {
+                    "\n    #[PhoneAttribute]"
                 } else {
                     ""
+                },
+                {
+                    let mut options = Vec::new();
+                    if f.unique.unwrap_or(false) {
+                        options.push("unique: true");
+                    }
+                    if !f.required.unwrap_or(false) {
+                        options.push("nullable: true");
+                    }
+                    if options.is_empty() {
+                        String::new()
+                    } else {
+                        format!("({})", options.join(", "))
+                    }
                 },
                 php_type(&f.field_type),
                 f.name

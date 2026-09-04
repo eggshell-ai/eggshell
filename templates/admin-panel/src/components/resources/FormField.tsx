@@ -5,6 +5,7 @@ import { Form, Input as AntInput, Select, InputNumber, DatePicker, Checkbox, Upl
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { FieldConfig } from '../../types/resource';
+import { validateField } from '../../utils/validation';
 import apiService from '../../api/apiService';
 
 interface FormFieldProps {
@@ -130,6 +131,15 @@ const TableWidget: React.FC<{
   const visibleColumns = parsedColumns.filter((c) => !c.isHidden);
   const hiddenColumns = parsedColumns.filter((c) => c.isHidden);
 
+  // Build default values object for new table rows from column field configs
+  const rowDefaults = (resourceFields || []).reduce((acc: Record<string, any>, f: FieldConfig) => {
+    if (f.default !== undefined) {
+      acc[f.name] = f.default;
+    }
+    return acc;
+  }, {});
+  const hasRowDefaults = Object.keys(rowDefaults).length > 0;
+
   return (
     <div style={{ marginBottom: 24 }}>
       {field.label && (
@@ -235,7 +245,7 @@ const TableWidget: React.FC<{
             <div style={{ padding: '8px 12px', borderTop: '1px solid #f0f0f0', backgroundColor: '#fafafa' }}>
               <Button
                 type="dashed"
-                onClick={() => add()}
+                onClick={() => add(hasRowDefaults ? rowDefaults : undefined)}
                 icon={<PlusOutlined />}
                 block
               >
@@ -289,6 +299,16 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
       fetchOptions();
     }
   }, [field]);
+
+  // Apply default value for new records (only if no value is currently set)
+  useEffect(() => {
+    if (field.default !== undefined && form) {
+      const currentValue = form.getFieldValue(fullPath);
+      if (currentValue === undefined || currentValue === null) {
+        form.setFieldValue(fullPath, field.default);
+      }
+    }
+  }, [field.default, form, fullPath]);
 
   const fetchOptions = async () => {
     try {
@@ -382,7 +402,11 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
         return <DatePicker disabled={isReadOnly} style={{ width: '100%' }} />;
       
       case 'boolean':
-        return <Checkbox disabled={isReadOnly} />;
+        return (
+          <Checkbox disabled={isReadOnly}>
+            {noLabel ? undefined : (field.label || field.name)}
+          </Checkbox>
+        );
 
       case 'file':
         return (
@@ -414,15 +438,19 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
 
   const buildRules = () => {
     const rules: any[] = [];
-    
-    if (field.required) {
-      rules.push({ required: true, message: `Please enter ${field.label || field.name}` });
+
+    if (field.validations) {
+      rules.push({
+        validator: async (_rule: any, value: any) => {
+          const allValues = form ? form.getFieldsValue() : {};
+          const result = validateField(field, value, allValues);
+          if (!result.valid && result.error) {
+            throw new Error(result.error);
+          }
+        },
+      });
     }
-    
-    if (field.type === 'email') {
-      rules.push({ type: 'email', message: 'Please enter a valid email' });
-    }
-    
+
     return rules;
   };
 
@@ -430,7 +458,7 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
     <>
       {field.compute && <ComputedWatcher field={field} form={form} fieldName={fullPath} />}
       <Form.Item
-        label={noLabel ? undefined : (field.label || field.name)}
+        label={noLabel || field.type === 'boolean' ? undefined : (field.label || field.name)}
         name={fieldName}
         rules={buildRules()}
         valuePropName={field.type === 'boolean' ? 'checked' : field.type === 'file' ? 'fileList' : 'value'}

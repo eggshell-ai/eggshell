@@ -55,3 +55,7 @@ pids
 debug.log
 TODO.md
 .aider*
+
+# AI builds
+.diagnostics-build/
+.vite-check/

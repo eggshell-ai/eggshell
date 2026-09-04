@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { Modal, Form, message, Button, Space } from 'antd';
-import { EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { EditOutlined, DeleteOutlined, EyeOutlined } from '@ant-design/icons';
 import type { Resource } from '../../types/resource';
 import ResourceGrid from '../crud/ResourceGrid';
-import ResourceForm, { processResourceFormValues } from './ResourceForm';
+import ResourceForm, { processResourceFormValues, ResourceFilterForm } from './ResourceForm';
+import ViewField from './ViewField';
 import apiService from '../../api/apiService';
 import authService from '../../services/authService';
 
@@ -17,8 +18,12 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [addModalOpen, setAddModalOpen] = useState(false);
+  const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [viewRecord, setViewRecord] = useState<any>(null);
+  const [viewLoading, setViewLoading] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<any>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [filters, setFilters] = useState<Record<string, any> | null>(null);
   const [form] = Form.useForm();
   const [addForm] = Form.useForm();
   const [permissions, setPermissions] = useState({
@@ -78,10 +83,57 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
     }
   };
 
+  const handleView = async (record: any) => {
+    setViewModalOpen(true);
+    setViewLoading(true);
+    try {
+      // Fetch the full record via the show endpoint; fall back to grid row data
+      const full = await resource.service.get(record.id);
+      setViewRecord(full);
+    } catch (error) {
+      console.error('Error fetching record details:', error);
+      setViewRecord(record);
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
   const handleEdit = (record: any) => {
     setSelectedRecord(record);
     form.setFieldsValue(record);
     setEditModalOpen(true);
+  };
+
+  /**
+   * Map backend validation errors (422 response: { message, errors: { field: [messages] } })
+   * onto the corresponding form fields. Returns true when errors were applied.
+   */
+  const applyBackendValidationErrors = (formInstance: any, error: any): boolean => {
+    const errors = error?.response?.data?.errors;
+    if (!errors || typeof errors !== 'object') {
+      return false;
+    }
+
+    const fieldNames = new Set(resource.fields.map((f) => f.name));
+    const formErrors: { name: any; errors: string[] }[] = [];
+
+    Object.entries(errors).forEach(([path, messages]) => {
+      if (!Array.isArray(messages) || messages.length === 0) {
+        return;
+      }
+      // Only map errors for known top-level fields (skip nested paths like table rows)
+      if (!fieldNames.has(path)) {
+        return;
+      }
+      formErrors.push({ name: path, errors: messages as string[] });
+    });
+
+    if (formErrors.length === 0) {
+      return false;
+    }
+
+    formInstance.setFields(formErrors);
+    return true;
   };
 
   const handleEditSubmit = async () => {
@@ -95,6 +147,9 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       form.resetFields();
     } catch (error: any) {
       if (error.errorFields) {
+        return;
+      }
+      if (applyBackendValidationErrors(form, error)) {
         return;
       }
       message.error('Failed to update record');
@@ -118,6 +173,9 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       if (error.errorFields) {
         return;
       }
+      if (applyBackendValidationErrors(addForm, error)) {
+        return;
+      }
       message.error('Failed to create record');
       console.error('Error creating record:', error);
     }
@@ -139,6 +197,12 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
     key: 'actions',
     render: (_: any, record: any) => (
       <Space>
+        <Button
+          type="link"
+          size="small"
+          icon={<EyeOutlined />}
+          onClick={() => handleView(record)}
+        />
         {permissions.canEdit && (
           <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
         )}
@@ -149,17 +213,83 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
     ),
   };
 
+  const hasDetailFields = resource.fields.some(
+    (field) => field.detail === true
+  );
+
+  const markedDetailFields = resource.fields.filter(
+    (field) => field.detail === true
+  );
+
+  // Fall back to all fields when none are explicitly marked for detail view
+  const detailFields = markedDetailFields.length > 0 ? markedDetailFields : resource.fields;
+
+  const hasFilterableFields = resource.fields.some(
+    (field) => field.filterable === true
+  );
+
+  const handleApplyFilters = (newFilters: Record<string, any> | null) => {
+    setFilters(newFilters);
+  };
+
+  const handleClearFilters = () => {
+    setFilters(null);
+  };
+
   return (
     <div>
       <h1>{resource.name}</h1>
       <ResourceGrid
-        source={() => resource.service.list()}
+        source={() => resource.service.list(filters ? { params: { filters } } : undefined)}
         fields={resource.fields}
-        columns={permissions.canEdit || permissions.canDelete ? [actionsColumn] : undefined}
+        columns={
+          permissions.canEdit || permissions.canDelete || hasDetailFields ? [actionsColumn] : undefined
+        }
         onAdd={permissions.canCreate ? handleAdd : undefined}
         onBulkDelete={permissions.canDelete ? handleBulkDelete : undefined}
         searchPlaceholder={`Search ${resource.name}...`}
+        filterPanel={
+          hasFilterableFields ? (
+            <ResourceFilterForm
+              resource={resource}
+              filters={filters}
+              onApply={handleApplyFilters}
+            />
+          ) : undefined
+        }
+        filters={filters}
+        onClearFilters={hasFilterableFields ? handleClearFilters : undefined}
       />
+
+      <Modal
+        title="View Record"
+        open={viewModalOpen}
+        onCancel={() => {
+          setViewModalOpen(false);
+          setViewRecord(null);
+        }}
+        footer={null}
+        width="65%"
+      >
+        {viewLoading ? (
+          <p>Loading...</p>
+        ) : viewRecord ? (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+              gap: '0 24px',
+              paddingTop: 8,
+            }}
+          >
+            {detailFields.map((field) => (
+              <ViewField key={field.name} field={field} record={viewRecord} />
+            ))}
+          </div>
+        ) : (
+          <p>No record selected.</p>
+        )}
+      </Modal>
 
       <Modal
         title="Delete Record"
