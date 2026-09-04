@@ -265,10 +265,19 @@ fn backend_code(r: &Resource, class: &str) -> String {
                 } else {
                     ""
                 },
-                if f.unique.unwrap_or(false) {
-                    "(unique: true)"
-                } else {
-                    ""
+                {
+                    let mut options = Vec::new();
+                    if f.unique.unwrap_or(false) {
+                        options.push("unique: true");
+                    }
+                    if !f.required.unwrap_or(false) {
+                        options.push("nullable: true");
+                    }
+                    if options.is_empty() {
+                        String::new()
+                    } else {
+                        format!("({})", options.join(", "))
+                    }
                 },
                 php_type(&f.field_type),
                 f.name
