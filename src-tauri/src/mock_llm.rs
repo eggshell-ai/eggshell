@@ -62,10 +62,11 @@ impl LLMService for MockLlmService {
                             "resources": [{
                                 "endpoint": "/customers",
                                 "fields": [
-                                    { "field": "name", "name": "name", "type": "string" },
-                                    { "field": "code", "name": "code", "type": "string" },
-                                    { "field": "email", "name": "email", "type": "string" },
-                                    { "field": "phone", "name": "phone", "type": "string" }
+                                    { "name": "name", "type": "text", "label": "Full Name", "minSize": 2, "searchable": true, "required": true },
+                                    { "name": "email", "type": "email", "required": true, "label": "Email Address", "unique": true },
+                                    { "name": "phone", "type": "phone", "label": "Phone #" },
+                                    { "name": "company", "type": "text", "label": "Company Name" },
+                                    { "name": "status", "type": "boolean", "default": true, "trueLabel": "Active", "falseLabel": "Inactive", "label": "Status (Active / Inactive)", "filterable": true }
                                 ],
                                 "name": "customers"
                             }]
