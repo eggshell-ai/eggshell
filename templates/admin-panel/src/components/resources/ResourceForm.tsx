@@ -13,6 +13,10 @@ interface ResourceFormProps {
   initialValues?: any;
   excludeFields?: string[];
   onFinish?: (values: any) => void | Promise<void>;
+  /** Either 'store' or 'update' — passed to validation hooks */
+  action?: 'store' | 'update';
+  /** The existing record being updated (undefined on store) */
+  record?: any;
 }
 
 interface ResourceFilterFormProps {
@@ -130,6 +134,8 @@ const ResourceForm: React.FC<ResourceFormProps> = ({
   initialValues,
   excludeFields = [],
   onFinish,
+  action,
+  record,
 }) => {
   // Filter fields that should be shown in form
   const formFields = resource.fields.filter(
@@ -156,7 +162,14 @@ const ResourceForm: React.FC<ResourceFormProps> = ({
       onFinish={handleFinish}
     >
       {formFields.map((field) => (
-        <FormField key={field.name} field={field} form={form} />
+        <FormField
+          key={field.name}
+          field={field}
+          form={form}
+          resourceName={resource.name}
+          action={action}
+          record={record}
+        />
       ))}
     </Form>
   );

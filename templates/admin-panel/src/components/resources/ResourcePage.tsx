@@ -6,6 +6,7 @@ import { EditOutlined, DeleteOutlined, EyeOutlined } from '@ant-design/icons';
 import type { Resource } from '../../types/resource';
 import ResourceGrid from '../crud/ResourceGrid';
 import ResourceForm, { processResourceFormValues, ResourceFilterForm } from './ResourceForm';
+import { validateWithHooks } from '../../utils/validation';
 import ViewField from './ViewField';
 import apiService from '../../api/apiService';
 import authService from '../../services/authService';
@@ -136,9 +137,43 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
     return true;
   };
 
+  /**
+   * Run frontend validation hooks (mirroring the backend's ValidatesResource)
+   * and map their errors onto the corresponding form fields.
+   * Returns true when hook errors were applied.
+   */
+  const applyHookValidationErrors = async (
+    formInstance: any,
+    values: any,
+    action: 'store' | 'update',
+    record?: any
+  ): Promise<boolean> => {
+    const hookErrors = await validateWithHooks(resource.name, values, action, record);
+    const fieldNames = new Set(resource.fields.map((f) => f.name));
+
+    const formErrors: { name: any; errors: string[] }[] = [];
+    Object.entries(hookErrors).forEach(([fieldName, errorMessage]) => {
+      if (fieldNames.has(fieldName)) {
+        formErrors.push({ name: fieldName, errors: [errorMessage] });
+      } else {
+        message.error(errorMessage);
+      }
+    });
+
+    if (formErrors.length === 0) {
+      return false;
+    }
+
+    formInstance.setFields(formErrors);
+    return true;
+  };
+
   const handleEditSubmit = async () => {
     try {
       const values = await form.validateFields();
+      if (await applyHookValidationErrors(form, values, 'update', selectedRecord)) {
+        return;
+      }
       const payload = processResourceFormValues(values, resource.fields);
       await resource.service.update(selectedRecord.id, payload);
       message.success('Record updated successfully');
@@ -164,6 +199,9 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
   const handleAddSubmit = async () => {
     try {
       const values = await addForm.validateFields();
+      if (await applyHookValidationErrors(addForm, values, 'store')) {
+        return;
+      }
       const payload = processResourceFormValues(values, resource.fields);
       await resource.service.create(payload);
       message.success('Record created successfully');
@@ -320,7 +358,7 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
         cancelText="Cancel"
         width="65%"
       >
-        <ResourceForm resource={resource} form={form} />
+        <ResourceForm resource={resource} form={form} action="update" record={selectedRecord} />
       </Modal>
 
       <Modal
@@ -335,7 +373,7 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
         cancelText="Cancel"
         width="65%"
       >
-        <ResourceForm resource={resource} form={addForm} />
+        <ResourceForm resource={resource} form={addForm} action="store" />
       </Modal>
     </div>
   );

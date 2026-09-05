@@ -35,6 +35,7 @@ struct Field {
     default: Option<Value>,
     true_label: Option<String>,
     false_label: Option<String>,
+    options: Option<Map<String, Value>>,
     messages: Option<Value>,
 }
 
@@ -171,6 +172,14 @@ fn field_js(f: &Field) -> String {
     if let Some(v) = &f.columns {
         s.push_str(&format!("\n      .columns({})", v));
     }
+    if let Some(opts) = &f.options {
+        let entries = opts
+            .iter()
+            .map(|(k, v)| format!("{}: {}", js(k), serde_json::to_string(v).unwrap_or_default()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        s.push_str(&format!("\n      .options({{ {} }})", entries));
+    }
     if let Some(v) = &f.default {
         s.push_str(&format!("\n      .default({})", serde_json::to_string(v).unwrap_or_default()));
     }
@@ -203,7 +212,7 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
+    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\OneOf as OneOfConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
     let props = r
         .fields
         .iter()
@@ -237,6 +246,17 @@ fn backend_code(r: &Resource, class: &str) -> String {
                     } else {
                         format!("({}\n    )", unique_message)
                     }
+                ));
+            }
+            if let Some(opts) = &f.options {
+                let choices = opts
+                    .keys()
+                    .map(|k| format!("'{}'", k.replace('\'', "\\'")))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                asserts.push_str(&format!(
+                    "    #[OneOfConstraint(choices: [{}])]\n",
+                    choices
                 ));
             }
             if f.min_size.is_some() || f.max_size.is_some() {

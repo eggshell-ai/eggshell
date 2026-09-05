@@ -142,6 +142,29 @@ Example:
 
 Backend validation errors should be returned per field so ResourcePage can display them beside the corresponding input.
 
+## Static Selects
+
+Use `type: \"select\"` with `options` for a static dropdown. The keys are the stored values while the values are the display labels:
+
+```javascript
+{
+  name: \"status\",
+  type: \"select\",
+  label: \"Status\",
+  options: {
+    \"New\": \"New\",
+    \"Old\": \"Old\"
+  },
+  table: true,
+  form: true,
+  required: true
+}
+```
+
+The value is validated to be one of the option keys (or empty when not required) on both frontend and backend.
+
+For dynamic dropdowns backed by another resource, use `type: \"select\"` with `resource` instead.
+
 ## Defaults
 
 Use `default` for new-record defaults:
@@ -400,7 +423,7 @@ Use these as the `type` value of a field object:
 * `\"boolean\"` - Boolean/checkbox input
 * `\"date\"` - Date picker
 * `\"file\"` - File upload input
-* `\"select\"` - Remote dropdown (pair with `resource`)
+* `\"select\"` - Dropdown. Use with `options` for static choices, or pair with `resource` for remote data
 * `\"tags\"` - Multi-select tags (pair with `resource`)
 * `\"table\"` - Line-item grid (pair with `columns`)
 
@@ -427,7 +450,120 @@ Each field object supports:
 * `minSize: 2`
 * `maxSize: 2`
 * `resource: {...}`
+* `options: { \"value\": \"Label\", ... }` - Static select choices (keys are values, values are labels)
 * `columns: [...]`
+
+## Custom Validators
+
+For validation that cannot be expressed declaratively (e.g. cross-field rules, checks against external data), use validation hooks.
+
+Custom validators must only be created via hooks. Do not add custom validation code to controllers or components; ResourcePage already displays validation errors per field.
+
+Validation hooks exist on both the backend and the frontend, and both should be created together so the user gets immediate feedback in the form while the backend still enforces the rule authoritatively.
+
+### Backend Validation Hooks
+
+Create a hook class under `src/Resource/Hooks/<resourceName>/`. The class name must exactly match the file name, and the namespace must be `App\\Resource\\Hooks\\<resourceName>`. Implement `ValidatesResource` and return an array of `field => message(s)` errors (empty array when validation passes):
+
+Example:
+
+write_file({
+  shell: \"backend\",
+  path: \"Resource/Hooks/invoices/InvoiceValidationHook.php\",
+  content: `<?php
+
+namespace App\\Resource\\Hooks\\invoices;
+
+use App\\Resource\\Hook\\ValidatesResource;
+
+class InvoiceValidationHook implements ValidatesResource
+{
+    public function validate(object $entity, array $data, string $action): array
+    {
+        $errors = [];
+
+        if (($entity->total ?? 0) < 0) {
+            $errors['total'] = 'Total cannot be negative.';
+        }
+
+        if (($entity->discount ?? 0) > ($entity->total ?? 0)) {
+            $errors['discount'] = 'Discount cannot exceed the total.';
+        }
+
+        return $errors;
+    }
+}
+`})
+
+The hook runs automatically during `store` and `update` after standard declarative validation. Returned errors produce a `422` response in the same format as standard validation errors, so ResourcePage displays them beside the corresponding inputs.
+
+A hook class may implement multiple hook interfaces to participate in additional lifecycle points as they become available.
+
+### Frontend Validation Hooks
+
+Mirror each backend validation hook with a frontend hook under `src/resources/hooks/<resourceName>/`. The hook implements `ResourceValidationHook` and returns a map of `field => message(s)` errors (empty object when validation passes). It receives `(data, action, record)` where `action` is `'store'` or `'update'` and `record` is the existing record on update.
+
+Frontend hooks run automatically during form validation and on submit; their errors are displayed beside the corresponding inputs, exactly like backend errors.
+
+Example:
+
+write_file({
+  shell: \"frontend\",
+  path: \"resources/hooks/invoices/invoiceValidationHook.ts\",
+  content: `import type { ResourceValidationHook } from '../../../types/resource';
+
+const invoiceValidationHook: ResourceValidationHook = {
+  validate: (data, action, record) => {
+    const errors: Record<string, string | string[]> = {};
+
+    if ((data?.total ?? 0) < 0) {
+      errors.total = 'Total cannot be negative.';
+    }
+
+    if ((data?.discount ?? 0) > (data?.total ?? 0)) {
+      errors.discount = 'Discount cannot exceed the total.';
+    }
+
+    return errors;
+  },
+};
+
+export default invoiceValidationHook;
+`
+})
+
+After creating a frontend hook file, it must be registered in `src/resources/hooks/index.ts`. This registry file contains only the hook imports and the registry map — no other code — so it can be cheaply read and overwritten.
+
+To register a hook, first read the registry with `read_file`, then overwrite it entirely with the full updated content via `write_file`:
+
+1. `read_file({ shell: \"frontend\", path: \"resources/hooks/index.ts\" })`
+2. `write_file({ shell: \"frontend\", path: \"resources/hooks/index.ts\", content: <full updated registry> })`
+
+The registry looks like this:
+
+```javascript
+import type { ResourceValidationHook } from '../../types/resource';
+import userValidationHook from './users/userValidationHook';
+import invoiceValidationHook from './invoices/invoiceValidationHook';
+
+const validationHooks: Record<string, ResourceValidationHook[]> = {
+  users: [userValidationHook],
+  invoices: [invoiceValidationHook]
+};
+
+export default validationHooks;
+```
+
+### Modifying an Existing Hook
+
+When a validation hook already exists and needs to be changed, overwrite the hook file entirely with `write_file` using the full updated content. Never append to or partially patch a hook file.
+
+Example workflow:
+
+1. `write_file({ shell: \"backend\", path: \"Resource/Hooks/invoices/InvoiceValidationHook.php\", content: <full updated file> })`
+2. `write_file({ shell: \"frontend\", path: \"resources/hooks/invoices/invoiceValidationHook.ts\", content: <full updated file> })`
+
+Remember to keep the backend hook and its frontend mirror in sync: any rule added to one should be reflected in the other.
 
 ## Custom Code
 

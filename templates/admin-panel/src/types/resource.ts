@@ -33,6 +33,8 @@ export interface FieldConfig {
   messages?: FieldMessages;
   trueLabel?: string;
   falseLabel?: string;
+  /** Static options for select fields: keys are values, values are labels */
+  options?: Record<string, string>;
   [key: string]: any;
 }
 
@@ -59,6 +61,32 @@ export interface Field {
   messages(messages: FieldMessages): Field;
   trueLabel(label: string): Field;
   falseLabel(label: string): Field;
+  options(options: Record<string, string>): Field;
+}
+
+/**
+ * Validation errors returned by resource validation hooks.
+ * Maps a field name to one or more error messages.
+ */
+export type ResourceValidationErrors = Record<string, string | string[]>;
+
+/**
+ * Validation hook interface (frontend mirror of the backend's ValidatesResource).
+ *
+ * Implement this interface in a hook file placed under
+ * src/resources/hooks/<resourceName>/ and register it in
+ * src/resources/hooks/index.ts to have it run automatically
+ * during store and update operations, after standard field validation.
+ */
+export interface ResourceValidationHook {
+  validate: (
+    /** Raw form values about to be submitted */
+    data: any,
+    /** Either 'store' or 'update' */
+    action: 'store' | 'update',
+    /** The existing record being updated (undefined on store) */
+    record?: any
+  ) => ResourceValidationErrors | void | Promise<ResourceValidationErrors | void>;
 }
 
 /**

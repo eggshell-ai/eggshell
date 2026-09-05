@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { FieldConfig } from '../types/resource';
+import { runValidationHooks } from './resourceValidationHooks';
 
 /**
  * Validation engine
@@ -94,6 +95,19 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
     schema = phoneSchema;
   }
 
+  // Static select validation — value must be one of the configured options (or empty if not required)
+  if (field.options && Object.keys(field.options).length > 0) {
+    const allowedValues = Object.keys(field.options);
+    let optionsSchema = z.string().refine(
+      (val) => allowedValues.includes(val),
+      { message: messages.options || `${field.label || field.name} must be one of: ${allowedValues.map((v) => field.options![v]).join(', ')}` }
+    );
+    if (!validations.required) {
+      optionsSchema = optionsSchema.optional().or(z.literal('')).or(z.literal(undefined)) as any;
+    }
+    schema = optionsSchema;
+  }
+
   return schema;
 };
 
@@ -132,6 +146,30 @@ export const validateAll = (fields: FieldConfig[], values: any): Record<string, 
     const result = validateField(field, values?.[field.name], values);
     if (!result.valid && result.error) {
       errors[field.name] = result.error;
+    }
+  });
+  return errors;
+};
+
+/**
+ * Run resource validation hooks (mirroring the backend's ValidatesResource hooks)
+ * and normalize their errors into a map of field name -> first error message.
+ *
+ * @param resourceName Name of the resource whose hooks should run (e.g. 'users')
+ * @param action       Either 'store' or 'update'
+ * @param record       The existing record being updated (undefined on store)
+ */
+export const validateWithHooks = async (
+  resourceName: string,
+  values: any,
+  action: 'store' | 'update',
+  record?: any
+): Promise<Record<string, string>> => {
+  const hookErrors = await runValidationHooks(resourceName, values, action, record);
+  const errors: Record<string, string> = {};
+  Object.entries(hookErrors).forEach(([field, messages]) => {
+    if (messages.length > 0) {
+      errors[field] = messages[0];
     }
   });
   return errors;

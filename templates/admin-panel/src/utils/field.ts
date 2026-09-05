@@ -150,6 +150,11 @@ class FieldBuilder implements Field {
     this._config.falseLabel = label;
     return this;
   }
+
+  options(options: Record<string, string>): Field {
+    this._config.options = options;
+    return this;
+  }
 }
 
 /**
@@ -173,6 +178,10 @@ export const field = {
 
   select(name: string): Field {
     return new FieldBuilder('select', name);
+  },
+
+  staticSelect(name: string, options: Record<string, string>): Field {
+    return new FieldBuilder('select', name).options(options);
   },
 
   tags(name: string): Field {

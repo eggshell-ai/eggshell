@@ -17,9 +17,15 @@ use Symfony\Component\Validator\Validator\ValidatorInterface;
 use Symfony\Component\Validator\ConstraintViolationListInterface;
 use ReflectionClass;
 use App\Resource\Attribute\Relation;
+use App\Resource\Hook\ValidatesResource;
 
 abstract class ResourceController extends AbstractController
 {
+    /**
+     * Cache of instantiated hook classes, keyed by resource name
+     * @var array<string, array<int, object>>
+     */
+    protected static array $hookCache = [];
     public function __construct(
         protected readonly EntityManagerInterface $entityManager,
         protected readonly SerializerInterface $serializer,
@@ -96,6 +102,70 @@ abstract class ResourceController extends AbstractController
             'destroy' => $resourceName . '.delete',
             default => null,
         };
+    }
+
+    /**
+     * Discover and instantiate hook classes for this resource.
+     *
+     * Hooks live in src/Resource/Hooks/<ResourceName>/ and each file must
+     * contain a class whose name exactly matches the file name (without .php).
+     * A hook class may implement any of the hook interfaces (e.g. ValidatesResource)
+     * to participate in the corresponding lifecycle point.
+     *
+     * @return array<int, object>
+     */
+    protected function getHooks(): array
+    {
+        $resourceName = $this->getResourceName();
+
+        if (isset(self::$hookCache[$resourceName])) {
+            return self::$hookCache[$resourceName];
+        }
+
+        $hooks = [];
+        $hookDir = __DIR__ . '/Hooks/' . $resourceName;
+
+        if (is_dir($hookDir)) {
+            foreach (glob($hookDir . '/*.php') ?: [] as $file) {
+                $className = basename($file, '.php');
+
+                if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $className)) {
+                    continue;
+                }
+
+                $fqcn = 'App\\Resource\\Hooks\\' . $resourceName . '\\' . $className;
+
+                if (class_exists($fqcn)) {
+                    $hooks[] = new $fqcn();
+                }
+            }
+        }
+
+        return self::$hookCache[$resourceName] = $hooks;
+    }
+
+    /**
+     * Run validation hooks for this resource and return any errors they produce.
+     *
+     * @return array<string, string|list<string>>
+     */
+    protected function runValidationHooks(object $entity, array $data, string $action): array
+    {
+        $errors = [];
+
+        foreach ($this->getHooks() as $hook) {
+            if ($hook instanceof ValidatesResource) {
+                $hookErrors = $hook->validate($entity, $data, $action);
+                foreach ($hookErrors as $field => $messages) {
+                    $messages = is_array($messages) ? $messages : [$messages];
+                    foreach ($messages as $message) {
+                        $errors[$field][] = $message;
+                    }
+                }
+            }
+        }
+
+        return $errors;
     }
 
     private function checkPermission(string $action): void
@@ -272,6 +342,12 @@ abstract class ResourceController extends AbstractController
             return $this->validationErrorResponse($violations);
         }
 
+        // Run validation hooks
+        $hookErrors = $this->runValidationHooks($record, $data, 'store');
+        if (!empty($hookErrors)) {
+            return $this->hookValidationErrorResponse($hookErrors);
+        }
+
         $this->entityManager->persist($record);
         $this->entityManager->flush();
 
@@ -321,6 +397,12 @@ abstract class ResourceController extends AbstractController
         $violations = $this->validator->validate($record, null, ['Default', 'update']);
         if (count($violations) > 0) {
             return $this->validationErrorResponse($violations);
+        }
+
+        // Run validation hooks
+        $hookErrors = $this->runValidationHooks($record, $data, 'update');
+        if (!empty($hookErrors)) {
+            return $this->hookValidationErrorResponse($hookErrors);
         }
 
         $this->saveChildRelations($record, $data);
@@ -704,6 +786,19 @@ abstract class ResourceController extends AbstractController
             $errors[$violation->getPropertyPath()][] = $violation->getMessage();
         }
 
+        return $this->json([
+            'message' => 'Validation failed',
+            'errors' => $errors,
+        ], Response::HTTP_UNPROCESSABLE_ENTITY);
+    }
+
+    /**
+     * Build a 422 response from errors returned by validation hooks
+     *
+     * @param array<string, string|list<string>> $errors
+     */
+    protected function hookValidationErrorResponse(array $errors): JsonResponse
+    {
         return $this->json([
             'message' => 'Validation failed',
             'errors' => $errors,
