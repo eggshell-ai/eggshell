@@ -280,6 +280,8 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       <ResourceGrid
         source={() => resource.service.list(filters ? { params: { filters } } : undefined)}
         fields={resource.fields}
+        actions={resource.actions}
+        endpoint={resource.endpoint}
         columns={
           permissions.canEdit || permissions.canDelete || hasDetailFields ? [actionsColumn] : undefined
         }

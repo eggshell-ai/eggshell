@@ -1,4 +1,4 @@
-import { Field, FieldConfig, FieldMessages } from '../types/resource';
+import { Field, FieldConfig, FieldMessages, ResourceAction } from '../types/resource';
 
 /**
  * Field builder class
@@ -163,6 +163,44 @@ class FieldBuilder implements Field {
 }
 
 /**
+ * Action builder class for custom row actions (e.g. activate/deactivate)
+ */
+class ActionBuilder implements ResourceAction {
+  private _config: ResourceAction;
+
+  constructor() {
+    this._config = {};
+  }
+
+  config(): ResourceAction {
+    return { ...this._config };
+  }
+
+  permission(permission: string): ActionBuilder {
+    this._config.permission = permission;
+    return this;
+  }
+
+  actionExpression(expression: string): ActionBuilder {
+    this._config.actionExpression = expression;
+    return this;
+  }
+
+  labelExpression(expression: string): ActionBuilder {
+    this._config.labelExpression = expression;
+    return this;
+  }
+
+  confirm(confirm: boolean = true): ActionBuilder {
+    this._config.confirm = confirm;
+    return this;
+  }
+
+  // Allow arbitrary extra options
+  [key: string]: any;
+}
+
+/**
  * Field utility function
  * Creates field builders for different types
  */
@@ -225,5 +263,11 @@ export const field = {
     return new FieldBuilder('foreign', name);
   },
 };
+
+/**
+ * Creates an action builder for a custom row action
+ * Usage: action().permission('users.deactivate').actionExpression("data.status == 'Active' ? '/deactivate' : '/activate'").labelExpression("data.status == 'Active' ? 'Deactivate' : 'Activate'").confirm()
+ */
+export const action = (): ActionBuilder => new ActionBuilder();
 
 export default field;

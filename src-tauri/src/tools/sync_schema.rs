@@ -42,11 +42,21 @@ struct Field {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ResourceAction {
+    permission: Option<String>,
+    action_expression: Option<String>,
+    label_expression: Option<String>,
+    confirm: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Resource {
     name: String,
     endpoint: String,
     fields: Vec<Field>,
     title_expression: Option<String>,
+    actions: Option<Vec<ResourceAction>>,
 }
 
 pub struct SyncSchemaTool {
@@ -143,7 +153,36 @@ fn frontend_code(r: &Resource, _class: &str) -> String {
         .map(field_js)
         .collect::<Vec<_>>()
         .join(",\n");
-    format!("import defineResource from '../utils/defineResource';\nimport field from '../utils/field';\nimport {}Service from '../api/{}Service';\n\nexport default defineResource({{\n  name: {},\n  endpoint: {},\n  fields: [\n{}\n  ],\n  titleExpression: {}\n}});\n", r.name, r.name, js(&r.name), js(&r.endpoint), fields, js(r.title_expression.as_deref().unwrap_or("{id}")))
+    format!("import defineResource from '../utils/defineResource';\nimport field from '../utils/field';\nimport {}Service from '../api/{}Service';\n\nexport default defineResource({{\n  name: {},\n  endpoint: {},\n  fields: [\n{}\n  ],\n{}  titleExpression: {}\n}});\n", r.name, r.name, js(&r.name), js(&r.endpoint), fields, actions_js(r), js(r.title_expression.as_deref().unwrap_or("{id}")))
+}
+
+fn actions_js(r: &Resource) -> String {
+    let actions = match &r.actions {
+        Some(actions) if !actions.is_empty() => actions,
+        _ => return String::new(),
+    };
+    let items = actions
+        .iter()
+        .map(|a| {
+            let mut s = String::from("    {\n");
+            if let Some(permission) = &a.permission {
+                s.push_str(&format!("      permission: {},\n", js(permission)));
+            }
+            if let Some(expression) = &a.action_expression {
+                s.push_str(&format!("      actionExpression: {},\n", js(expression)));
+            }
+            if let Some(expression) = &a.label_expression {
+                s.push_str(&format!("      labelExpression: {},\n", js(expression)));
+            }
+            if a.confirm.unwrap_or(false) {
+                s.push_str("      confirm: true,\n");
+            }
+            s.push_str("    }");
+            s
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("  actions: [\n{}\n  ],\n", items)
 }
 fn field_js(f: &Field) -> String {
     let mut s = format!("    field.{}({})", f.field_type, js(&f.name));

@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Input, Space, Typography, Tag, Badge, Image } from 'antd';
+import { Table, Button, Input, Space, Typography, Tag, Badge, Image, Modal, message } from 'antd';
 import type { ColumnsType, TableProps } from 'antd/es/table';
 import { PlusOutlined, FilterOutlined, CloseCircleFilled } from '@ant-design/icons';
-import type { FieldConfig } from '../../types/resource';
+import type { FieldConfig, ResourceAction } from '../../types/resource';
 import apiService from '../../api/apiService';
+import authService from '../../services/authService';
 
 interface ResourceGridProps {
   source: (() => Promise<any[]>) | any[];
@@ -19,6 +20,10 @@ interface ResourceGridProps {
   filterPanel?: React.ReactNode;
   filters?: Record<string, any> | null;
   onClearFilters?: () => void;
+  /** Custom row actions (e.g. activate/deactivate) rendered in the actions column */
+  actions?: ResourceAction[];
+  /** Base endpoint used to execute custom actions (e.g. '/users') */
+  endpoint?: string;
 }
 
 export default function ResourceGrid({
@@ -33,12 +38,16 @@ export default function ResourceGrid({
   filterPanel,
   filters,
   onClearFilters,
+  actions,
+  endpoint,
 }: ResourceGridProps) {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
+  const [allowedActions, setAllowedActions] = useState<Record<number, boolean>>({});
+  const [actionLoadingKeys, setActionLoadingKeys] = useState<string[]>([]);
 
   const activeFilterCount = filters ? Object.keys(filters).length : 0;
   const hasFilterPanel = Boolean(filterPanel);
@@ -46,6 +55,31 @@ export default function ResourceGrid({
   useEffect(() => {
     fetchData();
   }, [source]);
+
+  // Check permissions for custom row actions (superusers always pass)
+  useEffect(() => {
+    const checkActionPermissions = async () => {
+      if (!actions || actions.length === 0) {
+        setAllowedActions({});
+        return;
+      }
+
+      const user: any = authService.getUser();
+      const isSuperuser =
+        user?.role === 'ADMIN' || user?.superuser === true || user?.isSuperuser === true;
+
+      const results: Record<number, boolean> = {};
+      await Promise.all(
+        actions.map(async (action, index) => {
+          results[index] =
+            isSuperuser || (await authService.hasPermission(action.permission));
+        })
+      );
+      setAllowedActions(results);
+    };
+
+    checkActionPermissions();
+  }, [actions]);
 
   const fetchData = async () => {
     try {
@@ -85,6 +119,92 @@ export default function ResourceGrid({
         setDeleteLoading(false);
       }
     }
+  };
+
+  /**
+   * Evaluate an action expression (e.g. "data.status == 'Active' ? 'Deactivate' : 'Activate'")
+   * against a record, with the record available as `data`.
+   */
+  const evaluateActionExpression = (expression: string | undefined, record: any): any => {
+    if (!expression) return undefined;
+    try {
+      const data = record;
+      // eslint-disable-next-line no-eval
+      return eval(expression);
+    } catch (error) {
+      console.error('Error evaluating action expression:', error);
+      return undefined;
+    }
+  };
+
+  const executeAction = async (
+    action: ResourceAction,
+    actionPath: string,
+    label: string,
+    record: any
+  ) => {
+    if (!endpoint) {
+      message.error('This resource does not define an endpoint for custom actions');
+      console.error('[ResourceGrid] Cannot execute action: resource has no endpoint');
+      return;
+    }
+
+    const loadingKey = `${record[rowKey]}:${actionPath}`;
+    const run = async () => {
+      try {
+        setActionLoadingKeys((keys) => [...keys, loadingKey]);
+        await apiService.post(`${endpoint}/${record[rowKey]}${actionPath}`, {});
+        message.success(`${label} completed successfully`);
+        await fetchData();
+      } catch (error) {
+        message.error(`Failed to ${label.toLowerCase()} record`);
+        console.error('Error executing action:', error);
+      } finally {
+        setActionLoadingKeys((keys) => keys.filter((key) => key !== loadingKey));
+      }
+    };
+
+    if (action.confirm) {
+      Modal.confirm({
+        title: 'Confirm Action',
+        content: `Are you sure you want to ${label.toLowerCase()} this record?`,
+        okText: label,
+        cancelText: 'Cancel',
+        onOk: run,
+      });
+    } else {
+      await run();
+    }
+  };
+
+  /** Render custom action buttons for a row (only permitted actions with truthy labels) */
+  const renderCustomActions = (record: any): React.ReactNode[] => {
+    if (!actions || actions.length === 0) return [];
+
+    const buttons: React.ReactNode[] = [];
+    actions.forEach((action, index) => {
+      if (!allowedActions[index]) return;
+
+      const label = evaluateActionExpression(action.labelExpression, record);
+      if (!label) return; // falsy label hides the button for this row
+
+      const actionPath = evaluateActionExpression(action.actionExpression, record);
+      if (!actionPath) return;
+
+      const loadingKey = `${record[rowKey]}:${actionPath}`;
+      buttons.push(
+        <Button
+          key={`action-${index}`}
+          type="link"
+          size="small"
+          loading={actionLoadingKeys.includes(loadingKey)}
+          onClick={() => executeAction(action, actionPath, label, record)}
+        >
+          {label}
+        </Button>
+      );
+    });
+    return buttons;
   };
 
   const renderCell = (field: FieldConfig, record: any) => {
@@ -209,12 +329,39 @@ export default function ResourceGrid({
         key: field.name,
         render: (_: any, record: any) => renderCell(field, record),
       }));
-    
-    if (columns) {
-      return [...fieldColumns, ...columns];
+
+    let allColumns: ColumnsType<any> = columns ? [...fieldColumns, ...columns] : fieldColumns;
+
+    // Merge custom action buttons into an existing Actions column, or append one
+    if (actions && actions.length > 0) {
+      const actionsColIndex = allColumns.findIndex((col: any) => col && col.key === 'actions');
+      if (actionsColIndex >= 0) {
+        allColumns = allColumns.map((col: any, index: number) => {
+          if (index !== actionsColIndex) return col;
+          const originalRender = col.render;
+          return {
+            ...col,
+            render: (text: any, record: any, rowIndex: number) => (
+              <Space>
+                {originalRender ? originalRender(text, record, rowIndex) : null}
+                {renderCustomActions(record)}
+              </Space>
+            ),
+          };
+        });
+      } else {
+        allColumns = [
+          ...allColumns,
+          {
+            title: 'Actions',
+            key: 'actions',
+            render: (_: any, record: any) => <Space>{renderCustomActions(record)}</Space>,
+          },
+        ];
+      }
     }
-    
-    return fieldColumns;
+
+    return allColumns;
   };
 
   const tableColumns = transformFieldsToColumns();

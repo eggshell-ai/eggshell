@@ -1,4 +1,4 @@
-import { Resource, FieldConfig, Field } from '../types/resource';
+import { Resource, FieldConfig, Field, ResourceAction } from '../types/resource';
 import { createCrudService } from '../api/createCrudService';
 
 /**
@@ -16,7 +16,8 @@ export function defineResource<T = any>(config: {
     edit: string,
     view: string,
     delete: string,
-  }
+  };
+  actions?: ResourceAction[];
 }): Resource<T> {
   const service = config.service || (config.endpoint ? createCrudService<T>(config.endpoint) : undefined);
   
@@ -50,7 +51,11 @@ export function defineResource<T = any>(config: {
       }
       return fieldConfig;
     }),
-    permissions: config.permissions
+    permissions: config.permissions,
+    actions: config.actions?.map((action: any) =>
+      typeof action?.config === 'function' ? action.config() : action
+    ),
+    endpoint: config.endpoint || (service as any)?.endpoint
   };
 }
 

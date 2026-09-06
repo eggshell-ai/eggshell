@@ -97,6 +97,22 @@ export interface ResourceValidationHook {
 }
 
 /**
+ * Custom row action configuration (e.g. activate/deactivate).
+ * Expressions are evaluated per row with the record available as `data`.
+ */
+export interface ResourceAction {
+  /** Required permission to see/execute this action (superusers always pass) */
+  permission?: string;
+  /** Evaluates to the request path appended to `<endpoint>/<record.id>` (e.g. '/deactivate') */
+  actionExpression?: string;
+  /** Evaluates to the button label; falsy hides the button for that row */
+  labelExpression?: string;
+  /** Show a confirmation dialog before executing */
+  confirm?: boolean;
+  [key: string]: any;
+}
+
+/**
  * Resource interface
  */
 export interface Resource<T = any> {
@@ -109,12 +125,18 @@ export interface Resource<T = any> {
     view: string;
     delete: string;
   };
+  /** Custom row actions rendered in the grid */
+  actions?: ResourceAction[];
+  /** Base endpoint used to execute custom actions */
+  endpoint?: string;
 }
 
 /**
  * CrudService interface
  */
 export interface CrudService<T = any> {
+  /** Base endpoint this service was created from (used for custom actions) */
+  endpoint?: string;
   list(config?: any): Promise<T[]>;
   query(config?: any): Promise<T[]>;
   get(id: string | number, config?: any): Promise<T>;
