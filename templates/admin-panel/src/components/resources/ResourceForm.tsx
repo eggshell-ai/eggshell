@@ -137,12 +137,32 @@ const ResourceForm: React.FC<ResourceFormProps> = ({
   action,
   record,
 }) => {
+  // Watch all form values so conditional fields can react to changes
+  const allValues = Form.useWatch([], form);
+
   // Filter fields that should be shown in form
   const formFields = resource.fields.filter(
     (field) =>
       (field.form !== false) && // Show if form is not explicitly false
       !excludeFields.includes(field.name) // Exclude specified fields
   );
+
+  // Fields with a visibleWhen condition are hidden by default and only
+  // displayed when the referenced value (e.g. 'data.email') is truthy.
+  const isVisible = (field: any): boolean => {
+    if (!field.visibleWhen) {
+      return true;
+    }
+    const path = field.visibleWhen.replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean);
+    let value: any = { data: allValues };
+    for (const key of path) {
+      if (value === undefined || value === null) {
+        break;
+      }
+      value = value[key];
+    }
+    return Boolean(value);
+  };
 
   // Check if form has file fields
   const hasFileFields = formFields.some((field) => field.type === 'file');
@@ -161,16 +181,18 @@ const ResourceForm: React.FC<ResourceFormProps> = ({
       initialValues={initialValues}
       onFinish={handleFinish}
     >
-      {formFields.map((field) => (
-        <FormField
-          key={field.name}
-          field={field}
-          form={form}
-          resourceName={resource.name}
-          action={action}
-          record={record}
-        />
-      ))}
+      {formFields.map((field) =>
+        isVisible(field) ? (
+          <FormField
+            key={field.name}
+            field={field}
+            form={form}
+            resourceName={resource.name}
+            action={action}
+            record={record}
+          />
+        ) : null
+      )}
     </Form>
   );
 };

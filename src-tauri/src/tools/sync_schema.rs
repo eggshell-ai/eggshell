@@ -37,6 +37,7 @@ struct Field {
     false_label: Option<String>,
     options: Option<Map<String, Value>>,
     messages: Option<Value>,
+    visible_when: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +162,7 @@ fn field_js(f: &Field) -> String {
         };
     }
     call!("label", f.label.as_deref());
+    call!("visibleWhen", f.visible_when.as_deref());
     call!("trueLabel", f.true_label.as_deref());
     call!("falseLabel", f.false_label.as_deref());
     call!("source", f.source.as_deref());

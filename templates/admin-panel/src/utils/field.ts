@@ -155,6 +155,11 @@ class FieldBuilder implements Field {
     this._config.options = options;
     return this;
   }
+
+  visibleWhen(condition: string): Field {
+    this._config.visibleWhen = condition;
+    return this;
+  }
 }
 
 /**

@@ -142,6 +142,27 @@ Example:
 
 Backend validation errors should be returned per field so ResourcePage can display them beside the corresponding input.
 
+## Conditional Visibility
+
+Use `visibleWhen` to show a field only when another value is truthy. The condition is a dot path into the current form values, rooted at `data`:
+
+```javascript
+{
+  name: \"companyName\",
+  type: \"text\",
+  label: \"Company Name\",
+  form: true,
+  visibleWhen: \"data.email\"
+}
+```
+
+Behavior:
+
+* Fields with `visibleWhen` are hidden by default
+* The field is displayed only when the referenced value is truthy
+* The path may reference nested values, e.g. \"data.address.city\"
+* Visibility is purely a frontend concern; backend validation still applies to submitted values
+
 ## Static Selects
 
 Use `type: \"select\"` with `options` for a static dropdown. The keys are the stored values while the values are the display labels:
@@ -450,8 +471,7 @@ Each field object supports:
 * `minSize: 2`
 * `maxSize: 2`
 * `resource: {...}`
-* `options: { \"value\": \"Label\", ... }` - Static select choices (keys are values, values are labels)
-* `columns: [...]`
+* `options: { \"value\": \"Label\", ... }` - Static select choices (keys are values, values are labels)* `visibleWhen: \"data.email\"` - Show this field only when the referenced form value is truthy (hidden by default)* `columns: [...]`
 
 ## Custom Validators
 

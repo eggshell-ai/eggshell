@@ -35,6 +35,12 @@ export interface FieldConfig {
   falseLabel?: string;
   /** Static options for select fields: keys are values, values are labels */
   options?: Record<string, string>;
+  /**
+   * Conditional visibility: a dot path into the current form values
+   * (e.g. 'data.email'). The field is hidden by default and only shown
+   * when the referenced value is truthy.
+   */
+  visibleWhen?: string;
   [key: string]: any;
 }
 
@@ -62,6 +68,7 @@ export interface Field {
   trueLabel(label: string): Field;
   falseLabel(label: string): Field;
   options(options: Record<string, string>): Field;
+  visibleWhen(condition: string): Field;
 }
 
 /**
