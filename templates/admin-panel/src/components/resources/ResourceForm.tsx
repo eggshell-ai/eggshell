@@ -153,15 +153,16 @@ const ResourceForm: React.FC<ResourceFormProps> = ({
     if (!field.visibleWhen) {
       return true;
     }
-    const path = field.visibleWhen.replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean);
-    let value: any = { data: allValues };
-    for (const key of path) {
-      if (value === undefined || value === null) {
-        break;
-      }
-      value = value[key];
+
+    // Make form values available as `data` so conditions like
+    // "data.source == 'other'" can be evaluated directly.
+    const data = allValues;
+    try {
+      return Boolean(eval(field.visibleWhen));
+    } catch {
+      // Condition referenced unavailable data — treat as not visible
+      return false;
     }
-    return Boolean(value);
   };
 
   // Check if form has file fields
