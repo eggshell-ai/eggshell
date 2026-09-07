@@ -198,7 +198,10 @@ abstract class ResourceController extends AbstractController
         $groups = $this->getSerializationGroups('index');
         $json = $this->serializer->serialize($records, 'json', !empty($groups) ? ['groups' => $groups] : []);
 
-        return JsonResponse::fromJsonString($json);
+        $response = JsonResponse::fromJsonString($json);
+        $response->headers->set('X-Total-Count', (string) count($records));
+
+        return $response;
     }
     /**
      * Extract filter definitions from the request.

@@ -370,6 +370,9 @@ export default function ResourceGrid({
     <div>
       {filterPanelOpen && filterPanel}
       <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center' }}>
+        <Typography.Text type="secondary" style={{ marginRight: 16 }}>
+          {loading ? 'Loading...' : `${data.length} ${data.length === 1 ? 'record' : 'records'}`}
+        </Typography.Text>
         {selectedRowKeys.length > 0 && (
           <Space style={{ marginRight: 16 }}>
             <Typography.Text>{selectedRowKeys.length} selected</Typography.Text>
