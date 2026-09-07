@@ -144,24 +144,17 @@ Backend validation errors should be returned per field so ResourcePage can displ
 
 ## Conditional Visibility
 
-Use `visibleWhen` to show a field only when another value is truthy. The condition is a dot path into the current form values, rooted at `data`:
+`visibleWhen` accepts an expression evaluated against the current form data.
 
-```javascript
-{
-  name: \"companyName\",
-  type: \"text\",
-  label: \"Company Name\",
-  form: true,
-  visibleWhen: \"data.email\"
-}
-```
+The current form values are available as `data`.
 
-Behavior:
+Examples:
 
-* Fields with `visibleWhen` are hidden by default
-* The field is displayed only when the referenced value is truthy
-* The path may reference nested values, e.g. \"data.address.city\"
-* Visibility is purely a frontend concern; backend validation still applies to submitted values
+visibleWhen: \"data.email\"
+visibleWhen: \"data.source == 'other'\"
+visibleWhen: \"data.status != 'closed'\"
+
+The fields are hidden by default and shown if the constraint matches.
 
 ## Static Selects
 
@@ -226,6 +219,8 @@ Use `filterable: true` to generate standard filters:
 ```
 
 While search allow a single field to fuzzy-search within multiple text fields, filters provide explicit control and easier searching in boolean fields.
+
+The total count of rows is automatically displayed.
 
 ## Detail/View Pages
 
