@@ -62,6 +62,12 @@ struct Resource {
 pub struct SyncSchemaTool {
     parameters: Map<String, Value>,
 }
+
+const RESERVED_COLUMN_NAMES: [&str; 15] = [
+    "desc", "asc", "order", "group", "key", "index", "select", "insert", "update", "delete",
+    "table", "from", "where", "by", "limit",
+];
+
 impl SyncSchemaTool {
     pub fn new() -> Self {
         Self { parameters: json!({"type":"object","properties":{"resources":{"type":"array","description":"Structured resource definitions.","items":{"type":"object"}},"projectPath":{"type":"string"}},"required":["resources"]}).as_object().unwrap().clone() }
@@ -92,6 +98,19 @@ impl Tool for SyncSchemaTool {
         )?;
         if resources.is_empty() {
             return Err("resources must contain at least one resource".into());
+        }
+        for resource in &resources {
+            for field in &resource.fields {
+                if RESERVED_COLUMN_NAMES.contains(&field.name.as_str()) {
+                    return Err(format!(
+                        "Column name '{}' on resource '{}' is reserved and cannot be used. Reserved names: {}. Please choose a different column name.",
+                        field.name,
+                        resource.name,
+                        RESERVED_COLUMN_NAMES.join(", ")
+                    )
+                    .into());
+                }
+            }
         }
         let project = args
             .get("projectPath")
