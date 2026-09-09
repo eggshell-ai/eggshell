@@ -1075,6 +1075,7 @@ async fn send_message(
     project_id: i64,
     session_id: Option<i64>,
     message: String,
+    artifacts: Option<Vec<String>>,
     app: tauri::AppHandle,
     pool: tauri::State<'_, SqlitePool>,
     agent: tauri::State<'_, llm::AgentService>,
@@ -1083,6 +1084,14 @@ async fn send_message(
     if message.is_empty() {
         return Err("A message is required.".to_string());
     }
+    // Only the names cross the boundary here: the files themselves are never
+    // uploaded to the upstream provider, the agent just learns what was attached.
+    let artifacts = artifacts
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| llm::AgentArtifact { name })
+        .collect::<Vec<_>>();
     let event_sink = Arc::new(move |payload| {
         let _ = app.emit("agent-event", payload);
     });
@@ -1091,6 +1100,7 @@ async fn send_message(
         project_id,
         session_id,
         message,
+        artifacts,
         agent.inner(),
         event_sink,
     )

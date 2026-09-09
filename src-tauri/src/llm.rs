@@ -10,7 +10,8 @@ use crate::config::OllamaConfig;
 use crate::progress::ProgressLog;
 
 use crate::tools::{
-    LoadSkillTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool, WritePageTool,
+    LoadSkillTool, MoveFileTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool,
+    WritePageTool,
 };
 
 #[path = "symfony.rs"]
@@ -21,7 +22,7 @@ mod react;
 
 #[path = "agent.rs"]
 mod agent;
-pub use agent::{AgentRunResult, AgentService};
+pub use agent::{AgentArtifact, AgentRunResult, AgentService};
 
 #[path = "crud_creation.rs"]
 mod crud_creation;
@@ -50,6 +51,9 @@ pub struct AgentOptions {
     pub context: Option<Map<String, Value>>,
     /// The project directory tools must operate on for this agent run.
     pub project_path: Option<String>,
+    /// Files the user attached to the message. Only their names reach the
+    /// prompt; the contents are never sent to the upstream provider.
+    pub artifacts: Vec<AgentArtifact>,
     pub on_event: Option<Box<dyn Fn(AgentEvent) + Send + Sync>>,
     pub log_conversation: bool,
     pub log_dir: Option<String>,
@@ -61,6 +65,7 @@ impl Default for AgentOptions {
             max_turns: None,
             context: None,
             project_path: None,
+            artifacts: Vec::new(),
             on_event: None,
             log_conversation: true,
             log_dir: None,
@@ -87,6 +92,7 @@ impl App for AdminPanelApp {
             Box::new(LoadSkillTool::new(default_skills())),
             Box::new(ReadFileTool::new()),
             Box::new(WriteFileTool::new()),
+            Box::new(MoveFileTool::new()),
             Box::new(WriteMenuTool::new()),
             Box::new(WritePageTool::new()),
             Box::new(SyncSchemaTool::new()),

@@ -369,6 +369,71 @@
   width: 100%;
 }
 
+.composer-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attach-button {
+  align-self: flex-end;
+  height: 60px;
+  padding: 0 14px;
+  border: 1px solid #d9d6e3;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.attach-button:hover:not(:disabled) {
+  border-color: #7a76a8;
+}
+
+.attach-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 4px 8px;
+  border: 1px solid #d9d6e3;
+  border-radius: 999px;
+  background: #f6f5fa;
+  font-size: 12px;
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip button {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  cursor: pointer;
+  color: #6f6b8a;
+  font-size: 14px;
+  line-height: 1;
+}
+
 .chat-error {
   width: min(100% - 48px, 680px);
   margin: 0 auto 8px;

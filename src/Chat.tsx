@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 import { CodeMirrorMarkdownEditor } from "@latentic/live-markdown";
 import ReportMenu from "./ReportMenu";
 
@@ -92,9 +92,13 @@ type ChatProps = {
   onDeleteSession: (id: number) => void;
   onDraftChange: (draft: string) => void;
   onSend: (event: FormEvent<HTMLFormElement>) => void;
+  attachments: string[];
+  onAttach: (files: string[]) => void;
+  onRemoveAttachment: (name: string) => void;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment }: ChatProps) {
+  const fileInput = useRef<HTMLInputElement>(null);
   const renderedMessages = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
@@ -115,7 +119,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
   }
   return <main className="chat-layout">
     <aside className="chat-sidebar"><button className="back-button" type="button" onClick={onBack}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{projectTitle}</h2></div><button className="start-button" type="button" onClick={onStart} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><aside className="login-details" aria-label="Admin login details"><p className="eyebrow">Admin login</p><dl><div><dt>Username</dt><dd>admin@dummy-project.com</dd></div><div><dt>Password</dt><dd>12345678</dd></div></dl></aside><button className="new-chat-button" type="button" onClick={onNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSessionId === session.id ? "session-row active" : "session-row"} key={session.id}><button className={activeSessionId === session.id ? "session-item active" : "session-item"} type="button" onClick={() => onSelectSession(session.id)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => onDeleteSession(session.id)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
-    <section className="chat-panel"><header className="chat-header"><h1>{sessionTitle ?? "New session"}</h1><p>{sessionTitle ? "Dummy assistant" : "Start a conversation"}</p></header><div className="message-list" aria-live="polite">{!messages.length && <div className="chat-empty"><h2>How can I help?</h2><p>Send a message to begin.</p></div>}{renderedMessages}</div>{error && <p className="chat-error" role="alert">{error}</p>}<form className="composer" onSubmit={onSend}><CodeMirrorMarkdownEditor value={draft} onChange={onDraftChange} mode="wysiwyg" aria-label="Message" /><button className="add-button" disabled={isSending || !draft.trim()} type="submit">{isSending ? "Sending…" : "Send"}</button></form></section>
+    <section className="chat-panel"><header className="chat-header"><h1>{sessionTitle ?? "New session"}</h1><p>{sessionTitle ? "Dummy assistant" : "Start a conversation"}</p></header><div className="message-list" aria-live="polite">{!messages.length && <div className="chat-empty"><h2>How can I help?</h2><p>Send a message to begin.</p></div>}{renderedMessages}</div>{error && <p className="chat-error" role="alert">{error}</p>}<form className="composer" onSubmit={onSend}><input ref={fileInput} type="file" multiple hidden onChange={(event) => { onAttach(Array.from(event.target.files ?? []).map(({ name }) => name)); event.target.value = ""; }} /><button className="attach-button" type="button" aria-label="Attach files" onClick={() => fileInput.current?.click()} disabled={isSending}>📎</button><div className="composer-main">{attachments.length > 0 && <ul className="attachment-list" aria-label="Attached files">{attachments.map((name) => <li className="attachment-chip" key={name}><span className="attachment-name" title={name}>{name}</span><button type="button" aria-label={`Remove ${name}`} onClick={() => onRemoveAttachment(name)}>×</button></li>)}</ul>}<CodeMirrorMarkdownEditor value={draft} onChange={onDraftChange} mode="wysiwyg" aria-label="Message" /></div><button className="add-button" disabled={isSending || !draft.trim()} type="submit">{isSending ? "Sending…" : "Send"}</button></form></section>
     <ReportMenu screenName="Project" />
   </main>;
 }

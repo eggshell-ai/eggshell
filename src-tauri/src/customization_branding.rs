@@ -94,7 +94,68 @@ export default customization;
 1. **Always read before writing**: Use `read_file` first on `customization.js` so you retain any existing customization variables that have been added.
 2. **Single source of truth**: Never hardcode branding values (like the title) in other files. Always change them in `customization.js`.
 3. **Preserve structure**: Keep the comments and object structure of the file intact when updating values.
-4. **Future variables**: New customization variables (logo, colors, footer text, etc.) should be added to this same file and wired into the application where needed.";
+4. **Future variables**: New customization variables (logo, colors, footer text, etc.) should be added to this same file and wired into the application where needed.
+
+---
+
+## Logo Replacement
+
+The application logo lives in the frontend `public` directory as `logo.svg`. When the user uploads a new logo file, use the `move_file` tool to place it in the project.
+
+### Option A: Replace the existing logo (same format)
+
+If the uploaded file is an SVG (or matches the current extension), move it over the existing logo:
+
+**Tool call example:**
+```javascript
+move_file({
+  source: \"/absolute/path/to/uploaded-logo.svg\",
+  shell: \"frontend\",
+  path: \"../public/logo.svg\"
+})
+```
+
+The path may escape the `src` directory with `../` to reach the `public` directory. The existing `logo.svg` is overwritten and the new logo is used immediately.
+
+### Option B: Different file extension
+
+If the uploaded logo has a different extension (e.g. `logo.png`), move it into `public` with its own name and update `customization.js` so the application references the new file:
+
+**Step 1 — move the file:**
+```javascript
+move_file({
+  source: \"/absolute/path/to/uploaded-logo.png\",
+  shell: \"frontend\",
+  path: \"../public/logo.png\"
+})
+```
+
+**Step 2 — update the customization file:**
+```javascript
+write_file({
+  shell: \"frontend\",
+  path: \"customization.js\",
+  content: `// ==============================|| APP CUSTOMIZATION ||============================== //
+// Central place for all application customization variables.
+// Add any future customization options (logo, colors, footer text, etc.) here.
+
+const customization = {
+  // Application title (used for the browser tab / document title)
+  title: 'Eggshell Admin',
+  // Logo file served from the public directory
+  logo: '/logo.png'
+};
+
+export default customization;
+`
+})
+```
+
+### Logo best practices
+
+1. **Prefer SVG**: vector logos scale cleanly at any size.
+2. **Keep the filename stable**: overwriting `logo.svg` avoids touching any other file.
+3. **Only change the extension when needed**: if the upload cannot be an SVG, add a `logo` variable to `customization.js` pointing at the new file instead of renaming references elsewhere.";
 
 /// Skill for customizing application branding details such as the title.
 pub struct CustomizationBrandingSkill {

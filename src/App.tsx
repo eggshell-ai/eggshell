@@ -28,6 +28,7 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<string[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
@@ -130,8 +131,8 @@ function App() {
     if (!activeProject || !draft.trim() || isSending) return;
     setError(""); setIsSending(true); setStreamedMessages([]);
     try {
-      const session = await invoke<Session>("send_message", { projectId: activeProject.id, sessionId: activeSession?.id ?? null, message: draft });
-      setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => id !== session.id)]); setDraft("");
+      const session = await invoke<Session>("send_message", { projectId: activeProject.id, sessionId: activeSession?.id ?? null, message: draft, artifacts });
+      setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setDraft(""); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
     finally { setIsSending(false); }
   }
@@ -160,7 +161,7 @@ function App() {
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
   if (!isSetupComplete) return <SetupPage onComplete={() => setIsSetupComplete(true)} />;
-  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} />;
+  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} />;
 
   return (
     <main className="home">
