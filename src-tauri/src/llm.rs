@@ -31,6 +31,10 @@ pub use crud_creation::CrudCreationSkill;
 mod analytics_and_reporting;
 pub use analytics_and_reporting::AnalyticsAndReportingSkill;
 
+#[path = "customization_branding.rs"]
+mod customization_branding;
+pub use customization_branding::CustomizationBrandingSkill;
+
 #[path = "mock_llm.rs"]
 mod mock_llm;
 pub use mock_llm::MockLlmService;
@@ -365,6 +369,7 @@ pub fn default_skills() -> Vec<Box<dyn Skill>> {
     vec![
         Box::new(CrudCreationSkill::default()),
         Box::new(AnalyticsAndReportingSkill::default()),
+        Box::new(CustomizationBrandingSkill::default()),
     ]
 }
 
