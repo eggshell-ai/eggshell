@@ -33,6 +33,14 @@ export interface FieldConfig {
   messages?: FieldMessages;
   trueLabel?: string;
   falseLabel?: string;
+  /** Static options for select fields: keys are values, values are labels */
+  options?: Record<string, string>;
+  /**
+   * Conditional visibility: a dot path into the current form values
+   * (e.g. 'data.email'). The field is hidden by default and only shown
+   * when the referenced value is truthy.
+   */
+  visibleWhen?: string;
   [key: string]: any;
 }
 
@@ -59,6 +67,49 @@ export interface Field {
   messages(messages: FieldMessages): Field;
   trueLabel(label: string): Field;
   falseLabel(label: string): Field;
+  options(options: Record<string, string>): Field;
+  visibleWhen(condition: string): Field;
+}
+
+/**
+ * Validation errors returned by resource validation hooks.
+ * Maps a field name to one or more error messages.
+ */
+export type ResourceValidationErrors = Record<string, string | string[]>;
+
+/**
+ * Validation hook interface (frontend mirror of the backend's ValidatesResource).
+ *
+ * Implement this interface in a hook file placed under
+ * src/resources/hooks/<resourceName>/ and register it in
+ * src/resources/hooks/index.ts to have it run automatically
+ * during store and update operations, after standard field validation.
+ */
+export interface ResourceValidationHook {
+  validate: (
+    /** Raw form values about to be submitted */
+    data: any,
+    /** Either 'store' or 'update' */
+    action: 'store' | 'update',
+    /** The existing record being updated (undefined on store) */
+    record?: any
+  ) => ResourceValidationErrors | void | Promise<ResourceValidationErrors | void>;
+}
+
+/**
+ * Custom row action configuration (e.g. activate/deactivate).
+ * Expressions are evaluated per row with the record available as `data`.
+ */
+export interface ResourceAction {
+  /** Required permission to see/execute this action (superusers always pass) */
+  permission?: string;
+  /** Evaluates to the request path appended to `<endpoint>/<record.id>` (e.g. '/deactivate') */
+  actionExpression?: string;
+  /** Evaluates to the button label; falsy hides the button for that row */
+  labelExpression?: string;
+  /** Show a confirmation dialog before executing */
+  confirm?: boolean;
+  [key: string]: any;
 }
 
 /**
@@ -74,12 +125,18 @@ export interface Resource<T = any> {
     view: string;
     delete: string;
   };
+  /** Custom row actions rendered in the grid */
+  actions?: ResourceAction[];
+  /** Base endpoint used to execute custom actions */
+  endpoint?: string;
 }
 
 /**
  * CrudService interface
  */
 export interface CrudService<T = any> {
+  /** Base endpoint this service was created from (used for custom actions) */
+  endpoint?: string;
   list(config?: any): Promise<T[]>;
   query(config?: any): Promise<T[]>;
   get(id: string | number, config?: any): Promise<T>;

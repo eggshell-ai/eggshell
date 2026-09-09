@@ -13,6 +13,10 @@ interface ResourceFormProps {
   initialValues?: any;
   excludeFields?: string[];
   onFinish?: (values: any) => void | Promise<void>;
+  /** Either 'store' or 'update' — passed to validation hooks */
+  action?: 'store' | 'update';
+  /** The existing record being updated (undefined on store) */
+  record?: any;
 }
 
 interface ResourceFilterFormProps {
@@ -130,13 +134,36 @@ const ResourceForm: React.FC<ResourceFormProps> = ({
   initialValues,
   excludeFields = [],
   onFinish,
+  action,
+  record,
 }) => {
+  // Watch all form values so conditional fields can react to changes
+  const allValues = Form.useWatch([], form);
+
   // Filter fields that should be shown in form
   const formFields = resource.fields.filter(
     (field) =>
       (field.form !== false) && // Show if form is not explicitly false
       !excludeFields.includes(field.name) // Exclude specified fields
   );
+
+  // Fields with a visibleWhen condition are hidden by default and only
+  // displayed when the referenced value (e.g. 'data.email') is truthy.
+  const isVisible = (field: any): boolean => {
+    if (!field.visibleWhen) {
+      return true;
+    }
+
+    // Make form values available as `data` so conditions like
+    // "data.source == 'other'" can be evaluated directly.
+    const data = allValues;
+    try {
+      return Boolean(eval(field.visibleWhen));
+    } catch {
+      // Condition referenced unavailable data — treat as not visible
+      return false;
+    }
+  };
 
   // Check if form has file fields
   const hasFileFields = formFields.some((field) => field.type === 'file');
@@ -155,9 +182,18 @@ const ResourceForm: React.FC<ResourceFormProps> = ({
       initialValues={initialValues}
       onFinish={handleFinish}
     >
-      {formFields.map((field) => (
-        <FormField key={field.name} field={field} form={form} />
-      ))}
+      {formFields.map((field) =>
+        isVisible(field) ? (
+          <FormField
+            key={field.name}
+            field={field}
+            form={form}
+            resourceName={resource.name}
+            action={action}
+            record={record}
+          />
+        ) : null
+      )}
     </Form>
   );
 };

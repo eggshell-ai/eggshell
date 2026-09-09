@@ -5,7 +5,7 @@ import { Form, Input as AntInput, Select, InputNumber, DatePicker, Checkbox, Upl
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { FieldConfig } from '../../types/resource';
-import { validateField } from '../../utils/validation';
+import { validateField, validateWithHooks } from '../../utils/validation';
 import apiService from '../../api/apiService';
 
 interface FormFieldProps {
@@ -15,6 +15,12 @@ interface FormFieldProps {
   name?: string | number | (string | number)[];
   noLabel?: boolean;
   parentName?: string;
+  /** Resource name used to resolve validation hooks (e.g. 'users') */
+  resourceName?: string;
+  /** Either 'store' or 'update' — passed to validation hooks */
+  action?: 'store' | 'update';
+  /** The existing record being updated (undefined on store) */
+  record?: any;
 }
 
 const formatColumnLabel = (name: string): string => {
@@ -88,7 +94,10 @@ const CalculatedCell: React.FC<{
 const TableWidget: React.FC<{
   field: FieldConfig;
   form: any;
-}> = ({ field, form }) => {
+  resourceName?: string;
+  action?: 'store' | 'update';
+  record?: any;
+}> = ({ field, form, resourceName, action, record }) => {
   const rawColumns: any[] = field.columns || [];
 
   // Extract fields from selected resource if available
@@ -222,6 +231,9 @@ const TableWidget: React.FC<{
                               form={form}
                               name={[rowField.name, col.name]}
                               parentName={field.name}
+                              resourceName={resourceName}
+                              action={action}
+                              record={record}
                               noLabel
                             />
                           )}
@@ -285,9 +297,14 @@ const ComputedWatcher: React.FC<{
   return null;
 };
 
-const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name, noLabel, parentName }) => {
+const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name, noLabel, parentName, resourceName, action, record }) => {
   const [options, setOptions] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Static options take precedence over remote resource options
+  const staticOptions: { label: string; value: string }[] | null = field.options
+    ? Object.entries(field.options).map(([value, label]) => ({ value, label: String(label) }))
+    : null;
 
   const fieldName = name !== undefined ? name : field.name;
   const fullPath = parentName
@@ -295,7 +312,7 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
     : fieldName;
 
   useEffect(() => {
-    if ((field.type === 'select' || field.type === 'tags') && field.resource) {
+    if ((field.type === 'select' || field.type === 'tags') && field.resource && !staticOptions) {
       fetchOptions();
     }
   }, [field]);
@@ -351,7 +368,7 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
   };
 
   if (field.type === 'table') {
-    return <TableWidget field={field} form={form} />;
+    return <TableWidget field={field} form={form} resourceName={resourceName} action={action} record={record} />;
   }
 
   const isReadOnly = Boolean(field.readonly);
@@ -379,7 +396,7 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
             disabled={isReadOnly}
             placeholder={`Select ${field.label || field.name}`}
             loading={loading}
-            options={options}
+            options={staticOptions ?? options}
             allowClear
             optionFilterProp="label"
           />
@@ -439,13 +456,30 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
   const buildRules = () => {
     const rules: any[] = [];
 
-    if (field.validations) {
+    if (field.validations || field.options || resourceName) {
       rules.push({
         validator: async (_rule: any, value: any) => {
           const allValues = form ? form.getFieldsValue() : {};
           const result = validateField(field, value, allValues);
           if (!result.valid && result.error) {
             throw new Error(result.error);
+          }
+
+          // Run resource validation hooks (mirrors backend ValidatesResource)
+          if (resourceName) {
+            const hookErrors = await validateWithHooks(
+              resourceName,
+              allValues,
+              action || 'store',
+              record
+            );
+            const fieldKey = Array.isArray(fieldName)
+              ? fieldName[fieldName.length - 1]
+              : fieldName;
+            const hookError = hookErrors[field.name] || hookErrors[String(fieldKey)];
+            if (hookError) {
+              throw new Error(hookError);
+            }
           }
         },
       });

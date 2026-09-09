@@ -35,7 +35,18 @@ struct Field {
     default: Option<Value>,
     true_label: Option<String>,
     false_label: Option<String>,
+    options: Option<Map<String, Value>>,
     messages: Option<Value>,
+    visible_when: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResourceAction {
+    permission: Option<String>,
+    action_expression: Option<String>,
+    label_expression: Option<String>,
+    confirm: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,11 +56,18 @@ struct Resource {
     endpoint: String,
     fields: Vec<Field>,
     title_expression: Option<String>,
+    actions: Option<Vec<ResourceAction>>,
 }
 
 pub struct SyncSchemaTool {
     parameters: Map<String, Value>,
 }
+
+const RESERVED_COLUMN_NAMES: [&str; 15] = [
+    "desc", "asc", "order", "group", "key", "index", "select", "insert", "update", "delete",
+    "table", "from", "where", "by", "limit",
+];
+
 impl SyncSchemaTool {
     pub fn new() -> Self {
         Self { parameters: json!({"type":"object","properties":{"resources":{"type":"array","description":"Structured resource definitions.","items":{"type":"object"}},"projectPath":{"type":"string"}},"required":["resources"]}).as_object().unwrap().clone() }
@@ -80,6 +98,19 @@ impl Tool for SyncSchemaTool {
         )?;
         if resources.is_empty() {
             return Err("resources must contain at least one resource".into());
+        }
+        for resource in &resources {
+            for field in &resource.fields {
+                if RESERVED_COLUMN_NAMES.contains(&field.name.as_str()) {
+                    return Err(format!(
+                        "Column name '{}' on resource '{}' is reserved and cannot be used. Reserved names: {}. Please choose a different column name.",
+                        field.name,
+                        resource.name,
+                        RESERVED_COLUMN_NAMES.join(", ")
+                    )
+                    .into());
+                }
+            }
         }
         let project = args
             .get("projectPath")
@@ -141,7 +172,36 @@ fn frontend_code(r: &Resource, _class: &str) -> String {
         .map(field_js)
         .collect::<Vec<_>>()
         .join(",\n");
-    format!("import defineResource from '../utils/defineResource';\nimport field from '../utils/field';\nimport {}Service from '../api/{}Service';\n\nexport default defineResource({{\n  name: {},\n  endpoint: {},\n  fields: [\n{}\n  ],\n  titleExpression: {}\n}});\n", r.name, r.name, js(&r.name), js(&r.endpoint), fields, js(r.title_expression.as_deref().unwrap_or("{id}")))
+    format!("import defineResource from '../utils/defineResource';\nimport field from '../utils/field';\nimport {}Service from '../api/{}Service';\n\nexport default defineResource({{\n  name: {},\n  endpoint: {},\n  fields: [\n{}\n  ],\n{}  titleExpression: {}\n}});\n", r.name, r.name, js(&r.name), js(&r.endpoint), fields, actions_js(r), js(r.title_expression.as_deref().unwrap_or("{id}")))
+}
+
+fn actions_js(r: &Resource) -> String {
+    let actions = match &r.actions {
+        Some(actions) if !actions.is_empty() => actions,
+        _ => return String::new(),
+    };
+    let items = actions
+        .iter()
+        .map(|a| {
+            let mut s = String::from("    {\n");
+            if let Some(permission) = &a.permission {
+                s.push_str(&format!("      permission: {},\n", js(permission)));
+            }
+            if let Some(expression) = &a.action_expression {
+                s.push_str(&format!("      actionExpression: {},\n", js(expression)));
+            }
+            if let Some(expression) = &a.label_expression {
+                s.push_str(&format!("      labelExpression: {},\n", js(expression)));
+            }
+            if a.confirm.unwrap_or(false) {
+                s.push_str("      confirm: true,\n");
+            }
+            s.push_str("    }");
+            s
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("  actions: [\n{}\n  ],\n", items)
 }
 fn field_js(f: &Field) -> String {
     let mut s = format!("    field.{}({})", f.field_type, js(&f.name));
@@ -160,6 +220,7 @@ fn field_js(f: &Field) -> String {
         };
     }
     call!("label", f.label.as_deref());
+    call!("visibleWhen", f.visible_when.as_deref());
     call!("trueLabel", f.true_label.as_deref());
     call!("falseLabel", f.false_label.as_deref());
     call!("source", f.source.as_deref());
@@ -170,6 +231,14 @@ fn field_js(f: &Field) -> String {
     }
     if let Some(v) = &f.columns {
         s.push_str(&format!("\n      .columns({})", v));
+    }
+    if let Some(opts) = &f.options {
+        let entries = opts
+            .iter()
+            .map(|(k, v)| format!("{}: {}", js(k), serde_json::to_string(v).unwrap_or_default()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        s.push_str(&format!("\n      .options({{ {} }})", entries));
     }
     if let Some(v) = &f.default {
         s.push_str(&format!("\n      .default({})", serde_json::to_string(v).unwrap_or_default()));
@@ -203,7 +272,7 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
+    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\OneOf as OneOfConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
     let props = r
         .fields
         .iter()
@@ -237,6 +306,17 @@ fn backend_code(r: &Resource, class: &str) -> String {
                     } else {
                         format!("({}\n    )", unique_message)
                     }
+                ));
+            }
+            if let Some(opts) = &f.options {
+                let choices = opts
+                    .keys()
+                    .map(|k| format!("'{}'", k.replace('\'', "\\'")))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                asserts.push_str(&format!(
+                    "    #[OneOfConstraint(choices: [{}])]\n",
+                    choices
                 ));
             }
             if f.min_size.is_some() || f.max_size.is_some() {

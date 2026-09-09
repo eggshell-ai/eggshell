@@ -7,6 +7,8 @@ import { CrudService } from '../types/resource';
  */
 export function createCrudService<T = any>(endpoint: string): CrudService<T> {
   return {
+    endpoint,
+
     list: async (config = {}) => {
       return apiService.get<T[]>(endpoint, config);
     },

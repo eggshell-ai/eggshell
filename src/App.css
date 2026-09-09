@@ -331,13 +331,42 @@
 .composer {
   display: flex;
   gap: 10px;
-  width: min(100%, 850px);
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
   padding: 18px clamp(24px, 6vw, 88px) 28px;
 }
 
 .composer input {
   margin: 0;
+}
+
+.composer .cm-editor {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #d9d6e3;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+  height: 60px;
+}
+.composer .cm-editor-host {
+  width: 100%;
+}
+
+.composer .cm-editor.cm-focused {
+  border-color: #7a76a8;
+  outline: none;
+}
+
+.composer .cm-content {
+  height: 100%;
+  margin: 0;
+  width: 100%;
+}
+
+.composer .cm-line {
+  width: 100%;
 }
 
 .chat-error {
