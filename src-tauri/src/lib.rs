@@ -1,6 +1,7 @@
 pub mod config;
 mod db;
 pub mod llm;
+pub mod providers;
 pub mod logger;
 pub mod progress;
 mod setup;
@@ -898,11 +899,12 @@ fn read_logs(
 const CONFIG_PLACEHOLDER: &str = "...";
 
 /// What the setup screen needs to know at launch: whether to appear at all, and
-/// what to prefill. The API key is deliberately not sent back to the frontend.
+/// which providers exist and how each is configured. The API key is deliberately
+/// not sent back to the frontend — only whether one is set.
 #[derive(Debug, Serialize)]
 struct SetupState {
     setup_completed: bool,
-    model: String,
+    providers: Vec<providers::ProviderSummary>,
 }
 
 #[tauri::command]
@@ -910,11 +912,7 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
     match config::ConfigService::load_default(&app) {
         Ok(config) => SetupState {
             setup_completed: config.setup_completed,
-            model: if config.ollama.model == CONFIG_PLACEHOLDER {
-                String::new()
-            } else {
-                config.ollama.model
-            },
+            providers: providers::provider_summaries(&config.providers),
         },
         // A first launch has no configuration to read yet, which is exactly when
         // setup has to run.
@@ -922,7 +920,7 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
             log.line("info", format!("{error}; treating setup as incomplete"));
             SetupState {
                 setup_completed: false,
-                model: String::new(),
+                providers: providers::provider_summaries(&[]),
             }
         }
     }
@@ -931,35 +929,37 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
 #[tauri::command]
 fn save_provider_config(
     provider: String,
-    model: String,
+    models: Vec<String>,
     api_key: String,
     app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
-    ollama: tauri::State<'_, Arc<llm::OllamaService>>,
+    ollama: tauri::State<'_, Arc<providers::OllamaService>>,
 ) -> Result<(), String> {
     if provider != "ollama" {
         return Err(format!("\"{provider}\" is not a supported provider yet."));
     }
-    let model = model.trim().to_string();
+    let models = models
+        .into_iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .collect::<Vec<_>>();
     let api_key = api_key.trim().to_string();
-    if model.is_empty() || api_key.is_empty() {
-        return Err("A model and an API key are required.".to_string());
+    if models.is_empty() || api_key.is_empty() {
+        return Err("At least one model and an API key are required.".to_string());
     }
 
     // Setup writes every field the file holds, and a first launch has nothing to
     // read, so an unreadable configuration is replaced rather than fatal.
     let mut config = config::ConfigService::load_default(&app).unwrap_or_else(|error| {
         log.line("info", format!("{error}; writing a fresh configuration"));
-        config::AppConfig {
-            ollama: config::OllamaConfig {
-                model: String::new(),
-                api_key: String::new(),
-            },
-            mysql: config::MysqlConfig::default(),
-            setup_completed: false,
-        }
+        config::AppConfig::default()
     });
-    config.ollama = config::OllamaConfig { model, api_key };
+    let provider_config = config::ProviderConfig {
+        name: provider.clone(),
+        api_key,
+        models,
+    };
+    config.providers = vec![provider_config.clone()];
     config.setup_completed = true;
     config::ConfigService::save_default(&app, &config).map_err(|error| {
         let message = error.to_string();
@@ -969,11 +969,53 @@ fn save_provider_config(
 
     // The agent was built from the configuration read at start-up, so without
     // this the credentials just entered would only take effect after a restart.
-    ollama.apply(config.ollama.clone());
+    ollama.apply(providers::OllamaSettings::from(&provider_config));
     log.line(
         "info",
-        format!("saved {provider} with model {}", config.ollama.model),
+        format!(
+            "saved {provider} with models {}",
+            provider_config.models.join(", ")
+        ),
     );
+    Ok(())
+}
+
+/// Switches the model the running agent uses. The provider itself stays fixed
+/// for the session; only which of its configured models answers changes.
+#[tauri::command]
+fn select_model(
+    provider: String,
+    model: String,
+    app: tauri::AppHandle,
+    log: tauri::State<'_, ProgressLog>,
+    ollama: tauri::State<'_, Arc<providers::OllamaService>>,
+) -> Result<(), String> {
+    if provider != "ollama" {
+        return Err(format!("\"{provider}\" is not a supported provider yet."));
+    }
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err("A model is required.".to_string());
+    }
+
+    let mut config = config::ConfigService::load_default(&app).map_err(|error| error.to_string())?;
+    let provider_config = config
+        .providers
+        .iter_mut()
+        .find(|provider| provider.name == "ollama")
+        .ok_or_else(|| "Ollama has not been configured yet.".to_string())?;
+    if !provider_config.models.iter().any(|candidate| candidate == &model) {
+        return Err(format!("\"{model}\" is not a configured Ollama model."));
+    }
+    // Move the selection to the front, so it is also the default on the next
+    // launch.
+    provider_config.models.retain(|candidate| candidate != &model);
+    provider_config.models.insert(0, model.clone());
+    let provider_config = provider_config.clone();
+    config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
+
+    ollama.apply(providers::OllamaSettings::from(&provider_config));
+    log.line("info", format!("switched to {provider} model {model}"));
     Ok(())
 }
 
@@ -1278,16 +1320,21 @@ pub fn run() {
                     "info",
                     format!("{error}; starting with empty provider settings"),
                 );
-                config::AppConfig {
-                    ollama: config::OllamaConfig {
-                        model: String::new(),
-                        api_key: String::new(),
-                    },
-                    mysql: config::MysqlConfig::default(),
-                    setup_completed: false,
-                }
+                config::AppConfig::default()
             });
-            let ollama = Arc::new(llm::OllamaService::new(config.ollama));
+            // The first configured provider is the one the agent talks to; the
+            // chat screen can switch models within it. Ollama is the only
+            // provider today, so its service is created directly and updated in
+            // place when the setup screen saves. A configuration naming another
+            // provider falls back to empty Ollama settings, which fail per
+            // request rather than at launch.
+            let ollama_settings = match config.providers.first() {
+                Some(provider_config) if provider_config.name == "ollama" => {
+                    providers::OllamaSettings::from(provider_config)
+                }
+                _ => providers::OllamaSettings::default(),
+            };
+            let ollama = Arc::new(providers::OllamaService::new(ollama_settings));
             // The agent shares the central logger so its prompts and tool calls
             // land in the same log the report menu reads from.
             let agent =
@@ -1310,6 +1357,7 @@ pub fn run() {
             load_setup_state,
             config::save_mysql_config,
             save_provider_config,
+            select_model,
             list_projects,
             create_project,
             delete_project,

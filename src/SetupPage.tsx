@@ -9,9 +9,11 @@ type DependencyKey = keyof DependencyStatus;
 type Dependency = { key: DependencyKey; name: string; version?: string };
 type InstallOutcome = { installed: boolean; already_present: boolean; command: string; restart_required: boolean };
 type InstallState = "idle" | "installing" | "failed";
-type SetupState = { setup_completed: boolean; model: string };
+type SetupState = { setup_completed: boolean; providers: RegisteredProvider[] };
 type SetupStep = "dependencies" | "provider";
-type Provider = { key: "ollama"; name: string; detail: string };
+// Mirrors `providers::ProviderSummary`: what the registry knows plus what the
+// user has configured. The API key itself never crosses back to the frontend.
+type RegisteredProvider = { key: string; name: string; detail: string; api_key_set: boolean; models: string[] };
 // Mirrors `setup::LogLine`: `stream` is what produced the line, and the panel colours by it.
 type LogLine = { seq: number; stream: "info" | "command" | "stdout" | "stderr" | "error"; text: string };
 // Mirrors `logger::LogEntry`: the central log the backend accumulates for reporting.
@@ -24,9 +26,9 @@ const dependencies: Dependency[] = [
   { key: "symfony", name: "Symfony CLI" },
   { key: "mysql", name: "MySQL" },
 ];
-const providers: Provider[] = [
-  { key: "ollama", name: "Ollama", detail: "Cloud and local models from ollama.com" },
-];
+// The provider tiles come from the backend registry, so a new provider shows
+// up here without touching this file.
+const noProviders: RegisteredProvider[] = [];
 type SetupPageProps = { onComplete: () => void };
 
 function replaceAt<T>(values: T[], index: number, value: T): T[] {
@@ -41,8 +43,9 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
   const [installStates, setInstallStates] = useState<InstallState[]>(dependencies.map(() => "idle"));
   const [failures, setFailures] = useState<string[]>([]);
   const [needsRestart, setNeedsRestart] = useState(false);
-  const [provider, setProvider] = useState<Provider["key"] | null>(null);
-  const [model, setModel] = useState("");
+  const [provider, setProvider] = useState<string | null>(null);
+  const [models, setModels] = useState("");
+  const [registeredProviders, setRegisteredProviders] = useState<RegisteredProvider[]>(noProviders);
   const [apiKey, setApiKey] = useState("");
   const [mysqlPassword, setMysqlPassword] = useState("");
   const [showMysqlPassword, setShowMysqlPassword] = useState(false);
@@ -111,10 +114,19 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
       });
   }, []);
 
-  // Whatever model config.yaml already names is the best first suggestion.
+  // Whatever config.yaml already names is the best first suggestion, and the
+  // provider registry itself comes from the same call.
   useEffect(() => {
     void invoke<SetupState>("load_setup_state")
-      .then(({ model: configured }) => setModel((current) => current || configured))
+      .then(({ providers }) => {
+        setRegisteredProviders(providers);
+        // Prefill with whatever an existing configuration already holds.
+        const configured = providers.find(({ models }) => models.length > 0);
+        if (configured) {
+          setProvider((current) => current ?? configured.key);
+          setModels((current) => current || configured.models.join(", "));
+        }
+      })
       .catch((error: unknown) => console.error("[SetupPage] load_setup_state rejected", { error }));
   }, []);
 
@@ -207,11 +219,15 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
   }
 
   async function saveProvider() {
-    if (!provider || !model.trim() || !apiKey.trim()) return;
+    if (!provider) return;
+    // The models arrive as one comma-separated field; blank entries are dropped
+    // by the backend, so trimming here is enough.
+    const modelList = models.split(",").map((model) => model.trim()).filter(Boolean);
+    if (modelList.length === 0 || !apiKey.trim()) return;
     setIsSaving(true); setFailures([]);
-    console.info("[SetupPage] save_provider_config started", { provider, model });
+    console.info("[SetupPage] save_provider_config started", { provider, models: modelList });
     try {
-      await invoke("save_provider_config", { provider, model, apiKey });
+      await invoke("save_provider_config", { provider, models: modelList, apiKey });
       console.info("[SetupPage] save_provider_config resolved; calling onComplete");
       onComplete();
     } catch (reason) {
@@ -258,25 +274,26 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     <h1 id="provider-title">Configure Your LLM Provider</h1>
     <p className="setup-intro">Pick the provider Eggshell should send your prompts to.</p>
     <div className="provider-list" aria-label="Providers">
-      {providers.map(({ key, name, detail }) => <button
+      {registeredProviders.map(({ key, name, detail }) => <button
         className={provider === key ? "provider-tile selected" : "provider-tile"}
         key={key} type="button" aria-pressed={provider === key} onClick={() => setProvider(key)}
       >
         <span className="provider-mark" aria-hidden="true">{name.slice(0, 1)}</span>
         <span className="provider-copy"><strong>{name}</strong><small>{detail}</small></span>
       </button>)}
+      {!registeredProviders.length && <p className="setup-note">No providers are registered.</p>}
     </div>
-    {provider === "ollama" && <div className="provider-form">
+    {provider && <div className="provider-form">
       <label>API key<input value={apiKey} type="password" autoComplete="off" spellCheck={false}
-        onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Ollama API key" /></label>
-      <label>Model<input value={model} autoComplete="off" spellCheck={false}
-        onChange={(event) => setModel(event.target.value)} placeholder="gemma4:31b-cloud" /></label>
+        onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your API key" /></label>
+      <label>Models <span>Comma-separated</span><input value={models} autoComplete="off" spellCheck={false}
+        onChange={(event) => setModels(event.target.value)} placeholder="gemma4:31b-cloud, gemma4:9b" /></label>
     </div>}
     {failures.length > 0 && <div className="setup-error" role="alert">
       {failures.map((failure) => <p key={failure}>{failure}</p>)}
     </div>}
     <button className="setup-button" type="button" onClick={() => void saveProvider()}
-      disabled={isSaving || !provider || !model.trim() || !apiKey.trim()}>
+      disabled={isSaving || !provider || !models.split(",").map((model) => model.trim()).filter(Boolean).length || !apiKey.trim()}>
       {isSaving ? "Saving…" : "Next"}
     </button>
     {restartNote}

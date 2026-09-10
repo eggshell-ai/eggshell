@@ -8,13 +8,39 @@ use tauri::{Manager, Runtime};
 /// Application configuration loaded from `config.yaml`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
-    pub ollama: OllamaConfig,
+    /// Every configured provider. The setup screen fills in the first one;
+    /// more can be added by hand in config.yaml.
+    #[serde(default)]
+    pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub mysql: MysqlConfig,
     /// Written once the setup screen finishes, so later launches skip it. Older
     /// configuration files predate the flag, hence the default.
     #[serde(rename = "setupCompleted", default)]
     pub setup_completed: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            providers: Vec::new(),
+            mysql: MysqlConfig::default(),
+            setup_completed: false,
+        }
+    }
+}
+
+/// One provider entry in config.yaml. `name` identifies the provider in the
+/// registry (`crate::providers`); the rest is the provider's own business.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProviderConfig {
+    pub name: String,
+    #[serde(rename = "apiKey", default)]
+    pub api_key: String,
+    /// The models the user wants available for this provider. Not fetched from
+    /// anywhere: added by the user, comma-separated on the setup screen.
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -45,14 +71,7 @@ pub fn save_mysql_config(app: tauri::AppHandle, password: String) -> Result<(), 
     // MySQL can be configured before the provider setup is complete. On a
     // first launch there is no config.yaml yet, so start with the same empty
     // configuration used by the rest of the setup flow.
-    let mut config = ConfigService::load_default(&app).unwrap_or_else(|_| AppConfig {
-        ollama: OllamaConfig {
-            model: String::new(),
-            api_key: String::new(),
-        },
-        mysql: MysqlConfig::default(),
-        setup_completed: false,
-    });
+    let mut config = ConfigService::load_default(&app).unwrap_or_default();
     config.mysql = MysqlConfig {
         kind: "system".to_string(),
         port: 3306,
@@ -60,13 +79,6 @@ pub fn save_mysql_config(app: tauri::AppHandle, password: String) -> Result<(), 
         pass: password,
     };
     ConfigService::save_default(&app, &config).map_err(|error| error.to_string())
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct OllamaConfig {
-    pub model: String,
-    #[serde(rename = "apiKey")]
-    pub api_key: String,
 }
 
 /// Service responsible for loading and exposing application configuration.
