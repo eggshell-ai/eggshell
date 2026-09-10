@@ -239,6 +239,10 @@ export const field = {
     return new FieldBuilder('date', name);
   },
 
+  time(name: string): Field {
+    return new FieldBuilder('time', name);
+  },
+
   boolean(name: string): Field {
     return new FieldBuilder('boolean', name);
   },

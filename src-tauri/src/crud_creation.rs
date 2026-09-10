@@ -199,6 +199,7 @@ Examples:
 - \"notes\" or \"description\" with multiple lines → `textarea`;
 - status/source/category choices → `select`;
 - yes/no or active/inactive → `boolean`;
+- a time of day → `time`;
 - uploaded image → `file`.
 
 ---
@@ -725,6 +726,7 @@ Supported ordinary behavior includes:
 - `unique: true`;
 - email validation via `type: \"email\"`;
 - phone validation via `type: \"phone\"`;
+- time validation via `type: \"time\"` (valid `HH:MM:SS` 24-hour time, e.g. `14:30:00`);
 - `minSize`;
 - `maxSize`;
 - static select option validation;

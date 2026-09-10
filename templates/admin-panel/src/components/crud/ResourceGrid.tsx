@@ -277,6 +277,9 @@ export default function ResourceGrid({
       case 'date':
         return value ? new Date(value).toLocaleDateString() : '-';
       
+      case 'time':
+        return value ? String(value) : '-';
+      
       case 'number':
         return value !== undefined && value !== null ? value : '-';
       

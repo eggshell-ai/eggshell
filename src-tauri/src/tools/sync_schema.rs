@@ -272,7 +272,7 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\OneOf as OneOfConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
+    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\OneOf as OneOfConstraint;\nuse App\\Validator\\Time as TimeConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
     let props = r
         .fields
         .iter()
@@ -307,6 +307,11 @@ fn backend_code(r: &Resource, class: &str) -> String {
                         format!("({}\n    )", unique_message)
                     }
                 ));
+            }
+            if f.field_type == "time" {
+                asserts.push_str(
+                    "    #[TimeConstraint(\n        message: 'The value {{ value }} is not a valid time. It must be in HH:MM:SS format (e.g. 14:30:00).',\n    )]\n",
+                );
             }
             if let Some(opts) = &f.options {
                 let choices = opts
@@ -371,6 +376,7 @@ fn php_type(t: &str) -> &str {
     match t {
         "number" | "foreign" => "int",
         "boolean" => "bool",
+        "time" => "string",
         "table" => "array",
         _ => "string",
     }

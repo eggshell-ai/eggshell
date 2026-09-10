@@ -52,6 +52,9 @@ const ViewField: React.FC<ViewFieldProps> = ({ field, record, noLabel }) => {
           return String(value);
         }
 
+      case 'time':
+        return value ? String(value) : '-';
+
       case 'select':
       case 'foreign':
         if (relationTitle !== undefined && relationTitle !== null) {
