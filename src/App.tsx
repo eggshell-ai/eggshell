@@ -131,7 +131,7 @@ function App() {
     if (!activeProject || !draft.trim() || isSending) return;
     setError(""); setIsSending(true); setStreamedMessages([]);
     try {
-      const session = await invoke<Session>("send_message", { projectId: activeProject.id, sessionId: activeSession?.id ?? null, message: draft, artifacts });
+      const session = await invoke<Session>("send_message", { projectId: activeProject.id, sessionId: activeSession?.id ?? null, message: draft, artifacts: attachments });
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setDraft(""); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
     finally { setIsSending(false); }
