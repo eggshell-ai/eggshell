@@ -245,6 +245,72 @@
   background: #6246ea;
 }
 
+.message-content {
+  border-radius: 14px;
+  padding: 12px 15px;
+  background: #f0eef6;
+  line-height: 1.5;
+}
+
+.message.user .message-content {
+  color: #fff;
+  background: #6246ea;
+}
+
+.message-content > :first-child { margin-top: 0; }
+.message-content > :last-child { margin-bottom: 0; }
+.message-content p { margin: 0 0 10px; white-space: pre-wrap; }
+.message-content h1, .message-content h2, .message-content h3,
+.message-content h4, .message-content h5, .message-content h6 {
+  margin: 14px 0 8px;
+  line-height: 1.3;
+}
+.message-content h1 { font-size: 1.3rem; }
+.message-content h2 { font-size: 1.15rem; }
+.message-content h3 { font-size: 1.05rem; }
+.message-content ul, .message-content ol { margin: 0 0 10px; padding-left: 22px; }
+.message-content li { margin: 2px 0; }
+.message-content code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(98, 70, 234, .12);
+  font-size: .9em;
+}
+.message.user .message-content code { background: rgba(255, 255, 255, .22); }
+.message-content pre {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #2b2733;
+  color: #f0eef6;
+  overflow-x: auto;
+}
+.message-content pre code { padding: 0; background: none; }
+.message-content blockquote {
+  margin: 0 0 10px;
+  padding: 2px 12px;
+  border-left: 3px solid #6246ea;
+  color: #6c6879;
+}
+.message.user .message-content blockquote { border-left-color: rgba(255, 255, 255, .5); color: rgba(255, 255, 255, .8); }
+.message-content a { color: #6246ea; }
+.message.user .message-content a { color: #fff; }
+.message-content table {
+  margin: 0 0 10px;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .92em;
+}
+.message-content th, .message-content td {
+  padding: 6px 10px;
+  border: 1px solid rgba(98, 70, 234, .25);
+  text-align: left;
+}
+.message-content th { background: rgba(98, 70, 234, .1); font-weight: 700; }
+.message.user .message-content th, .message.user .message-content td { border-color: rgba(255, 255, 255, .35); }
+.message.user .message-content th { background: rgba(255, 255, 255, .15); }
+.message-content hr { margin: 12px 0; border: none; border-top: 1px solid rgba(98, 70, 234, .25); }
+
 .tool-run {
   width: min(100%, 660px);
   overflow: hidden;

@@ -1,4 +1,6 @@
 import { FormEvent, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { CodeMirrorMarkdownEditor } from "@latentic/live-markdown";
 import ReportMenu from "./ReportMenu";
 
@@ -47,6 +49,12 @@ function jsonForDisplay(value: unknown) {
 function toolFailed(result: ToolEvent | undefined) {
   if (!result || !result.result || typeof result.result !== "object") return false;
   return "error" in result.result;
+}
+
+function MessageContent({ content }: { content: string }) {
+  return <div className="message-content">
+    <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
+  </div>;
 }
 
 type ToolRunProps = { call: ChatMessage; result?: ChatMessage };
@@ -112,10 +120,10 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     // Tool results are normally consumed by the preceding call. Retain orphaned
     // results so older or interrupted conversations do not silently lose data.
     if (message.role === "tool_result") {
-      renderedMessages.push(<article className="message tool_result" key={`tool-result-${index}`}><span>Eggshell</span><p>{message.content}</p></article>);
+      renderedMessages.push(<article className="message tool_result" key={`tool-result-${index}`}><span>Eggshell</span><MessageContent content={message.content} /></article>);
       continue;
     }
-    renderedMessages.push(<article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Eggshell"}</span><p>{message.content}</p></article>);
+    renderedMessages.push(<article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Eggshell"}</span><MessageContent content={message.content} /></article>);
   }
   return <main className="chat-layout">
     <aside className="chat-sidebar"><button className="back-button" type="button" onClick={onBack}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{projectTitle}</h2></div><button className="start-button" type="button" onClick={onStart} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><aside className="login-details" aria-label="Admin login details"><p className="eyebrow">Admin login</p><dl><div><dt>Username</dt><dd>admin@dummy-project.com</dd></div><div><dt>Password</dt><dd>12345678</dd></div></dl></aside><button className="new-chat-button" type="button" onClick={onNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSessionId === session.id ? "session-row active" : "session-row"} key={session.id}><button className={activeSessionId === session.id ? "session-item active" : "session-item"} type="button" onClick={() => onSelectSession(session.id)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => onDeleteSession(session.id)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
