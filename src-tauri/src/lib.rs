@@ -933,9 +933,12 @@ fn save_provider_config(
     api_key: String,
     app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
-    ollama: tauri::State<'_, Arc<providers::OllamaService>>,
+    hub: tauri::State<'_, Arc<providers::ProviderHub>>,
 ) -> Result<(), String> {
-    if provider != "ollama" {
+    let known = providers::registered_providers()
+        .iter()
+        .any(|descriptor| descriptor.key == provider);
+    if !known {
         return Err(format!("\"{provider}\" is not a supported provider yet."));
     }
     let models = models
@@ -969,7 +972,7 @@ fn save_provider_config(
 
     // The agent was built from the configuration read at start-up, so without
     // this the credentials just entered would only take effect after a restart.
-    ollama.apply(providers::OllamaSettings::from(&provider_config));
+    hub.apply(&provider_config);
     log.line(
         "info",
         format!(
@@ -988,9 +991,12 @@ fn select_model(
     model: String,
     app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
-    ollama: tauri::State<'_, Arc<providers::OllamaService>>,
+    hub: tauri::State<'_, Arc<providers::ProviderHub>>,
 ) -> Result<(), String> {
-    if provider != "ollama" {
+    let known = providers::registered_providers()
+        .iter()
+        .any(|descriptor| descriptor.key == provider);
+    if !known {
         return Err(format!("\"{provider}\" is not a supported provider yet."));
     }
     let model = model.trim().to_string();
@@ -1002,10 +1008,10 @@ fn select_model(
     let provider_config = config
         .providers
         .iter_mut()
-        .find(|provider| provider.name == "ollama")
-        .ok_or_else(|| "Ollama has not been configured yet.".to_string())?;
+        .find(|candidate| candidate.name == provider)
+        .ok_or_else(|| format!("{provider} has not been configured yet."))?;
     if !provider_config.models.iter().any(|candidate| candidate == &model) {
-        return Err(format!("\"{model}\" is not a configured Ollama model."));
+        return Err(format!("\"{model}\" is not a configured {provider} model."));
     }
     // Move the selection to the front, so it is also the default on the next
     // launch.
@@ -1014,7 +1020,7 @@ fn select_model(
     let provider_config = provider_config.clone();
     config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
 
-    ollama.apply(providers::OllamaSettings::from(&provider_config));
+    hub.apply(&provider_config);
     log.line("info", format!("switched to {provider} model {model}"));
     Ok(())
 }
@@ -1323,24 +1329,16 @@ pub fn run() {
                 config::AppConfig::default()
             });
             // The first configured provider is the one the agent talks to; the
-            // chat screen can switch models within it. Ollama is the only
-            // provider today, so its service is created directly and updated in
-            // place when the setup screen saves. A configuration naming another
-            // provider falls back to empty Ollama settings, which fail per
-            // request rather than at launch.
-            let ollama_settings = match config.providers.first() {
-                Some(provider_config) if provider_config.name == "ollama" => {
-                    providers::OllamaSettings::from(provider_config)
-                }
-                _ => providers::OllamaSettings::default(),
-            };
-            let ollama = Arc::new(providers::OllamaService::new(ollama_settings));
+            // chat screen can switch models within it. The hub holds every
+            // concrete provider service and forwards prompts to the active one,
+            // so the setup screen can switch providers while Eggshell runs.
+            let hub = Arc::new(providers::ProviderHub::new(config.providers.first()));
             // The agent shares the central logger so its prompts and tool calls
             // land in the same log the report menu reads from.
             let agent =
-                llm::AgentService::new(ollama.clone()).with_logger(log.logger().clone());
+                llm::AgentService::new(hub.clone()).with_logger(log.logger().clone());
             app.manage(agent);
-            app.manage(ollama);
+            app.manage(hub);
 
             // Probing the port and waiting for the daemon both block, and the
             // window should not wait on a database it does not use itself.
