@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Form, Input as AntInput, Select, InputNumber, DatePicker, Checkbox, Upload, message, Button } from 'antd';
+import { Form, Input as AntInput, Select, InputNumber, DatePicker, TimePicker, Checkbox, Upload, message, Button } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { FieldConfig } from '../../types/resource';
@@ -417,6 +417,9 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
 
       case 'date':
         return <DatePicker disabled={isReadOnly} style={{ width: '100%' }} />;
+
+      case 'time':
+        return <TimePicker disabled={isReadOnly} style={{ width: '100%' }} />;
       
       case 'boolean':
         return (
@@ -502,6 +505,9 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
           }
           if (field.type === 'date' && val) {
             return { value: dayjs.isDayjs(val) ? val : dayjs(val) };
+          }
+          if (field.type === 'time' && val) {
+            return { value: dayjs.isDayjs(val) ? val : dayjs(val, 'HH:mm:ss') };
           }
           return { value: val };
         }}

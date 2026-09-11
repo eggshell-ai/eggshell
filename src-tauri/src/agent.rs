@@ -10,6 +10,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_MAX_TURNS: u32 = 10;
 
+/// A file the user attached to a message. Only its name travels into the
+/// prompt; the contents are deliberately never sent to the upstream provider.
+#[derive(Debug, Clone)]
+pub struct AgentArtifact {
+    pub name: String,
+}
+
 /// The final output of an agent run.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentRunResult {
@@ -61,6 +68,7 @@ impl AgentService {
         options: AgentOptions,
     ) -> LlmResult<AgentRunResult> {
         self.attach_skills_summary(&mut messages);
+        self.attach_artifacts(&mut messages, &options.artifacts);
 
         // The prompts themselves are sensitive: they only travel into the
         // diagnostics when the user explicitly opts in.
@@ -198,6 +206,41 @@ impl AgentService {
             )?;
         }
         Ok(result)
+    }
+
+    /// Appends an artifacts section naming the files the user attached to
+    /// this run. Only the names are added to the prompt — the files themselves
+    /// are never uploaded to the upstream provider, so the model is told to ask
+    /// for relevant excerpts (or read the file with a tool if it lives in the
+    /// project) when the contents matter.
+    fn attach_artifacts(&self, messages: &mut Vec<LLMMessage>, artifacts: &[AgentArtifact]) {
+        if artifacts.is_empty() {
+            return;
+        }
+        let mut section = String::from(
+            "\n\n=== ATTACHED FILES ===\nThe user attached the following files to their message. Only the file names are listed; the contents were not uploaded:\n\n",
+        );
+        for artifact in artifacts {
+            section.push_str(&format!("- {}\n", artifact.name));
+        }
+        section.push_str(
+            "If the contents are relevant, ask the user to paste the relevant part, or use a tool to read the file if it exists in the project.\n=== END ATTACHED FILES ===\n",
+        );
+        match messages
+            .iter_mut()
+            .rev()
+            .find(|message| matches!(message.role, LLMMessageRole::User))
+        {
+            Some(user) => user.content.push_str(&section),
+            None => {
+                if let Some(system) = messages
+                    .iter_mut()
+                    .find(|message| matches!(message.role, LLMMessageRole::System))
+                {
+                    system.content.push_str(&section);
+                }
+            }
+        }
     }
 
     fn attach_skills_summary(&self, messages: &mut Vec<LLMMessage>) {

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 
-use crate::llm::{self, AgentOptions, AgentService, App, LLMMessage, LLMMessageRole};
+use crate::llm::{self, AgentArtifact, AgentOptions, AgentService, App, LLMMessage, LLMMessageRole};
 use crate::progress::ProgressLog;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -146,6 +146,7 @@ impl SessionsRepository {
         project_id: i64,
         session_id: Option<i64>,
         user_message: String,
+        artifacts: Vec<AgentArtifact>,
         agent: &AgentService,
         event_sink: Arc<dyn Fn(Value) + Send + Sync>,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
@@ -196,6 +197,7 @@ impl SessionsRepository {
                 app.tools(),
                 AgentOptions {
                     project_path: Some(project_path),
+                    artifacts,
                     on_event: Some(Box::new(move |event| {
                         let event_type =
                             event.get("type").and_then(Value::as_str).unwrap_or("event");

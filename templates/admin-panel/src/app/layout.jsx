@@ -11,9 +11,10 @@ import '@fontsource/public-sans/700.css';
 
 // project-imports
 import ProviderWrapper from './ProviderWrapper';
+import customization from '../customization';
 
 export const metadata = {
-  title: 'Mantis Next.js Admin Dashboard Template',
+  title: customization.title,
   description:
     'Start your next Next.js project with the Mantis admin template. It is built with ReactJS, Material-UI, NextJS, and SWR for faster web development.',
   keywords:

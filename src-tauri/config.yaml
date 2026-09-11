@@ -1,6 +1,8 @@
-ollama:
-  model: gemma4:31b-cloud
-  apiKey: ...
+providers:
+  - name: ollama
+    apiKey: ...
+    models:
+      - gemma4:31b-cloud
 
 mysql:
   type: managed

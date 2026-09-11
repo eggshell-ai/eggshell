@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
-use super::{LLMMessage, LLMService, LlmResult, OllamaService, Tool};
+use crate::providers::OllamaService;
+
+use super::{LLMMessage, LLMService, LlmResult, Tool};
 
 /// A deterministic LLM facade for development flows.
 ///
@@ -24,9 +26,9 @@ impl LLMService for MockLlmService {
     async fn execute_prompt(
         &self,
         prompt: &str,
-        context: Option<&Map<String, Value>>,
+        _context: Option<&Map<String, Value>>,
     ) -> LlmResult<String> {
-        self.fallback.execute_prompt(prompt, context).await
+        self.fallback.execute_prompt(prompt, _context).await
     }
 
     async fn execute_prompt_with_tools(

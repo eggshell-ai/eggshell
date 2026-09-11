@@ -22,6 +22,8 @@ const buildBaseSchema = (field: FieldConfig): z.ZodTypeAny => {
       return isRequired ? z.boolean() : z.boolean().optional();
     case 'date':
       return isRequired ? z.any() : z.any().optional();
+    case 'time':
+      return isRequired ? z.any() : z.any().optional();
     default:
       return isRequired ? z.string({ invalid_type_error: ' ' }) : z.string().optional();
   }
@@ -93,6 +95,17 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
       phoneSchema = phoneSchema.optional().or(z.literal('')) as any;
     }
     schema = phoneSchema;
+  }
+
+  // Time (HH:MM:SS) validation
+  if (field.type === 'time') {
+    let timeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/, {
+      message: messages.time || `Please enter a valid time (HH:MM:SS format, e.g. 14:30:00)`,
+    });
+    if (!validations.required) {
+      timeSchema = timeSchema.optional().or(z.literal('')) as any;
+    }
+    schema = timeSchema;
   }
 
   // Static select validation — value must be one of the configured options (or empty if not required)

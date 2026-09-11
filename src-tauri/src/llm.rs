@@ -6,11 +6,11 @@ use std::fs;
 use std::path::Path;
 use std::sync::RwLock;
 
-use crate::config::OllamaConfig;
 use crate::progress::ProgressLog;
 
 use crate::tools::{
-    LoadSkillTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool, WritePageTool,
+    LoadSkillTool, MoveFileTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool,
+    WritePageTool,
 };
 
 #[path = "symfony.rs"]
@@ -21,7 +21,7 @@ mod react;
 
 #[path = "agent.rs"]
 mod agent;
-pub use agent::{AgentRunResult, AgentService};
+pub use agent::{AgentArtifact, AgentRunResult, AgentService};
 
 #[path = "crud_creation.rs"]
 mod crud_creation;
@@ -30,6 +30,10 @@ pub use crud_creation::CrudCreationSkill;
 #[path = "analytics_and_reporting.rs"]
 mod analytics_and_reporting;
 pub use analytics_and_reporting::AnalyticsAndReportingSkill;
+
+#[path = "customization_branding.rs"]
+mod customization_branding;
+pub use customization_branding::CustomizationBrandingSkill;
 
 #[path = "mock_llm.rs"]
 mod mock_llm;
@@ -46,6 +50,9 @@ pub struct AgentOptions {
     pub context: Option<Map<String, Value>>,
     /// The project directory tools must operate on for this agent run.
     pub project_path: Option<String>,
+    /// Files the user attached to the message. Only their names reach the
+    /// prompt; the contents are never sent to the upstream provider.
+    pub artifacts: Vec<AgentArtifact>,
     pub on_event: Option<Box<dyn Fn(AgentEvent) + Send + Sync>>,
     pub log_conversation: bool,
     pub log_dir: Option<String>,
@@ -57,6 +64,7 @@ impl Default for AgentOptions {
             max_turns: None,
             context: None,
             project_path: None,
+            artifacts: Vec::new(),
             on_event: None,
             log_conversation: true,
             log_dir: None,
@@ -83,6 +91,7 @@ impl App for AdminPanelApp {
             Box::new(LoadSkillTool::new(default_skills())),
             Box::new(ReadFileTool::new()),
             Box::new(WriteFileTool::new()),
+            Box::new(MoveFileTool::new()),
             Box::new(WriteMenuTool::new()),
             Box::new(WritePageTool::new()),
             Box::new(SyncSchemaTool::new()),
@@ -194,138 +203,6 @@ pub trait LLMService: Send + Sync {
     ) -> LlmResult<Value>;
 }
 
-pub struct OllamaService {
-    client: reqwest::Client,
-    api_url: String,
-    /// The setup screen can rewrite the model and key while Eggshell is running,
-    /// so these are read per request instead of being fixed at start-up.
-    settings: RwLock<OllamaConfig>,
-}
-
-impl OllamaService {
-    pub fn new(config: OllamaConfig) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_url: "https://ollama.com/api".to_string(),
-            settings: RwLock::new(config),
-        }
-    }
-
-    /// Replaces the provider settings used by every later request.
-    pub fn apply(&self, config: OllamaConfig) {
-        *self
-            .settings
-            .write()
-            .unwrap_or_else(|poison| poison.into_inner()) = config;
-    }
-
-    /// A poisoned lock only means an earlier writer panicked partway through;
-    /// the settings behind it are still a whole value, so read them rather than
-    /// taking every later prompt down with it.
-    fn settings(&self) -> OllamaConfig {
-        self.settings
-            .read()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
-    }
-
-    fn request(&self, endpoint: &str, api_key: &str) -> reqwest::RequestBuilder {
-        let request = self
-            .client
-            .post(format!(
-                "{}/{}",
-                self.api_url.trim_end_matches('/'),
-                endpoint
-            ))
-            .header("Content-Type", "application/json");
-        if api_key.is_empty() || api_key == "..." {
-            request
-        } else {
-            request.bearer_auth(api_key)
-        }
-    }
-
-    fn prompt_with_context(prompt: &str, context: Option<&Map<String, Value>>) -> String {
-        let Some(context) = context.filter(|value| !value.is_empty()) else {
-            return prompt.to_string();
-        };
-        let context = context
-            .iter()
-            .map(|(key, value)| format!("{}: {}", key, value))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("Context:\n{context}\n\n{prompt}")
-    }
-}
-
-#[async_trait]
-impl LLMService for OllamaService {
-    async fn execute_prompt(
-        &self,
-        prompt: &str,
-        context: Option<&Map<String, Value>>,
-    ) -> LlmResult<String> {
-        let settings = self.settings();
-        let response = self
-            .request("generate", &settings.api_key)
-            .json(&serde_json::json!({
-                "model": settings.model,
-                "prompt": Self::prompt_with_context(prompt, context),
-                "stream": false,
-            }))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
-        Ok(response["response"]
-            .as_str()
-            .or_else(|| response["message"]["content"].as_str())
-            .unwrap_or_default()
-            .to_string())
-    }
-
-    async fn execute_prompt_with_tools(
-        &self,
-        messages: &[LLMMessage],
-        tools: &[Box<dyn Tool>],
-        context: Option<&Map<String, Value>>,
-    ) -> LlmResult<Value> {
-        let system = format!(
-            "You are an AI assistant with access to these tools:\n{}",
-            tools
-                .iter()
-                .map(|tool| format!("- {}: {}", tool.name(), tool.description()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
-        ollama_messages.push(serde_json::json!({ "role": "system", "content": Self::prompt_with_context(&system, context) }));
-        for message in messages {
-            let mut value = serde_json::json!({
-                "role": match &message.role { LLMMessageRole::System => "system", LLMMessageRole::User => "user", LLMMessageRole::Assistant => "assistant", LLMMessageRole::Tool => "tool" },
-                "content": message.content,
-            });
-            if let Some(tool_calls) = &message.tool_calls {
-                value["tool_calls"] = Value::Array(tool_calls.clone());
-            }
-            ollama_messages.push(value);
-        }
-        let tool_definitions = tools.iter().map(|tool| serde_json::json!({ "type": "function", "function": { "name": tool.name(), "description": tool.description(), "parameters": tool.parameters() } })).collect::<Vec<_>>();
-        let settings = self.settings();
-        let response = self.request("chat", &settings.api_key).json(&serde_json::json!({ "model": settings.model, "messages": ollama_messages, "stream": false, "tools": tool_definitions })).send().await?.error_for_status()?.json::<Value>().await?;
-        let message = response.get("message").cloned().unwrap_or_default();
-        let calls = message
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        Ok(
-            serde_json::json!({ "content": message.get("content").and_then(Value::as_str).unwrap_or_default(), "tool_calls": calls }),
-        )
-    }
-}
-
 /// Defines the shells, tools, skills, and system prompt available to the LLM.
 pub trait App: Send + Sync {
     fn shells(&self) -> Vec<Box<dyn Shell>>;
@@ -365,6 +242,7 @@ pub fn default_skills() -> Vec<Box<dyn Skill>> {
     vec![
         Box::new(CrudCreationSkill::default()),
         Box::new(AnalyticsAndReportingSkill::default()),
+        Box::new(CustomizationBrandingSkill::default()),
     ]
 }
 

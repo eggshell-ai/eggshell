@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Form, Button, Space } from 'antd';
+import dayjs from 'dayjs';
 import { FilterOutlined, SearchOutlined } from '@ant-design/icons';
 import type { Resource } from '../../types/resource';
 import FormField from './FormField';
@@ -201,6 +202,15 @@ const ResourceForm: React.FC<ResourceFormProps> = ({
 export const processResourceFormValues = (values: any, fields: any[]) => {
   const formFields = fields.filter((field) => field.form !== false);
   const hasFileFields = formFields.some((field) => field.type === 'file');
+
+  // Convert dayjs time picker values to HH:mm:ss strings
+  formFields.forEach((field) => {
+    if (field.type === 'time' && values[field.name] !== undefined && values[field.name] !== null) {
+      values[field.name] = dayjs.isDayjs(values[field.name])
+        ? values[field.name].format('HH:mm:ss')
+        : values[field.name];
+    }
+  });
 
   if (!hasFileFields) {
     return values;

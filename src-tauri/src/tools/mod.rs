@@ -1,4 +1,5 @@
 mod load_skill;
+mod move_file;
 mod read_file;
 mod sync_schema;
 mod write_file;
@@ -6,6 +7,7 @@ mod write_menu;
 mod write_page;
 
 pub use load_skill::LoadSkillTool;
+pub use move_file::MoveFileTool;
 pub use read_file::ReadFileTool;
 pub use sync_schema::SyncSchemaTool;
 pub use write_file::WriteFileTool;
