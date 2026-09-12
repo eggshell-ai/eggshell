@@ -1193,8 +1193,321 @@ input {
     padding: 22px;
   }
 
-  .report-menu {
-    right: 16px;
-    bottom: 16px;
+ .report-menu {
+   right: 16px;
+   bottom: 16px;
+ }
+}
+
+/* The chat header carries the model switcher and the settings entry point, so it
+   needs to lay both out on one line instead of stacking them. */
+.chat-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 12px;
+}
+
+.chat-header-actions .model-picker {
+  display: grid;
+  gap: 7px;
+  color: #4d4a58;
+  font-size: .88rem;
+  font-weight: 650;
+}
+
+/* Settings is a full dialog rather than a card: a sections sidebar on the left
+   and the section's own content on the right, with its own scrolling. */
+.settings-dialog {
+  display: flex;
+  width: min(100%, 940px);
+  max-height: min(720px, 92vh);
+  padding: 0;
+  overflow: hidden;
+}
+
+.settings-nav {
+  display: flex;
+  flex: 0 0 208px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 28px 16px;
+  border-right: 1px solid #eceaf1;
+  background: #faf9fc;
+}
+
+.settings-nav .eyebrow {
+  padding: 0 12px;
+}
+
+.settings-nav-item {
+  display: grid;
+  gap: 3px;
+  padding: 11px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+}
+
+.settings-nav-item strong {
+  color: #4d4a58;
+  font-size: .92rem;
+}
+
+.settings-nav-item small {
+  color: #9693a1;
+  font-size: .74rem;
+}
+
+.settings-nav-item:hover {
+  background: #eeebf8;
+}
+
+.settings-nav-item.active {
+  border-color: #e2ddf5;
+  background: #fff;
+  box-shadow: 0 1px 4px #16142a14;
+}
+
+.settings-nav-item.active strong {
+  color: #4e35ce;
+}
+
+.settings-panel {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 28px 28px 20px;
+  border-bottom: 1px solid #eeeef3;
+}
+
+.settings-heading h2 {
+  font-size: 1.3rem;
+}
+
+.settings-heading p {
+  margin: 4px 0 0;
+  color: #858291;
+  font-size: .84rem;
+}
+
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  padding: 22px 28px 28px;
+  overflow-y: auto;
+}
+
+/* Inside the providers section the provider list is a sidebar of its own, and
+   the editor beside it always has a provider (or a new one) to show. */
+.providers-pane {
+  display: flex;
+  align-items: stretch;
+  gap: 22px;
+  min-height: 100%;
+}
+
+.provider-sidebar {
+  display: flex;
+  flex: 0 0 232px;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 22px;
+  border-right: 1px solid #eceaf1;
+}
+
+.provider-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  text-align: left;
+  transition: .16s ease;
+}
+
+.provider-item:hover {
+  border-color: #eceaf1;
+  background: #fbfaff;
+}
+
+.provider-item.active {
+  border-color: #cfc6f3;
+  background: #f7f5ff;
+  box-shadow: 0 0 0 3px #6246ea14;
+}
+
+.provider-item .provider-mark {
+  width: 32px;
+  height: 32px;
+  font-size: .92rem;
+}
+
+.provider-editor {
+  flex: 1;
+  min-width: 0;
+}
+
+.provider-editor-heading {
+  margin-bottom: 20px;
+}
+
+.provider-editor-heading h3 {
+  margin: 0 0 4px;
+  font-size: 1.02rem;
+}
+
+.provider-editor-heading p {
+  margin: 0;
+  color: #858291;
+  font-size: .82rem;
+  line-height: 1.5;
+}
+
+.provider-editor select {
+  width: 100%;
+  margin-top: 7px;
+  border: 1px solid #dcd9e5;
+  border-radius: 9px;
+  padding: 11px 12px;
+  color: #24222b;
+  background: #fff;
+  outline-color: #765fe1;
+}
+
+.provider-editor-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+/* Models are edited as rows, one per name, rather than a single
+   comma-separated string: each row can be renamed, removed, or added to. */
+.model-field {
+  margin-bottom: 20px;
+}
+
+.model-field-label {
+  margin-bottom: 8px;
+  color: #4d4a58;
+  font-size: .88rem;
+  font-weight: 650;
+}
+
+.model-field-label span {
+  color: #9996a5;
+  font-weight: 500;
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-row input,
+.model-add input {
+  margin-top: 0;
+}
+
+.model-remove {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #e3e0ea;
+  border-radius: 9px;
+  color: #8a8798;
+  background: #fbfaff;
+  font-size: 1.05rem;
+  line-height: 1;
+  transition: .16s ease;
+}
+
+.model-remove:hover {
+  border-color: #f0c9c9;
+  color: #c2453f;
+  background: #fff4f3;
+}
+
+.model-empty {
+  margin: 0;
+  padding: 12px 13px;
+  border: 1px dashed #ddd8ec;
+  border-radius: 10px;
+  color: #858291;
+  font-size: .8rem;
+  line-height: 1.5;
+}
+
+.model-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.model-add .secondary-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .settings-dialog {
+    flex-direction: column;
+    padding: 0;
+  }
+
+  .settings-nav {
+    flex: none;
+    flex-direction: row;
+    padding: 16px;
+    border-right: 0;
+    border-bottom: 1px solid #eceaf1;
+  }
+
+  .settings-nav .eyebrow {
+    display: none;
+  }
+
+  .providers-pane {
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .provider-sidebar {
+    flex: none;
+    flex-direction: row;
+    padding: 0 0 16px;
+    border-right: 0;
+    border-bottom: 1px solid #eceaf1;
+    overflow-x: auto;
   }
 }

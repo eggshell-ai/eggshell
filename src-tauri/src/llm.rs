@@ -201,6 +201,14 @@ pub trait LLMService: Send + Sync {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value>;
+
+    /// Fetch the models this provider currently offers, using the credentials it
+    /// was configured with. Providers that can enumerate their models override
+    /// this; the default is an empty list, which the caller treats as "no models
+    /// to discover" rather than an error.
+    async fn list_models(&self) -> LlmResult<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Defines the shells, tools, skills, and system prompt available to the LLM.

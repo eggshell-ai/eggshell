@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
 import SetupPage from "./SetupPage";
+import SettingsPopup from "./SettingsPopup";
 import ProjectLogPanel, { ProgressLine } from "./ProjectLogPanel";
 import Chat, { ChatMessage, eventContent } from "./Chat";
 import ReportMenu from "./ReportMenu";
@@ -35,6 +36,7 @@ function App() {
   const [attachments, setAttachments] = useState<string[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
@@ -184,7 +186,12 @@ function App() {
 
   return (
     <main className="home">
-      <header className="page-header"><div><p className="eyebrow">Eggshell</p><h1>Your projects</h1><p className="subtitle">Keep the local projects you work on close at hand.</p></div><button className="add-button" type="button" onClick={() => { setError(""); setIsAdding(true); }}><span aria-hidden="true">+</span> Add project</button></header>
+      <header className="page-header"><div><p className="eyebrow">Eggshell</p><h1>Your projects</h1><p className="subtitle">Keep the local projects you work on close at hand.</p></div>
+        <div className="header-actions">
+          <button className="icon-button settings-button" type="button" aria-label="Settings" onClick={() => setIsSettingsOpen(true)}>⚙</button>
+          <button className="add-button" type="button" onClick={() => { setError(""); setIsAdding(true); }}><span aria-hidden="true">+</span> Add project</button>
+        </div>
+      </header>
       {error && !isAdding && <p className="error" role="alert">{error}</p>}
       {isAdding && <section className="dialog-backdrop" role="presentation"><form className={showCreateLog ? "project-dialog creating" : "project-dialog"} onSubmit={addProject}>
         <div className="dialog-heading"><div><p className="eyebrow">New project</p><h2>{showCreateLog ? (isSaving ? `Setting up ${form.title || "your project"}…` : "Setup did not finish") : "Add a local project"}</h2></div>{!isSaving && <button className="icon-button" type="button" aria-label="Close" onClick={closeAddProject}>×</button>}</div>
@@ -208,6 +215,7 @@ function App() {
         {!projects.length && <div className="empty-state">No projects yet. Add one to get started.</div>}
       </section>
       <ReportMenu screenName="Home" />
+      <SettingsPopup isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
     </main>
   );
 }

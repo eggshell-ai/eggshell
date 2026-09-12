@@ -909,10 +909,16 @@ struct SetupState {
 
 #[tauri::command]
 fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -> SetupState {
+    // Models fetched earlier are folded in from the cache, so the picker shows
+    // them even before a fresh fetch has run.
+    let cache = config::ConfigService::model_cache_path(&app)
+        .map(|path| providers::ModelCache::load(&path))
+        .unwrap_or_default();
+    let now = providers::now_seconds();
     match config::ConfigService::load_default(&app) {
         Ok(config) => SetupState {
             setup_completed: config.setup_completed,
-            providers: providers::provider_summaries(&config.providers),
+            providers: providers::provider_summaries(&config.providers, &cache, now),
         },
         // A first launch has no configuration to read yet, which is exactly when
         // setup has to run.
@@ -920,10 +926,94 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
             log.line("info", format!("{error}; treating setup as incomplete"));
             SetupState {
                 setup_completed: false,
-                providers: providers::provider_summaries(&[]),
+                providers: providers::provider_summaries(&[], &cache, now),
             }
         }
     }
+}
+
+/// Fetches the models a provider currently offers, using the credentials from
+/// the running hub. Results are cached on disk for 24 hours so the chat screen
+/// asking on every load does not become an upstream request every time.
+#[tauri::command]
+async fn fetch_models(
+    provider: String,
+    app: tauri::AppHandle,
+    log: tauri::State<'_, ProgressLog>,
+    hub: tauri::State<'_, Arc<providers::ProviderHub>>,
+) -> Result<Vec<String>, String> {
+    let known = providers::registered_providers()
+        .iter()
+        .any(|descriptor| descriptor.key == provider);
+    if !known {
+        return Err(format!("\"{provider}\" is not a supported provider yet."));
+    }
+
+    let cache_path =
+        config::ConfigService::model_cache_path(&app).map_err(|error| error.to_string())?;
+    let now = providers::now_seconds();
+    let mut cache = providers::ModelCache::load(&cache_path);
+    // A fresh entry answers immediately and never touches the network.
+    if let Some(models) = cache.fresh(&provider, now) {
+        return Ok(models);
+    }
+
+    // The hub owns the live provider services, so a fetch uses the credentials
+    // entered on the setup or settings screen without reading the file again.
+    let hub = hub.inner().clone();
+    let models = match hub.fetch_models(&provider).await {
+        Ok(models) => models,
+        Err(error) => {
+            let message = error.to_string();
+            log.line(
+                "warning",
+                format!("could not fetch {provider} models: {message}"),
+            );
+            return Err(message);
+        }
+    };
+
+    // Providers can list a model more than once; the picker wants a stable set.
+    let mut models = models;
+    models.sort();
+    models.dedup();
+    cache.store(&provider, models.clone(), now);
+    if let Err(error) = cache.save(&cache_path) {
+        log.line(
+            "warning",
+            format!("could not cache {provider} models: {error}"),
+        );
+    }
+    log.line(
+        "info",
+        format!("fetched {} {provider} models", models.len()),
+    );
+
+    // When the provider has no models of its own yet, the fetched list becomes
+    // its models so the agent has something to send and the picker has a default
+    // that the backend recognises. A provider with saved models is left alone.
+    if !models.is_empty() {
+        if let Ok(mut config) = config::ConfigService::load_default(&app) {
+            if let Some(entry) = config
+                .providers
+                .iter_mut()
+                .find(|candidate| candidate.name == provider && candidate.models.is_empty())
+            {
+                entry.models = models.clone();
+                let provider_config = entry.clone();
+                if let Err(error) = config::ConfigService::save_default(&app, &config) {
+                    log.line("warning", format!("could not save fetched {provider} models: {error}"));
+                } else {
+                    hub.apply(&provider_config);
+                    log.line(
+                        "info",
+                        format!("adopted {provider} models {}", provider_config.models.join(", ")),
+                    );
+                }
+            }
+        }
+    }
+    Ok(models)
 }
 
 #[tauri::command]
@@ -947,9 +1037,6 @@ fn save_provider_config(
         .filter(|model| !model.is_empty())
         .collect::<Vec<_>>();
     let api_key = api_key.trim().to_string();
-    if models.is_empty() || api_key.is_empty() {
-        return Err("At least one model and an API key are required.".to_string());
-    }
 
     // Setup writes every field the file holds, and a first launch has nothing to
     // read, so an unreadable configuration is replaced rather than fatal.
@@ -957,12 +1044,30 @@ fn save_provider_config(
         log.line("info", format!("{error}; writing a fresh configuration"));
         config::AppConfig::default()
     });
+
+    // Replace only the provider being edited rather than the whole list, which
+    // would drop every other configured provider. A blank key means "keep the
+    // saved one": stored keys never reach the frontend, so renaming models must
+    // not force the key to be pasted again. Models may be empty on purpose;
+    // they are auto-fetched later.
+    let existing = config
+        .providers
+        .iter()
+        .position(|candidate| candidate.name == provider);
+    let api_key = match (api_key.is_empty(), existing) {
+        (false, _) => api_key,
+        (true, Some(index)) => config.providers[index].api_key.clone(),
+        (true, None) => return Err("An API key is required.".to_string()),
+    };
     let provider_config = config::ProviderConfig {
         name: provider.clone(),
         api_key,
         models,
     };
-    config.providers = vec![provider_config.clone()];
+    match existing {
+        Some(index) => config.providers[index] = provider_config.clone(),
+        None => config.providers.push(provider_config.clone()),
+    }
     config.setup_completed = true;
     config::ConfigService::save_default(&app, &config).map_err(|error| {
         let message = error.to_string();
@@ -980,6 +1085,25 @@ fn save_provider_config(
             provider_config.models.join(", ")
         ),
     );
+    Ok(())
+}
+
+/// Removes a provider from configuration. It stays in the registry, so the
+/// settings screen shows it again as an unconfigured provider.
+#[tauri::command]
+fn delete_provider(
+    provider: String,
+    app: tauri::AppHandle,
+    log: tauri::State<'_, ProgressLog>,
+) -> Result<(), String> {
+    let mut config = config::ConfigService::load_default(&app).map_err(|error| error.to_string())?;
+    let before = config.providers.len();
+    config.providers.retain(|candidate| candidate.name != provider);
+    if config.providers.len() == before {
+        return Err(format!("{provider} has not been configured yet."));
+    }
+    config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
+    log.line("info", format!("removed {provider} from configuration"));
     Ok(())
 }
 
@@ -1005,13 +1129,26 @@ fn select_model(
     }
 
     let mut config = config::ConfigService::load_default(&app).map_err(|error| error.to_string())?;
+    // A model the provider reported automatically is selectable even before it
+    // has been written to config.yaml, so the cache counts as configured too.
+    let cached = config::ConfigService::model_cache_path(&app)
+        .ok()
+        .map(|path| providers::ModelCache::load(&path))
+        .and_then(|cache| cache.fresh(&provider, providers::now_seconds()))
+        .unwrap_or_default();
     let provider_config = config
         .providers
         .iter_mut()
         .find(|candidate| candidate.name == provider)
         .ok_or_else(|| format!("{provider} has not been configured yet."))?;
-    if !provider_config.models.iter().any(|candidate| candidate == &model) {
+    if !provider_config.models.iter().any(|candidate| candidate == &model)
+        && !cached.iter().any(|candidate| candidate == &model)
+    {
         return Err(format!("\"{model}\" is not a configured {provider} model."));
+    }
+    // Adopt a fetched model on selection so it survives the cache expiring.
+    if !provider_config.models.iter().any(|candidate| candidate == &model) {
+        provider_config.models.push(model.clone());
     }
     // Move the selection to the front, so it is also the default on the next
     // launch.
@@ -1355,7 +1492,9 @@ pub fn run() {
             load_setup_state,
             config::save_mysql_config,
             save_provider_config,
+            delete_provider,
             select_model,
+            fetch_models,
             list_projects,
             create_project,
             delete_project,

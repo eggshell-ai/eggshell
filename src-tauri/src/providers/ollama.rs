@@ -159,6 +159,38 @@ impl LLMService for OllamaService {
             serde_json::json!({ "content": message.get("content").and_then(Value::as_str).unwrap_or_default(), "tool_calls": calls }),
         )
     }
+
+    /// Ollama exposes its catalogue over `GET /api/tags`, which needs no model
+    /// and answers with `{ "models": [{ "name": ... }] }` — both for a local
+    /// daemon and for ollama.com.
+    async fn list_models(&self) -> LlmResult<Vec<String>> {
+        let settings = self.settings();
+        let mut request = self.client.get(format!(
+            "{}/tags",
+            self.api_url.trim_end_matches('/')
+        ));
+        if !settings.api_key.is_empty() && settings.api_key != "..." {
+            request = request.bearer_auth(&settings.api_key);
+        }
+        let response = request
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        let models = response
+            .get("models")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Ok(models)
+    }
 }
 
 /// Kept for callers that still name the error type through the provider module.

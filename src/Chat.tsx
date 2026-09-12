@@ -4,6 +4,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeMirrorMarkdownEditor } from "@latentic/live-markdown";
 import ReportMenu from "./ReportMenu";
+import SettingsPopup from "./SettingsPopup";
 
 export type ChatMessage = {
   role: "user" | "assistant" | "thought" | "tool_call" | "tool_result";
@@ -117,16 +118,46 @@ type ChatProps = {
 export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // The model list lives in config.yaml; the chat header needs it to offer the
   // switcher. Reading it here keeps App.tsx out of provider business.
-  useEffect(() => {
-    void invoke<{ providers: ProviderSummary[] }>("load_setup_state")
-      .then(({ providers }) => setProviders(providers))
-      .catch((reason: unknown) => console.error("[Chat] load_setup_state rejected", { reason }));
-  }, []);
+  async function loadProviders() {
+    const { providers: loaded } = await invoke<{ providers: ProviderSummary[] }>("load_setup_state");
+    setProviders(loaded);
+    return loaded;
+  }
+
+  // Opening the chat refreshes the model list for every configured provider.
+  // The backend caches each result for 24 hours and answers from that cache, so
+  // this is only an upstream request when the cache has gone stale. Fetching is
+  // best-effort: a provider that cannot be reached leaves the configured models
+  // in place rather than blocking the screen.
+  async function refreshModels() {
+    try {
+      const current = await loadProviders();
+      const configured = current.filter(({ api_key_set }) => api_key_set);
+      if (configured.length === 0) return;
+      await Promise.all(configured.map(({ key }) => invoke("fetch_models", { provider: key })
+        .catch((reason: unknown) => console.warn("[Chat] fetch_models failed", { provider: key, reason }))));
+      await loadProviders();
+    } catch (reason) {
+      console.error("[Chat] model refresh failed", { reason });
+    }
+  }
+
+  useEffect(() => { void refreshModels(); }, []);
 
   const selectableProviders = providers.filter(({ models }) => models.length > 0);
+
+  // Models only reach the picker once a fetch has populated them, which happens
+  // after App.tsx reads its initial defaults. Adopt the first available model so
+  // the picker and the backend agree on what answers.
+  useEffect(() => {
+    if (activeModel) return;
+    const first = selectableProviders[0];
+    if (first?.models.length) onModelChange(first.key, first.models[0]);
+  }, [activeModel, providers]);
   const renderedMessages = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
@@ -147,7 +178,8 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
   }
   return <main className="chat-layout">
     <aside className="chat-sidebar"><button className="back-button" type="button" onClick={onBack}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{projectTitle}</h2></div><button className="start-button" type="button" onClick={onStart} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><aside className="login-details" aria-label="Admin login details"><p className="eyebrow">Admin login</p><dl><div><dt>Username</dt><dd>admin@dummy-project.com</dd></div><div><dt>Password</dt><dd>12345678</dd></div></dl></aside><button className="new-chat-button" type="button" onClick={onNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSessionId === session.id ? "session-row active" : "session-row"} key={session.id}><button className={activeSessionId === session.id ? "session-item active" : "session-item"} type="button" onClick={() => onSelectSession(session.id)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => onDeleteSession(session.id)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
-    <section className="chat-panel"><header className="chat-header"><h1>{sessionTitle ?? "New session"}</h1><p>{sessionTitle ? "Dummy assistant" : "Start a conversation"}</p>{selectableProviders.length > 0 && <label className="model-picker">Model<select value={`${activeProvider}:${activeModel}`} onChange={({ target }) => { const [provider, ...rest] = target.value.split(":"); onModelChange(provider, rest.join(":")); }}>{selectableProviders.map(({ key, name, models }) => <optgroup key={key} label={name}>{models.map((model) => <option key={`${key}:${model}`} value={`${key}:${model}`}>{model}</option>)}</optgroup>)}</select></label>}</header><div className="message-list" aria-live="polite">{!messages.length && <div className="chat-empty"><h2>How can I help?</h2><p>Send a message to begin.</p></div>}{renderedMessages}</div>{error && <p className="chat-error" role="alert">{error}</p>}<form className="composer" onSubmit={onSend}><input ref={fileInput} type="file" multiple hidden onChange={(event) => { onAttach(Array.from(event.target.files ?? []).map(({ name }) => name)); event.target.value = ""; }} /><button className="attach-button" type="button" aria-label="Attach files" onClick={() => fileInput.current?.click()} disabled={isSending}>📎</button><div className="composer-main">{attachments.length > 0 && <ul className="attachment-list" aria-label="Attached files">{attachments.map((name) => <li className="attachment-chip" key={name}><span className="attachment-name" title={name}>{name}</span><button type="button" aria-label={`Remove ${name}`} onClick={() => onRemoveAttachment(name)}>×</button></li>)}</ul>}<CodeMirrorMarkdownEditor value={draft} onChange={onDraftChange} mode="wysiwyg" aria-label="Message" /></div><button className="add-button" disabled={isSending || !draft.trim()} type="submit">{isSending ? "Sending…" : "Send"}</button></form></section>
+    <section className="chat-panel"><header className="chat-header"><div className="chat-heading"><h1>{sessionTitle ?? "New session"}</h1><p>{sessionTitle ? "Dummy assistant" : "Start a conversation"}</p></div><div className="chat-header-actions">{selectableProviders.length > 0 && <label className="model-picker">Model<select value={`${activeProvider}:${activeModel}`} onChange={({ target }) => { const [provider, ...rest] = target.value.split(":"); onModelChange(provider, rest.join(":")); }}>{selectableProviders.map(({ key, name, models }) => <optgroup key={key} label={name}>{models.map((model) => <option key={`${key}:${model}`} value={`${key}:${model}`}>{model}</option>)}</optgroup>)}</select></label>}<button className="icon-button settings-button" type="button" aria-label="Settings" onClick={() => setIsSettingsOpen(true)}>&#9881;</button></div></header><div className="message-list" aria-live="polite">{!messages.length && <div className="chat-empty"><h2>How can I help?</h2><p>Send a message to begin.</p></div>}{renderedMessages}</div>{error && <p className="chat-error" role="alert">{error}</p>}<form className="composer" onSubmit={onSend}><input ref={fileInput} type="file" multiple hidden onChange={(event) => { onAttach(Array.from(event.target.files ?? []).map(({ name }) => name)); event.target.value = ""; }} /><button className="attach-button" type="button" aria-label="Attach files" onClick={() => fileInput.current?.click()} disabled={isSending}>📎</button><div className="composer-main">{attachments.length > 0 && <ul className="attachment-list" aria-label="Attached files">{attachments.map((name) => <li className="attachment-chip" key={name}><span className="attachment-name" title={name}>{name}</span><button type="button" aria-label={`Remove ${name}`} onClick={() => onRemoveAttachment(name)}>×</button></li>)}</ul>}<CodeMirrorMarkdownEditor value={draft} onChange={onDraftChange} mode="wysiwyg" aria-label="Message" /></div><button className="add-button" disabled={isSending || !draft.trim()} type="submit">{isSending ? "Sending…" : "Send"}</button></form></section>
     <ReportMenu screenName="Project" />
+    <SettingsPopup isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); loadProviders(); }} />
   </main>;
 }
