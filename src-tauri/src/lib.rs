@@ -1449,6 +1449,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Auto-update plumbing. Registered inside setup so the updater and
+            // process plugins are available on desktop builds only.
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+
+            #[cfg(desktop)]
+            app.handle().plugin(tauri_plugin_process::init())?;
+
             let pool = tauri::async_runtime::block_on(db::initialize(app.handle()))
                 .expect("failed to initialize SQLite database");
             app.manage(pool);
