@@ -190,4 +190,31 @@ impl LLMService for OpenAiService {
             "tool_calls": calls,
         }))
     }
+
+    /// The OpenAI-compatible `GET /models` endpoint answers with
+    /// `{ "data": [{ "id": ... }] }`; OpenRouter, LM Studio and vLLM mirror it.
+    async fn list_models(&self) -> LlmResult<Vec<String>> {
+        let settings = self.settings();
+        let response = self
+            .client
+            .get(format!("{}/models", self.api_url.trim_end_matches('/')))
+            .bearer_auth(&settings.api_key)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        let models = response
+            .get("data")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Ok(models)
+    }
 }

@@ -1401,6 +1401,84 @@ input {
   margin-top: 24px;
 }
 
+/* Models are edited as rows, one per name, rather than a single
+   comma-separated string: each row can be renamed, removed, or added to. */
+.model-field {
+  margin-bottom: 20px;
+}
+
+.model-field-label {
+  margin-bottom: 8px;
+  color: #4d4a58;
+  font-size: .88rem;
+  font-weight: 650;
+}
+
+.model-field-label span {
+  color: #9996a5;
+  font-weight: 500;
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-row input,
+.model-add input {
+  margin-top: 0;
+}
+
+.model-remove {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #e3e0ea;
+  border-radius: 9px;
+  color: #8a8798;
+  background: #fbfaff;
+  font-size: 1.05rem;
+  line-height: 1;
+  transition: .16s ease;
+}
+
+.model-remove:hover {
+  border-color: #f0c9c9;
+  color: #c2453f;
+  background: #fff4f3;
+}
+
+.model-empty {
+  margin: 0;
+  padding: 12px 13px;
+  border: 1px dashed #ddd8ec;
+  border-radius: 10px;
+  color: #858291;
+  font-size: .8rem;
+  line-height: 1.5;
+}
+
+.model-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.model-add .secondary-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 @media (max-width: 720px) {
   .settings-dialog {
     flex-direction: column;

@@ -122,15 +122,42 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
 
   // The model list lives in config.yaml; the chat header needs it to offer the
   // switcher. Reading it here keeps App.tsx out of provider business.
-  function loadProviders() {
-    void invoke<{ providers: ProviderSummary[] }>("load_setup_state")
-      .then(({ providers }) => setProviders(providers))
-      .catch((reason: unknown) => console.error("[Chat] load_setup_state rejected", { reason }));
+  async function loadProviders() {
+    const { providers: loaded } = await invoke<{ providers: ProviderSummary[] }>("load_setup_state");
+    setProviders(loaded);
+    return loaded;
   }
 
-  useEffect(() => { loadProviders(); }, []);
+  // Opening the chat refreshes the model list for every configured provider.
+  // The backend caches each result for 24 hours and answers from that cache, so
+  // this is only an upstream request when the cache has gone stale. Fetching is
+  // best-effort: a provider that cannot be reached leaves the configured models
+  // in place rather than blocking the screen.
+  async function refreshModels() {
+    try {
+      const current = await loadProviders();
+      const configured = current.filter(({ api_key_set }) => api_key_set);
+      if (configured.length === 0) return;
+      await Promise.all(configured.map(({ key }) => invoke("fetch_models", { provider: key })
+        .catch((reason: unknown) => console.warn("[Chat] fetch_models failed", { provider: key, reason }))));
+      await loadProviders();
+    } catch (reason) {
+      console.error("[Chat] model refresh failed", { reason });
+    }
+  }
+
+  useEffect(() => { void refreshModels(); }, []);
 
   const selectableProviders = providers.filter(({ models }) => models.length > 0);
+
+  // Models only reach the picker once a fetch has populated them, which happens
+  // after App.tsx reads its initial defaults. Adopt the first available model so
+  // the picker and the backend agree on what answers.
+  useEffect(() => {
+    if (activeModel) return;
+    const first = selectableProviders[0];
+    if (first?.models.length) onModelChange(first.key, first.models[0]);
+  }, [activeModel, providers]);
   const renderedMessages = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];

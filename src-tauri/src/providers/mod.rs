@@ -15,9 +15,77 @@ pub use openai::{OpenAiService, OpenAiSettings};
 use crate::config::ProviderConfig;
 use crate::llm::{LlmResult, LLMMessage, LLMService, Tool};
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// How long a fetched model list stays fresh before it is fetched again.
+pub const MODEL_CACHE_TTL_SECONDS: u64 = 24 * 60 * 60;
+
+/// The current wall-clock time in whole seconds since the Unix epoch, which is
+/// all the model cache needs to age its entries.
+pub fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedModels {
+    fetched_at: u64,
+    models: Vec<String>,
+}
+
+/// A small on-disk record of the models each provider last reported, keyed by
+/// the provider's registry name. The chat screen asks for models on every load,
+/// so the cache keeps that from turning into an upstream request each time; an
+/// entry older than [`MODEL_CACHE_TTL_SECONDS`] is treated as absent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelCache {
+    #[serde(default)]
+    entries: HashMap<String, CachedModels>,
+}
+
+impl ModelCache {
+    /// Reads the cache, silently falling back to an empty one when the file is
+    /// missing or corrupt: a bad cache should cost a fetch, not an error.
+    pub fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|contents| serde_json::from_str(&contents).ok())
+            .unwrap_or_default()
+    }
+
+    /// Persists the cache, creating its directory if needed.
+    pub fn save(&self, path: &Path) -> LlmResult<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        Ok(())
+    }
+
+    /// The cached models for `key` when the entry is still within its TTL.
+    pub fn fresh(&self, key: &str, now: u64) -> Option<Vec<String>> {
+        let entry = self.entries.get(key)?;
+        (now.saturating_sub(entry.fetched_at) < MODEL_CACHE_TTL_SECONDS).then(|| entry.models.clone())
+    }
+
+    /// Records a fresh model list for `key`, stamping it with `now`.
+    pub fn store(&mut self, key: &str, models: Vec<String>, now: u64) {
+        self.entries.insert(
+            key.to_string(),
+            CachedModels {
+                fetched_at: now,
+                models,
+            },
+        );
+    }
+}
 
 /// Static description of a provider, independent of any user configuration.
 /// This is what the setup screen lists before anything has been configured.
@@ -61,19 +129,37 @@ pub struct ProviderSummary {
 
 /// Combines the registry with the configuration, so every registered provider
 /// appears (configured or not) and each carries its model list.
-pub fn provider_summaries(configured: &[ProviderConfig]) -> Vec<ProviderSummary> {
+///
+/// Models the user saved come from `config.yaml`; additionally-fetched models
+/// that are still fresh in `cache` are folded in, so a provider whose models
+/// were never written by hand still lists them in the chat picker. A model the
+/// user saved comes first, preserving the stored default.
+pub fn provider_summaries(
+    configured: &[ProviderConfig],
+    cache: &ModelCache,
+    now: u64,
+) -> Vec<ProviderSummary> {
     registered_providers()
         .into_iter()
         .map(|descriptor| {
             let config = configured
                 .iter()
                 .find(|provider| provider.name == descriptor.key);
+            let stored = config.map(|provider| provider.models.clone()).unwrap_or_default();
+            let mut models = stored.clone();
+            if let Some(fetched) = cache.fresh(&descriptor.key, now) {
+                for model in fetched {
+                    if !models.contains(&model) {
+                        models.push(model);
+                    }
+                }
+            }
             ProviderSummary {
                 key: descriptor.key,
                 name: descriptor.name,
                 detail: descriptor.detail,
                 api_key_set: config.is_some_and(|provider| !provider.api_key.is_empty()),
-                models: config.map(|provider| provider.models.clone()).unwrap_or_default(),
+                models,
             }
         })
         .collect()
@@ -140,6 +226,26 @@ impl ProviderHub {
             .read()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()
+    }
+
+    /// The concrete service registered under `key`. The registry is closed, so
+    /// anything else has no service.
+    fn service_for(&self, key: &str) -> Option<Arc<dyn LLMService>> {
+        match key {
+            "ollama" => Some(self.ollama.clone()),
+            "openai" => Some(self.openai.clone()),
+            _ => None,
+        }
+    }
+
+    /// Fetches the models a provider currently offers, using the credentials it
+    /// was last configured with. An unknown provider reports no models rather
+    /// than failing, so one stale config entry cannot break the chat load.
+    pub async fn fetch_models(&self, key: &str) -> LlmResult<Vec<String>> {
+        match self.service_for(key) {
+            Some(service) => service.list_models().await,
+            None => Ok(Vec::new()),
+        }
     }
 }
 

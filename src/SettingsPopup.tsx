@@ -26,7 +26,10 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   const [section, setSection] = useState<SettingsSectionKey>("providers");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [newType, setNewType] = useState("");
-  const [models, setModels] = useState("");
+  const [models, setModels] = useState<string[]>([]);
+  // Models are edited one row at a time; this is the value in the "add a model"
+  // field, which stays put so several models can be typed in a row.
+  const [draftModel, setDraftModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -35,7 +38,33 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   const isNew = selectedKey === null;
 
   function startNewProvider() {
-    setSelectedKey(null); setNewType(""); setModels(""); setApiKey(""); setError("");
+    setSelectedKey(null); setNewType(""); setModels([]); setDraftModel(""); setApiKey(""); setError("");
+  }
+
+  function addDraftModel() {
+    const value = draftModel.trim();
+    if (!value) return;
+    setModels((current) => (current.includes(value) ? current : [...current, value]));
+    setDraftModel("");
+    setError("");
+  }
+
+  function renameModel(index: number, value: string) {
+    setModels((current) => current.map((model, position) => (position === index ? value : model)));
+  }
+
+  // Blurring trims the name and drops a row the user cleared out, so an empty
+  // box never lingers in the list.
+  function commitModel(index: number) {
+    setModels((current) => {
+      const value = current[index].trim();
+      if (!value) return current.filter((_, position) => position !== index);
+      return current.map((model, position) => (position === index ? value : model));
+    });
+  }
+
+  function removeModel(index: number) {
+    setModels((current) => current.filter((_, position) => position !== index));
   }
 
   // Opening the popup lands on an empty editor, so adding a provider is a
@@ -55,22 +84,26 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     // The stored API key never crosses back to the frontend, so the field opens
     // empty with a note rather than pretending it is loaded.
     setSelectedKey(provider.key); setNewType(provider.key);
-    setModels(provider.models.join(", ")); setApiKey(""); setError("");
+    setModels([...provider.models]); setDraftModel(""); setApiKey(""); setError("");
   }
 
   async function saveProvider() {
     setError("");
     const target = isNew ? newType : selectedKey;
     if (!target) return setError("Choose a provider type to configure.");
-    const modelList = models.split(",").map((model) => model.trim()).filter(Boolean);
-    if (!modelList.length || !apiKey.trim()) return setError("Add at least one model and an API key.");
+    // Duplicates are collapsed rather than rejected; models may legitimately be
+    // empty, since they are auto-fetched later.
+    const modelList = Array.from(new Set(models.map((model) => model.trim()).filter(Boolean)));
+    // An empty key means "keep the saved one" for an existing provider.
+    const keepsSavedKey = !isNew && Boolean(selected?.api_key_set);
+    if (!apiKey.trim() && !keepsSavedKey) return setError("An API key is required.");
     setIsSaving(true);
     try {
       await invoke("save_provider_config", { provider: target, models: modelList, apiKey });
       const state = await invoke<SetupState>("load_setup_state");
       setProviders(state.providers);
       // Keep the saved provider open so its new models are visible right away.
-      setSelectedKey(target); setNewType(target); setModels(modelList.join(", ")); setApiKey("");
+      setSelectedKey(target); setNewType(target); setModels(modelList); setDraftModel(""); setApiKey("");
     } catch (reason) {
       console.error("[SettingsPopup] save_provider_config rejected", { reason });
       setError(String(reason));
@@ -153,10 +186,43 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                         {providers.map(({ key, name }) => <option key={key} value={key}>{name}</option>)}
                       </select>
                     </label>}
-                    <label>Models <span>Comma-separated</span>
-                      <input value={models} autoComplete="off" spellCheck={false}
-                        onChange={(event) => setModels(event.target.value)} placeholder="gemma4:31b-cloud, gemma4:9b" />
-                    </label>
+                    <div className="model-field">
+                      <div className="model-field-label">Models <span>Optional &mdash; fetched automatically when left empty</span></div>
+                      {models.length > 0 && (
+                        <ul className="model-list">
+                          {models.map((model, index) => (
+                            <li className="model-row" key={index}>
+                              <input value={model} autoComplete="off" spellCheck={false}
+                                aria-label={`Model ${index + 1}`}
+                                onChange={(event) => renameModel(index, event.target.value)}
+                                onBlur={() => commitModel(index)} />
+                              <button className="model-remove" type="button"
+                                aria-label={`Remove ${model || "model"}`}
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => removeModel(index)}>&times;</button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {!models.length && (
+                        <p className="model-empty">
+                          No models yet &mdash; we&apos;ll fetch this provider&apos;s models automatically once it is connected.
+                          You can add them by hand below in the meantime.
+                        </p>
+                      )}
+                      <div className="model-add">
+                        <input value={draftModel} autoComplete="off" spellCheck={false}
+                          aria-label="Add a model" placeholder="Add a model, e.g. gemma4:31b-cloud"
+                          onChange={(event) => setDraftModel(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter") return;
+                            event.preventDefault();
+                            addDraftModel();
+                          }} />
+                        <button className="secondary-button" type="button"
+                          onClick={addDraftModel} disabled={!draftModel.trim()}>Add</button>
+                      </div>
+                    </div>
                     <label>API key {!isNew && selected?.api_key_set && <span>Saved &mdash; paste it again to replace</span>}
                       <input value={apiKey} type="password" autoComplete="off" spellCheck={false}
                         onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your API key" />

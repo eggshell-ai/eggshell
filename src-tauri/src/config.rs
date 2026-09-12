@@ -37,8 +37,9 @@ pub struct ProviderConfig {
     pub name: String,
     #[serde(rename = "apiKey", default)]
     pub api_key: String,
-    /// The models the user wants available for this provider. Not fetched from
-    /// anywhere: added by the user, comma-separated on the setup screen.
+    /// The models the user wants available for this provider: added by hand in
+    /// the settings list, one entry per model. May be empty while the provider
+    /// is configured but its models have not been fetched yet.
     #[serde(default)]
     pub models: Vec<String>,
 }
@@ -102,6 +103,24 @@ impl ConfigService {
             source,
         })?;
         Ok(directory.join("config.yaml"))
+    }
+
+    /// Returns the path of the model cache, which sits beside `config.yaml` in
+    /// the same per-user directory. The parent is created on demand.
+    pub fn model_cache_path<R: Runtime, M: Manager<R>>(
+        manager: &M,
+    ) -> Result<PathBuf, ConfigError> {
+        let directory = manager
+            .path()
+            .app_config_dir()
+            .map_err(|error| ConfigError::Path {
+                message: error.to_string(),
+            })?;
+        fs::create_dir_all(&directory).map_err(|source| ConfigError::Directory {
+            path: directory.clone(),
+            source,
+        })?;
+        Ok(directory.join("models-cache.json"))
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<AppConfig, ConfigError> {
