@@ -5,9 +5,21 @@ use std::{
 };
 use tauri::{Manager, Runtime};
 
+/// The running application version, taken from the package manifest. It is what
+/// every save writes into `config.yaml` and the reference the migration runner
+/// compares each migration against.
+pub fn current_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Application configuration loaded from `config.yaml`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
+    /// The version of Eggshell that last wrote this file. Files predating this
+    /// field deserialize empty, which the migration runner reads as `0.0.0`;
+    /// every save stamps it with [`current_version`].
+    #[serde(default)]
+    pub version: String,
     /// Every configured provider. The setup screen fills in the first one;
     /// more can be added by hand in config.yaml.
     #[serde(default)]
@@ -23,6 +35,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            version: current_version(),
             providers: Vec::new(),
             mysql: MysqlConfig::default(),
             setup_completed: false,
@@ -144,8 +157,12 @@ impl ConfigService {
     /// describe — comments included — is not preserved.
     pub fn save(path: impl AsRef<Path>, config: &AppConfig) -> Result<(), ConfigError> {
         let path = path.as_ref();
+        // Stamp the running version so the file records which release wrote it.
+        // The caller's copy is left alone; only the bytes on disk change.
+        let mut stamped = config.clone();
+        stamped.version = current_version();
         let contents =
-            serde_yaml::to_string(config).map_err(|source| ConfigError::Serialize { source })?;
+            serde_yaml::to_string(&stamped).map_err(|source| ConfigError::Serialize { source })?;
 
         fs::write(path, contents).map_err(|source| ConfigError::Write {
             path: path.to_path_buf(),

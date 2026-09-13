@@ -3,6 +3,7 @@ mod db;
 pub mod llm;
 pub mod providers;
 pub mod logger;
+pub mod migrations;
 pub mod progress;
 mod setup;
 mod tools;
@@ -1465,6 +1466,14 @@ pub fn run() {
             // setup command writes to the same log the setup screen reads.
             let log = ProgressLog::new(app.handle().clone(), "setup-log", "setup");
             app.manage(log.clone());
+
+            // Bring an older configuration file up to the current shape before
+            // it is read. Failures are logged rather than fatal: a migration
+            // that cannot run leaves the file untouched, and the typed load
+            // below still has the previous behaviour to fall back on.
+            if let Err(error) = migrations::run(app, &log) {
+                log.line("error", format!("config migration failed: {error}"));
+            }
 
             // A missing or unconfigured file is what a first launch looks like.
             let config = config::ConfigService::load_default(app).unwrap_or_else(|error| {
