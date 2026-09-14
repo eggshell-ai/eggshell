@@ -23,6 +23,9 @@ mod react;
 mod agent;
 pub use agent::{AgentArtifact, AgentRunResult, AgentService};
 
+#[path = "skill_markdown.rs"]
+mod skill_markdown;
+
 #[path = "crud_creation.rs"]
 mod crud_creation;
 pub use crud_creation::CrudCreationSkill;
