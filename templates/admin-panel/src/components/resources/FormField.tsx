@@ -385,7 +385,30 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
         return <AntInput.Password readOnly={isReadOnly} placeholder={`Enter ${field.label || field.name}`} />;
       
       case 'number':
-        return <InputNumber readOnly={isReadOnly} placeholder={`Enter ${field.label || field.name}`} style={{ width: '100%' }} />;
+        return (
+          <InputNumber
+            readOnly={isReadOnly}
+            min={field.min}
+            max={field.max}
+            step={field.integer ? 1 : undefined}
+            precision={field.integer ? 0 : undefined}
+            placeholder={`Enter ${field.label || field.name}`}
+            style={{ width: '100%' }}
+          />
+        );
+      
+      case 'decimal':
+        return (
+          <InputNumber
+            readOnly={isReadOnly}
+            min={field.min}
+            max={field.max}
+            step={field.scale !== undefined ? Math.pow(10, -field.scale) : 0.01}
+            precision={field.scale !== undefined ? field.scale : 2}
+            placeholder={`Enter ${field.label || field.name}`}
+            style={{ width: '100%' }}
+          />
+        );
       
       case 'textarea':
         return <AntInput.TextArea readOnly={isReadOnly} rows={4} placeholder={`Enter ${field.label || field.name}`} />;

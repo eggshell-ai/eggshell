@@ -181,7 +181,8 @@ Use one of the following field types:
 | `"email"` | Email input with standard email validation |
 | `"phone"` | Phone input with permissive local/international phone validation |
 | `"password"` | Password input |
-| `"number"` | Numeric input |
+| `"number"` | Numeric integer/float input |
+| `"decimal"` | Fixed-point decimal / currency input with configurable `scale` and `precision` |
 | `"boolean"` | Boolean / checkbox input |
 | `"date"` | Date picker |
 | `"file"` | File upload |
@@ -193,6 +194,7 @@ Do not invent field types. If a prompt requests a UI concept that can be represe
 
 Examples:
 
+- "price", "unit price", "currency", or "decimal with 2 places" → `decimal`;
 - "notes" or "description" with multiple lines → `textarea`;
 - status/source/category choices → `select`;
 - yes/no or active/inactive → `boolean`;
@@ -231,6 +233,16 @@ The behavioral defaults are important. Do not assume that omission means `false`
 | `options` | unset | No static select options |
 | `visibleWhen` | unset | Field is not conditionally hidden |
 | `columns` | unset | No child table columns |
+| `min` | unset | Numeric minimum value constraint (e.g. `min: 0`) |
+| `max` | unset | Numeric maximum value constraint |
+| `scale` | `2` (for `decimal`) | Number of decimal places |
+| `precision` | `10` (for `decimal`) | Total digits stored |
+| `integer` | `false` | Restrict numeric field to whole numbers |
+| `transforms` | unset | Pipeline of field transformations (e.g. `[{ type: "trim" }, { type: "uppercase" }]`) applied before validation/persistence |
+| `computed` | `false` | Virtual / calculated field not stored in the database |
+| `computeExpression` | unset | JavaScript expression evaluated against row `data` to compute virtual value |
+| `sqlExpression` | unset | SQL/DQL expression for server-side sorting/filtering of virtual fields |
+| `displayRules` | unset | Conditional formatting rules (e.g. `[{ condition: "data.quantityInStock === 0", badge: { text: "Out of Stock", variant: "error" } }]`) |
 
 "Unset" means the property is omitted from the resource unless the requirement needs it. Do not invent a semantic value for an omitted optional property.
 
@@ -421,6 +433,96 @@ It does **not** make the field conditionally required on the backend. If a field
 
 ---
 
+### 2.9 Transforms
+
+Use `transforms` to sanitize or format field values before validation and persistence.
+
+Supported built-in transformers include:
+- `{ type: "uppercase" }` (or `"upper"`)
+- `{ type: "lowercase" }` (or `"lower"`)
+- `{ type: "trim" }`
+- `{ type: "slugify" }`
+- `{ type: "custom", expression: "..." }`
+
+Example:
+
+```javascript
+{
+  name: "sku",
+  type: "text",
+  label: "SKU",
+  required: true,
+  unique: true,
+  transforms: [
+    { type: "trim" },
+    { type: "uppercase" }
+  ]
+}
+```
+
+This transforms `" prod-123 "` into `"PROD-123"` automatically upon form submission.
+
+---
+
+### 2.10 Computed (Virtual) Fields
+
+Use `computed: true` with `computeExpression` when a value is derived from other fields (such as `unitPrice * quantityInStock`) and should not be physically stored in the database.
+
+Example:
+
+```javascript
+{
+  name: "inventoryValue",
+  type: "decimal",
+  label: "Inventory Value",
+  scale: 2,
+  computed: true,
+  computeExpression: "(Number(data.unitPrice || 0) * Number(data.quantityInStock || 0)).toFixed(2)",
+  sqlExpression: "e.unitPrice * e.quantityInStock",
+  form: false,
+  table: true,
+  detail: true,
+  sortable: true
+}
+```
+
+Behavior:
+- `computed: true` ensures no ORM database column is generated;
+- `form: false` ensures the user is not prompted to enter calculated values manually;
+- `computeExpression` calculates the value dynamically in tables and detail views;
+- `sqlExpression` (optional) allows server-side sorting or filtering if needed.
+
+---
+
+### 2.11 Display Rules & Status Badges
+
+Use `displayRules` to render contextual badges or warnings based on row data.
+
+Example:
+
+```javascript
+{
+  name: "quantityInStock",
+  type: "number",
+  label: "Quantity in Stock",
+  integer: true,
+  min: 0,
+  displayRules: [
+    {
+      condition: "Number(data.quantityInStock || 0) === 0",
+      badge: {
+        text: "Out of Stock",
+        variant: "error"
+      }
+    }
+  ]
+}
+```
+
+When the condition evaluates to `true` for a record, the table automatically displays the status badge beside the field value.
+
+---
+
 ## 3. Requirement → Feature Mapping
 
 Before writing code, translate the prompt into resource-system features.
@@ -458,6 +560,12 @@ Use this mapping as the default interpretation.
 | "Backend CRUD" | Standard `ResourceController` |
 | "Cross-field business rule" | Validation hooks |
 | "Workflow/state mutation" | Custom action/backend route plus backend state check |
+| "Convert to uppercase / lowercase / trim" | `transforms: [{ type: "uppercase" }]` |
+| "Price / currency / two decimal places" | `type: "decimal", scale: 2, min: 0` |
+| "Non-negative / greater than or equal to zero" | `min: 0` |
+| "Whole number" | `integer: true` |
+| "Calculated / computed value (not stored in DB)" | `computed: true, computeExpression: "...", form: false` |
+| "Highlight or badge based on row state (e.g. Out of Stock)" | `displayRules: [{ condition: "...", badge: { text: "...", variant: "..." } }]` |
 
 ### Important filter rule
 

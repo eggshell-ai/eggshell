@@ -208,7 +208,26 @@ export default function ResourceGrid({
   };
 
   const renderCell = (field: FieldConfig, record: any) => {
-    const value = record[field.name];
+    let value = record[field.name];
+
+    // Evaluate computed expression if field is computed or has computeExpression
+    if ((field.computed || field.computeExpression) && (value === undefined || value === null)) {
+      if (field.computeExpression) {
+        try {
+          const data = record;
+          // eslint-disable-next-line no-eval
+          value = eval(field.computeExpression);
+        } catch (e) {
+          console.error(`Error computing field ${field.name}:`, e);
+        }
+      } else if (typeof field.compute === 'function') {
+        try {
+          value = field.compute(record);
+        } catch (e) {
+          console.error(`Error computing function for ${field.name}:`, e);
+        }
+      }
+    }
     
     // Check for relation field titles (e.g. customer_title, product_title, invoice_id_title / invoice_title)
     const titleKey = `${field.name}_title`;
@@ -219,17 +238,58 @@ export default function ResourceGrid({
     const summaryKey = `${field.name}_summary`;
     const tableSummary = record[summaryKey];
 
+    // Check for displayRules (e.g. out of stock badge, warning)
+    let displayBadge: { text: string; variant?: string } | null = null;
+    if (Array.isArray(field.displayRules)) {
+      for (const rule of field.displayRules) {
+        if (rule.condition) {
+          try {
+            const data = record;
+            // eslint-disable-next-line no-eval
+            if (eval(rule.condition)) {
+              if (rule.badge) {
+                displayBadge = rule.badge;
+                break;
+              }
+            }
+          } catch (e) {
+            console.error('Error evaluating displayRule condition:', e);
+          }
+        }
+      }
+    }
+
+    const wrapDisplay = (content: React.ReactNode) => {
+      if (displayBadge) {
+        const statusMap: Record<string, 'success' | 'processing' | 'default' | 'error' | 'warning'> = {
+          error: 'error',
+          danger: 'error',
+          warning: 'warning',
+          success: 'success',
+          default: 'default',
+        };
+        const status = statusMap[displayBadge.variant || 'error'] || 'default';
+        return (
+          <Space size="small">
+            {content}
+            <Badge status={status} text={displayBadge.text} />
+          </Space>
+        );
+      }
+      return content;
+    };
+
     switch (field.type) {
       case 'select':
       case 'foreign':
         if (relationTitle !== undefined && relationTitle !== null) {
-          return relationTitle;
+          return wrapDisplay(relationTitle);
         }
-        return value !== undefined && value !== null ? String(value) : '-';
+        return wrapDisplay(value !== undefined && value !== null ? String(value) : '-');
 
       case 'table':
         if (tableSummary !== undefined && tableSummary !== null) {
-          return tableSummary;
+          return wrapDisplay(tableSummary);
         }
         if (Array.isArray(value)) {
           if (value.length === 0) return '-';
@@ -245,13 +305,13 @@ export default function ResourceGrid({
             }
             return String(item);
           });
-          return summaries.join(', ');
+          return wrapDisplay(summaries.join(', '));
         }
-        return value ? String(value) : '-';
+        return wrapDisplay(value ? String(value) : '-');
 
       case 'tags':
         if (Array.isArray(value)) {
-          return (
+          return wrapDisplay(
             <Space size="small" wrap>
               {value.map((tag: string, index: number) => (
                 <Tag key={index} color="blue">
@@ -261,10 +321,10 @@ export default function ResourceGrid({
             </Space>
           );
         }
-        return value ? <Tag color="blue">{value}</Tag> : '-';
+        return wrapDisplay(value ? <Tag color="blue">{value}</Tag> : '-');
       
       case 'boolean':
-        return (
+        return wrapDisplay(
           <Badge 
             status={value ? 'success' : 'default'} 
             text={value ? (field.trueLabel || 'Yes') : (field.falseLabel || 'No')} 
@@ -272,16 +332,24 @@ export default function ResourceGrid({
         );
       
       case 'email':
-        return value ? <a href={`mailto:${value}`}>{value}</a> : '-';
+        return wrapDisplay(value ? <a href={`mailto:${value}`}>{value}</a> : '-');
       
       case 'date':
-        return value ? new Date(value).toLocaleDateString() : '-';
+        return wrapDisplay(value ? new Date(value).toLocaleDateString() : '-');
       
       case 'time':
-        return value ? String(value) : '-';
+        return wrapDisplay(value ? String(value) : '-');
       
+      case 'decimal':
+        if (value !== undefined && value !== null && value !== '') {
+          const num = Number(value);
+          const scale = field.scale !== undefined ? field.scale : 2;
+          return wrapDisplay(!isNaN(num) ? num.toFixed(scale) : String(value));
+        }
+        return wrapDisplay('-');
+
       case 'number':
-        return value !== undefined && value !== null ? value : '-';
+        return wrapDisplay(value !== undefined && value !== null ? value : '-');
       
       case 'textarea':
         return value ? (
