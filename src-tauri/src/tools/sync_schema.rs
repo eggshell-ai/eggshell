@@ -38,6 +38,16 @@ struct Field {
     options: Option<Map<String, Value>>,
     messages: Option<Value>,
     visible_when: Option<String>,
+    scale: Option<u32>,
+    precision: Option<u32>,
+    min: Option<f64>,
+    max: Option<f64>,
+    integer: Option<bool>,
+    transforms: Option<Value>,
+    computed: Option<bool>,
+    compute_expression: Option<String>,
+    sql_expression: Option<String>,
+    display_rules: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -260,6 +270,28 @@ fn field_js(f: &Field) -> String {
     if let Some(v) = f.max_size {
         s.push_str(&format!("\n      .maxSize({})", v));
     }
+    if let Some(v) = f.min {
+        s.push_str(&format!("\n      .min({})", v));
+    }
+    if let Some(v) = f.max {
+        s.push_str(&format!("\n      .max({})", v));
+    }
+    if let Some(v) = f.scale {
+        s.push_str(&format!("\n      .scale({})", v));
+    }
+    if let Some(v) = f.precision {
+        s.push_str(&format!("\n      .precision({})", v));
+    }
+    if let Some(v) = &f.transforms {
+        s.push_str(&format!("\n      .transforms({})", serde_json::to_string(v).unwrap_or_default()));
+    }
+    if let Some(v) = &f.display_rules {
+        s.push_str(&format!("\n      .displayRules({})", serde_json::to_string(v).unwrap_or_default()));
+    }
+    call!("computeExpression", f.compute_expression.as_deref());
+    call!("sqlExpression", f.sql_expression.as_deref());
+    flag!("computed", f.computed);
+    flag!("integer", f.integer);
     flag!("required", f.required);
     flag!("email", f.email);
     flag!("phone", f.phone);
@@ -272,11 +304,17 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\OneOf as OneOfConstraint;\nuse App\\Validator\\Time as TimeConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
+    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse Doctrine\\DBAL\\Types\\Types;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\OneOf as OneOfConstraint;\nuse App\\Validator\\Time as TimeConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
     let props = r
         .fields
         .iter()
         .map(|f| {
+            if f.computed.unwrap_or(false) {
+                return format!(
+                    "    #[Form(type: '{}')]\n    public mixed ${} = null;",
+                    f.field_type, f.name
+                );
+            }
             let mut asserts = String::new();
             if f.required.unwrap_or(false) {
                 asserts.push_str("    #[Assert\\NotBlank]\n");
@@ -341,6 +379,26 @@ fn backend_code(r: &Resource, class: &str) -> String {
                 constraint.push_str("    )]\n");
                 asserts.push_str(&constraint);
             }
+            if let Some(min) = f.min {
+                if min == 0.0 {
+                    asserts.push_str("    #[Assert\\PositiveOrZero]\n");
+                } else {
+                    asserts.push_str(&format!(
+                        "    #[Assert\\GreaterThanOrEqual({})]\n",
+                        min
+                    ));
+                }
+            }
+            if let Some(max) = f.max {
+                asserts.push_str(&format!(
+                    "    #[Assert\\LessThanOrEqual({})]\n",
+                    max
+                ));
+            }
+            if f.integer.unwrap_or(false) {
+                asserts.push_str("    #[Assert\\Type('integer')]\n");
+            }
+            let is_decimal = f.field_type == "decimal";
             format!(
                 "{}    #[Form(type: '{}')]{}\n    #[ORM\\Column{}]\n    public ?{} ${} = null;",
                 asserts,
@@ -352,11 +410,18 @@ fn backend_code(r: &Resource, class: &str) -> String {
                 },
                 {
                     let mut options = Vec::new();
+                    if is_decimal {
+                        options.push("type: Types::DECIMAL".to_string());
+                        let precision = f.precision.unwrap_or(10);
+                        let scale = f.scale.unwrap_or(2);
+                        options.push(format!("precision: {}", precision));
+                        options.push(format!("scale: {}", scale));
+                    }
                     if f.unique.unwrap_or(false) {
-                        options.push("unique: true");
+                        options.push("unique: true".to_string());
                     }
                     if !f.required.unwrap_or(false) {
-                        options.push("nullable: true");
+                        options.push("nullable: true".to_string());
                     }
                     if options.is_empty() {
                         String::new()
@@ -375,6 +440,7 @@ fn backend_code(r: &Resource, class: &str) -> String {
 fn php_type(t: &str) -> &str {
     match t {
         "number" | "foreign" => "int",
+        "decimal" => "string",
         "boolean" => "bool",
         "time" => "string",
         "table" => "array",

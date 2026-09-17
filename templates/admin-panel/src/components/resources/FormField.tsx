@@ -58,6 +58,26 @@ const CalculatedCell: React.FC<{
     } catch (e) {
       calculatedValue = '';
     }
+  } else if (col.colFieldConfig?.computeExpression) {
+    try {
+      const data = rowData || {};
+      // eslint-disable-next-line no-eval
+      calculatedValue = eval(col.colFieldConfig.computeExpression);
+      if (Number.isNaN(calculatedValue) || calculatedValue === undefined || calculatedValue === null) {
+        calculatedValue = '';
+      }
+    } catch (e) {
+      calculatedValue = '';
+    }
+  } else if (col.colFieldConfig?.compute && typeof col.colFieldConfig.compute === 'function') {
+    try {
+      calculatedValue = col.colFieldConfig.compute(rowData || {});
+      if (Number.isNaN(calculatedValue) || calculatedValue === undefined || calculatedValue === null) {
+        calculatedValue = '';
+      }
+    } catch (e) {
+      calculatedValue = '';
+    }
   }
 
   useEffect(() => {
@@ -117,7 +137,9 @@ const TableWidget: React.FC<{
 
     const label = colExplicitLabel || resField?.label || formatColumnLabel(colName);
     const isHidden = colName.toLowerCase() === 'id' || resField?.type === 'hidden';
-    const isCalculated = typeof colValueFn === 'function';
+    const isCalculated =
+      typeof colValueFn === 'function' ||
+      Boolean(resField?.computeExpression || resField?.compute || (typeof col === 'object' && (col.computeExpression || col.compute)));
 
     const colFieldConfig: FieldConfig = {
       type: resField?.type || 'text',
@@ -271,6 +293,50 @@ const TableWidget: React.FC<{
   );
 };
 
+const applyTransforms = (val: any, transforms: any[] | undefined): any => {
+  if (val === undefined || val === null || !Array.isArray(transforms) || typeof val !== 'string') {
+    return val;
+  }
+
+  let result = val;
+  transforms.forEach((transform: any) => {
+    if (!transform) return;
+    const type = typeof transform === 'string' ? transform : transform.type;
+    if (typeof result === 'string') {
+      switch (type) {
+        case 'uppercase':
+        case 'upper':
+          result = result.toUpperCase();
+          break;
+        case 'lowercase':
+        case 'lower':
+          result = result.toLowerCase();
+          break;
+        case 'trim':
+          result = result.trim();
+          break;
+        case 'slugify':
+          result = result.toLowerCase().trim().replace(/[\s\W-]+/g, '-');
+          break;
+        case 'custom':
+          if (transform.expression) {
+            try {
+              const value = result;
+              // eslint-disable-next-line no-eval
+              result = eval(transform.expression);
+            } catch (e) {
+              console.error('Error applying custom transform:', e);
+            }
+          }
+          break;
+        default:
+          break;
+      }
+    }
+  });
+  return result;
+};
+
 const ComputedWatcher: React.FC<{
   field: FieldConfig;
   form: any;
@@ -279,7 +345,23 @@ const ComputedWatcher: React.FC<{
   const allValues = Form.useWatch([], form);
 
   useEffect(() => {
-    if (field.compute && typeof field.compute === 'function' && form) {
+    if (!form) return;
+
+    if (field.computeExpression) {
+      try {
+        const data = allValues || {};
+        // eslint-disable-next-line no-eval
+        const computedVal = eval(field.computeExpression);
+        if (computedVal !== undefined) {
+          const currentVal = form.getFieldValue(fieldName);
+          if (currentVal !== computedVal) {
+            form.setFieldValue(fieldName, computedVal);
+          }
+        }
+      } catch (e) {
+        // May fail if referenced values are not yet defined during typing
+      }
+    } else if (field.compute && typeof field.compute === 'function') {
       try {
         const computedVal = field.compute(allValues || {});
         if (computedVal !== undefined) {
@@ -371,24 +453,58 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
     return <TableWidget field={field} form={form} resourceName={resourceName} action={action} record={record} />;
   }
 
-  const isReadOnly = Boolean(field.readonly);
+  const isReadOnly = Boolean(field.readonly || field.computed || field.computeExpression || field.compute);
+
+  const handleBlur = (e?: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    if (!form || !Array.isArray(field.transforms) || field.transforms.length === 0) return;
+    const currentVal = form.getFieldValue(fullPath);
+    if (typeof currentVal === 'string') {
+      const transformed = applyTransforms(currentVal, field.transforms);
+      if (transformed !== currentVal) {
+        form.setFieldValue(fullPath, transformed);
+      }
+    }
+  };
 
   const renderInput = () => {
     switch (field.type) {
       case 'text':
-        return <AntInput readOnly={isReadOnly} placeholder={`Enter ${field.label || field.name}`} />;
+        return <AntInput readOnly={isReadOnly} onBlur={handleBlur} placeholder={`Enter ${field.label || field.name}`} />;
       
       case 'email':
-        return <AntInput readOnly={isReadOnly} type="email" placeholder={`Enter ${field.label || field.name}`} />;
+        return <AntInput readOnly={isReadOnly} onBlur={handleBlur} type="email" placeholder={`Enter ${field.label || field.name}`} />;
       
       case 'password':
-        return <AntInput.Password readOnly={isReadOnly} placeholder={`Enter ${field.label || field.name}`} />;
+        return <AntInput.Password readOnly={isReadOnly} onBlur={handleBlur} placeholder={`Enter ${field.label || field.name}`} />;
       
       case 'number':
-        return <InputNumber readOnly={isReadOnly} placeholder={`Enter ${field.label || field.name}`} style={{ width: '100%' }} />;
+        return (
+          <InputNumber
+            readOnly={isReadOnly}
+            min={field.min}
+            max={field.max}
+            step={field.integer ? 1 : undefined}
+            precision={field.integer ? 0 : undefined}
+            placeholder={`Enter ${field.label || field.name}`}
+            style={{ width: '100%' }}
+          />
+        );
+      
+      case 'decimal':
+        return (
+          <InputNumber
+            readOnly={isReadOnly}
+            min={field.min}
+            max={field.max}
+            step={field.scale !== undefined ? Math.pow(10, -field.scale) : 0.01}
+            precision={field.scale !== undefined ? field.scale : 2}
+            placeholder={`Enter ${field.label || field.name}`}
+            style={{ width: '100%' }}
+          />
+        );
       
       case 'textarea':
-        return <AntInput.TextArea readOnly={isReadOnly} rows={4} placeholder={`Enter ${field.label || field.name}`} />;
+        return <AntInput.TextArea readOnly={isReadOnly} onBlur={handleBlur} rows={4} placeholder={`Enter ${field.label || field.name}`} />;
       
       case 'select':
         return (
@@ -452,7 +568,7 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
         );
 
       default:
-        return <AntInput readOnly={isReadOnly} placeholder={`Enter ${field.label || field.name}`} />;
+        return <AntInput readOnly={isReadOnly} onBlur={handleBlur} placeholder={`Enter ${field.label || field.name}`} />;
     }
   };
 
@@ -493,7 +609,9 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
 
   return (
     <>
-      {field.compute && <ComputedWatcher field={field} form={form} fieldName={fullPath} />}
+      {(field.compute || field.computeExpression || field.computed) && (
+        <ComputedWatcher field={field} form={form} fieldName={fullPath} />
+      )}
       <Form.Item
         label={noLabel || field.type === 'boolean' ? undefined : (field.label || field.name)}
         name={fieldName}

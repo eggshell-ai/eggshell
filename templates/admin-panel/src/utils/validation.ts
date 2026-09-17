@@ -17,6 +17,7 @@ const buildBaseSchema = (field: FieldConfig): z.ZodTypeAny => {
 
   switch (field.type) {
     case 'number':
+    case 'decimal':
       return isRequired ? z.number({ invalid_type_error: ' ' }) : z.number().optional();
     case 'boolean':
       return isRequired ? z.boolean() : z.boolean().optional();
@@ -47,7 +48,9 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
     }, { message: messages.required || `Please enter ${field.label || field.name}` });
   }
 
-  if (validations.length && field.type !== 'number') {
+  const isNumeric = field.type === 'number' || field.type === 'decimal';
+
+  if (validations.length && !isNumeric) {
     const { min, max } = validations.length;
     let strSchema = z.string();
     if (min !== undefined) {
@@ -62,14 +65,18 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
     schema = strSchema;
   }
 
-  if (validations.length && field.type === 'number') {
-    const { min, max } = validations.length;
+  if (isNumeric) {
+    const min = field.min !== undefined ? field.min : (validations.min !== undefined ? validations.min : (validations.length?.min));
+    const max = field.max !== undefined ? field.max : (validations.max !== undefined ? validations.max : (validations.length?.max));
     let numSchema = z.number({ invalid_type_error: messages.number || `Please enter a valid ${field.label || field.name}` });
     if (min !== undefined) {
       numSchema = numSchema.min(min, { message: messages.min || `${field.label || field.name} must be at least ${min}` });
     }
     if (max !== undefined) {
       numSchema = numSchema.max(max, { message: messages.max || `${field.label || field.name} must be at most ${max}` });
+    }
+    if (field.integer) {
+      numSchema = (numSchema as any).int({ message: messages.integer || `${field.label || field.name} must be a whole number` });
     }
     if (!validations.required) {
       numSchema = numSchema.optional() as any;

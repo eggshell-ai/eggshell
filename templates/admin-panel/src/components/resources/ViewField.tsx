@@ -25,7 +25,26 @@ const formatColumnLabel = (name: string): string => {
  */
 const ViewField: React.FC<ViewFieldProps> = ({ field, record, noLabel }) => {
   const label = field.label || formatColumnLabel(field.name);
-  const value = record?.[field.name];
+  let value = record?.[field.name];
+
+  // Evaluate computed expression if field is computed or has computeExpression
+  if ((field.computed || field.computeExpression) && (value === undefined || value === null)) {
+    if (field.computeExpression) {
+      try {
+        const data = record;
+        // eslint-disable-next-line no-eval
+        value = eval(field.computeExpression);
+      } catch (e) {
+        console.error(`Error computing field ${field.name}:`, e);
+      }
+    } else if (typeof field.compute === 'function') {
+      try {
+        value = field.compute(record);
+      } catch (e) {
+        console.error(`Error computing function for ${field.name}:`, e);
+      }
+    }
+  }
 
   // Relation fields display their resolved title (e.g. customer_title)
   const titleKey = `${field.name}_title`;
@@ -38,6 +57,14 @@ const ViewField: React.FC<ViewFieldProps> = ({ field, record, noLabel }) => {
 
   const renderValue = (): React.ReactNode => {
     switch (field.type) {
+      case 'decimal':
+        if (value !== undefined && value !== null && value !== '') {
+          const num = Number(value);
+          const scale = field.scale !== undefined ? field.scale : 2;
+          return !isNaN(num) ? num.toFixed(scale) : String(value);
+        }
+        return '-';
+
       case 'boolean':
         if (value === undefined || value === null || value === '') return '-';
         return value

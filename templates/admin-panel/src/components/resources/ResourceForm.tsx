@@ -203,6 +203,49 @@ export const processResourceFormValues = (values: any, fields: any[]) => {
   const formFields = fields.filter((field) => field.form !== false);
   const hasFileFields = formFields.some((field) => field.type === 'file');
 
+  // Apply field transformers (e.g. uppercase, lowercase, trim)
+  formFields.forEach((field) => {
+    let val = values[field.name];
+    if (val !== undefined && val !== null && Array.isArray(field.transforms)) {
+      field.transforms.forEach((transform: any) => {
+        if (!transform) return;
+        const type = typeof transform === 'string' ? transform : transform.type;
+        if (typeof val === 'string') {
+          switch (type) {
+            case 'uppercase':
+            case 'upper':
+              val = val.toUpperCase();
+              break;
+            case 'lowercase':
+            case 'lower':
+              val = val.toLowerCase();
+              break;
+            case 'trim':
+              val = val.trim();
+              break;
+            case 'slugify':
+              val = val.toLowerCase().trim().replace(/[\s\W-]+/g, '-');
+              break;
+            case 'custom':
+              if (transform.expression) {
+                try {
+                  const value = val;
+                  // eslint-disable-next-line no-eval
+                  val = eval(transform.expression);
+                } catch (e) {
+                  console.error('Error applying custom transform:', e);
+                }
+              }
+              break;
+            default:
+              break;
+          }
+        }
+      });
+      values[field.name] = val;
+    }
+  });
+
   // Convert dayjs time picker values to HH:mm:ss strings
   formFields.forEach((field) => {
     if (field.type === 'time' && values[field.name] !== undefined && values[field.name] !== null) {

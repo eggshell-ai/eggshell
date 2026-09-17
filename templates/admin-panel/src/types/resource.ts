@@ -41,6 +41,16 @@ export interface FieldConfig {
    * when the referenced value is truthy.
    */
   visibleWhen?: string;
+  min?: number;
+  max?: number;
+  scale?: number;
+  precision?: number;
+  integer?: boolean;
+  computed?: boolean;
+  computeExpression?: string;
+  sqlExpression?: string;
+  transforms?: Array<{ type: string; [key: string]: any }>;
+  displayRules?: Array<{ condition: string; badge?: { text: string; variant?: string }; [key: string]: any }>;
   [key: string]: any;
 }
 
@@ -69,6 +79,16 @@ export interface Field {
   falseLabel(label: string): Field;
   options(options: Record<string, string>): Field;
   visibleWhen(condition: string): Field;
+  min(min: number): Field;
+  max(max: number): Field;
+  scale(scale: number): Field;
+  precision(precision: number): Field;
+  integer(isInteger?: boolean): Field;
+  computed(isComputed?: boolean): Field;
+  computeExpression(expression: string): Field;
+  sqlExpression(expression: string): Field;
+  transforms(transforms: any[]): Field;
+  displayRules(rules: any[]): Field;
 }
 
 /**

@@ -160,6 +160,64 @@ class FieldBuilder implements Field {
     this._config.visibleWhen = condition;
     return this;
   }
+
+  min(min: number): Field {
+    this._config.min = min;
+    this._config.validations = {
+      ...this._config.validations,
+      min,
+    };
+    return this;
+  }
+
+  max(max: number): Field {
+    this._config.max = max;
+    this._config.validations = {
+      ...this._config.validations,
+      max,
+    };
+    return this;
+  }
+
+  scale(scale: number): Field {
+    this._config.scale = scale;
+    return this;
+  }
+
+  precision(precision: number): Field {
+    this._config.precision = precision;
+    return this;
+  }
+
+  integer(isInteger: boolean = true): Field {
+    this._config.integer = isInteger;
+    return this;
+  }
+
+  computed(isComputed: boolean = true): Field {
+    this._config.computed = isComputed;
+    return this;
+  }
+
+  computeExpression(expression: string): Field {
+    this._config.computeExpression = expression;
+    return this;
+  }
+
+  sqlExpression(expression: string): Field {
+    this._config.sqlExpression = expression;
+    return this;
+  }
+
+  transforms(transforms: any[]): Field {
+    this._config.transforms = transforms;
+    return this;
+  }
+
+  displayRules(rules: any[]): Field {
+    this._config.displayRules = rules;
+    return this;
+  }
 }
 
 /**
@@ -233,6 +291,10 @@ export const field = {
 
   number(name: string): Field {
     return new FieldBuilder('number', name);
+  },
+
+  decimal(name: string): Field {
+    return new FieldBuilder('decimal', name);
   },
 
   date(name: string): Field {
