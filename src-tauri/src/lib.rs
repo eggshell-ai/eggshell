@@ -1060,10 +1060,12 @@ fn save_provider_config(
         (true, Some(index)) => config.providers[index].api_key.clone(),
         (true, None) => return Err("An API key is required.".to_string()),
     };
+    let reasoning = existing.and_then(|index| config.providers[index].reasoning.clone());
     let provider_config = config::ProviderConfig {
         name: provider.clone(),
         api_key,
         models,
+        reasoning,
     };
     match existing {
         Some(index) => config.providers[index] = provider_config.clone(),
@@ -1114,6 +1116,7 @@ fn delete_provider(
 fn select_model(
     provider: String,
     model: String,
+    reasoning: Option<String>,
     app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
     hub: tauri::State<'_, Arc<providers::ProviderHub>>,
@@ -1155,11 +1158,14 @@ fn select_model(
     // launch.
     provider_config.models.retain(|candidate| candidate != &model);
     provider_config.models.insert(0, model.clone());
+    if let Some(r) = reasoning {
+        provider_config.reasoning = Some(r);
+    }
     let provider_config = provider_config.clone();
     config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
 
     hub.apply(&provider_config);
-    log.line("info", format!("switched to {provider} model {model}"));
+    log.line("info", format!("switched to {provider} model {model} (reasoning: {:?})", provider_config.reasoning));
     Ok(())
 }
 

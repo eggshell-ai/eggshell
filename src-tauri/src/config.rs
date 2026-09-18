@@ -55,6 +55,9 @@ pub struct ProviderConfig {
     /// is configured but its models have not been fetched yet.
     #[serde(default)]
     pub models: Vec<String>,
+    /// Optional reasoning level ("off", "minimal", "low", "medium", "high", "xhigh")
+    #[serde(default)]
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

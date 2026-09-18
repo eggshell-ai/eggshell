@@ -170,11 +170,11 @@ function App() {
   });
   // The log replaces the form while the shells run, and stays put afterwards when
   // they failed — the dialog is the only thing that can set an error while it is
-  async function selectModel(provider: string, model: string) {
+  async function selectModel(provider: string, model: string, reasoning?: string) {
     // Optimistic: the backend confirms by reordering its defaults, and a failure
     // only costs the user the switch they just made.
     setActiveProvider(provider); setActiveModel(model); setError("");
-    try { await invoke("select_model", { provider, model }); }
+    try { await invoke("select_model", { provider, model, reasoning: reasoning ?? null }); }
     catch (reason) { setError(String(reason)); }
   }
 
@@ -182,7 +182,7 @@ function App() {
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
   if (!isSetupComplete) return <SetupPage onComplete={() => setIsSetupComplete(true)} />;
-  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model) => { void selectModel(provider, model); }} />;
+  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} />;
 
   return (
     <main className="home">

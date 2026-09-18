@@ -99,6 +99,11 @@ impl AgentService {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
+            let thought = response
+                .get("thought")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
             let tool_calls = response
                 .get("tool_calls")
                 .and_then(Value::as_array)
@@ -106,13 +111,23 @@ impl AgentService {
                 .unwrap_or_default();
 
             final_content = content.clone();
-            self.logger.info(format!("agent turn {turn} thought: {content}"), true);
-            emit(
-                &options,
-                "thought",
-                json!({ "content": content, "turn": turn }),
-            );
-            log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "thought", "content": content }));
+            if !thought.is_empty() {
+                self.logger.info(format!("agent turn {turn} reasoning: {thought}"), true);
+                emit(
+                    &options,
+                    "thought",
+                    json!({ "content": thought, "turn": turn }),
+                );
+                log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "thought", "content": thought }));
+            } else if !tool_calls.is_empty() && !content.is_empty() {
+                self.logger.info(format!("agent turn {turn} thought: {content}"), true);
+                emit(
+                    &options,
+                    "thought",
+                    json!({ "content": content, "turn": turn }),
+                );
+                log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "thought", "content": content }));
+            }
             messages.push(LLMMessage {
                 role: LLMMessageRole::Assistant,
                 content,

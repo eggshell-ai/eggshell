@@ -125,6 +125,7 @@ pub struct ProviderSummary {
     pub detail: String,
     pub api_key_set: bool,
     pub models: Vec<String>,
+    pub reasoning: Option<String>,
 }
 
 /// Combines the registry with the configuration, so every registered provider
@@ -160,6 +161,7 @@ pub fn provider_summaries(
                 detail: descriptor.detail,
                 api_key_set: config.is_some_and(|provider| !provider.api_key.is_empty()),
                 models,
+                reasoning: config.and_then(|provider| provider.reasoning.clone()),
             }
         })
         .collect()

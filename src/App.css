@@ -532,6 +532,129 @@
   outline: none;
 }
 
+.composer-reasoning-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border: 1px solid #dedae8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #4a4756;
+  transition: all 0.15s ease;
+}
+
+.composer-reasoning-picker:hover,
+.composer-reasoning-picker:focus-within {
+  border-color: #bcb6d6;
+  background: #f4f2fb;
+}
+
+.composer-reasoning-icon {
+  font-size: 13px;
+}
+
+.composer-reasoning-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #716c82;
+}
+
+.composer-reasoning-select {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #3e3a4b;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.composer-reasoning-select:focus {
+  outline: none;
+}
+
+.thinking-block {
+  width: min(100%, 750px);
+  overflow: hidden;
+  border: 1px solid #e5e3ed;
+  border-radius: 12px;
+  background: #faf9fc;
+}
+
+.thinking-block.running {
+  border-color: #d1c7f7;
+  background: #fbfaff;
+}
+
+.thinking-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  color: #4e4a5d;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.thinking-summary:hover {
+  background: #f2f0f8;
+}
+
+.thinking-status {
+  display: grid;
+  flex: 0 0 16px;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.thinking-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid #cfc8f2;
+  border-top-color: #6246ea;
+  border-radius: 50%;
+  animation: tool-spin .7s linear infinite;
+}
+
+.thinking-brain {
+  font-size: 14px;
+}
+
+.thinking-caption {
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: #554f6b;
+}
+
+.thinking-block.running .thinking-caption {
+  color: #6246ea;
+}
+
+.thinking-chevron {
+  margin-left: auto;
+  color: #858291;
+  font-size: 0.95rem;
+}
+
+.thinking-details {
+  padding: 8px 16px 14px;
+  border-top: 1px solid #ebe8f2;
+  color: #4d495a;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  background: #ffffff;
+}
+
 .composer-send-btn {
   display: inline-flex;
   align-items: center;

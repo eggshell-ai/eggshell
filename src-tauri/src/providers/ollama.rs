@@ -17,6 +17,7 @@ pub struct OllamaSettings {
     pub model: String,
     #[serde(rename = "apiKey")]
     pub api_key: String,
+    pub reasoning: Option<String>,
 }
 
 impl From<&ProviderConfig> for OllamaSettings {
@@ -25,6 +26,7 @@ impl From<&ProviderConfig> for OllamaSettings {
             // The first configured model is the default; the rest are choices.
             model: config.models.first().cloned().unwrap_or_default(),
             api_key: config.api_key.clone(),
+            reasoning: config.reasoning.clone(),
         }
     }
 }
@@ -148,16 +150,56 @@ impl LLMService for OllamaService {
         }
         let tool_definitions = tools.iter().map(|tool| serde_json::json!({ "type": "function", "function": { "name": tool.name(), "description": tool.description(), "parameters": tool.parameters() } })).collect::<Vec<_>>();
         let settings = self.settings();
-        let response = self.request("chat", &settings.api_key).json(&serde_json::json!({ "model": settings.model, "messages": ollama_messages, "stream": false, "tools": tool_definitions })).send().await?.error_for_status()?.json::<Value>().await?;
+        let mut payload = serde_json::json!({
+            "model": settings.model,
+            "messages": ollama_messages,
+            "stream": false,
+            "tools": tool_definitions,
+        });
+        if let Some(reasoning) = &settings.reasoning {
+            let reasoning = reasoning.to_lowercase();
+            if reasoning != "off" {
+                payload["options"] = serde_json::json!({ "think": true, "reasoning": reasoning });
+            }
+        }
+        let response = self
+            .request("chat", &settings.api_key)
+            .json(&payload)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
         let message = response.get("message").cloned().unwrap_or_default();
         let calls = message
             .get("tool_calls")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        Ok(
-            serde_json::json!({ "content": message.get("content").and_then(Value::as_str).unwrap_or_default(), "tool_calls": calls }),
-        )
+        let mut raw_content = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let mut thought = message
+            .get("thinking")
+            .or_else(|| message.get("thought"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if thought.is_empty() {
+            if let Some(start) = raw_content.find("<think>") {
+                if let Some(end) = raw_content.find("</think>") {
+                    thought = raw_content[start + 7..end].trim().to_string();
+                    raw_content = format!("{}{}", &raw_content[..start], &raw_content[end + 8..]).trim().to_string();
+                }
+            }
+        }
+        Ok(serde_json::json!({
+            "content": raw_content,
+            "thought": if thought.is_empty() { Value::Null } else { Value::String(thought) },
+            "tool_calls": calls,
+        }))
     }
 
     /// Ollama exposes its catalogue over `GET /api/tags`, which needs no model

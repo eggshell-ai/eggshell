@@ -17,6 +17,7 @@ pub struct OpenAiSettings {
     pub model: String,
     #[serde(rename = "apiKey")]
     pub api_key: String,
+    pub reasoning: Option<String>,
 }
 
 impl From<&ProviderConfig> for OpenAiSettings {
@@ -25,6 +26,7 @@ impl From<&ProviderConfig> for OpenAiSettings {
             // The first configured model is the default; the rest are choices.
             model: config.models.first().cloned().unwrap_or_default(),
             api_key: config.api_key.clone(),
+            reasoning: config.reasoning.clone(),
         }
     }
 }
@@ -161,13 +163,20 @@ impl LLMService for OpenAiService {
             })
             .collect::<Vec<_>>();
         let settings = self.settings();
+        let mut payload = serde_json::json!({
+            "model": settings.model,
+            "messages": openai_messages,
+            "tools": tool_definitions,
+        });
+        if let Some(reasoning) = &settings.reasoning {
+            let reasoning = reasoning.to_lowercase();
+            if reasoning != "off" {
+                payload["reasoning_effort"] = Value::String(reasoning);
+            }
+        }
         let response = self
             .request("chat/completions", &settings.api_key)
-            .json(&serde_json::json!({
-                "model": settings.model,
-                "messages": openai_messages,
-                "tools": tool_definitions,
-            }))
+            .json(&payload)
             .send()
             .await?
             .error_for_status()?
@@ -185,8 +194,28 @@ impl LLMService for OpenAiService {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let mut raw_content = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let mut thought = message
+            .get("reasoning_content")
+            .or_else(|| message.get("thought"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if thought.is_empty() {
+            if let Some(start) = raw_content.find("<think>") {
+                if let Some(end) = raw_content.find("</think>") {
+                    thought = raw_content[start + 7..end].trim().to_string();
+                    raw_content = format!("{}{}", &raw_content[..start], &raw_content[end + 8..]).trim().to_string();
+                }
+            }
+        }
         Ok(serde_json::json!({
-            "content": message.get("content").and_then(Value::as_str).unwrap_or_default(),
+            "content": raw_content,
+            "thought": if thought.is_empty() { Value::Null } else { Value::String(thought) },
             "tool_calls": calls,
         }))
     }

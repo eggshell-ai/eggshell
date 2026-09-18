@@ -60,6 +60,32 @@ function MessageContent({ content }: { content: string }) {
 
 type ToolRunProps = { call: ChatMessage; result?: ChatMessage };
 
+function ThinkingBlock({ content, isRunning }: { content: string; isRunning: boolean }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <article className={`thinking-block ${isRunning ? "running" : "complete"}`}>
+      <button
+        className="thinking-summary"
+        type="button"
+        onClick={() => setIsOpen((open) => !open)}
+        aria-expanded={isOpen}
+      >
+        <span className="thinking-status">
+          {isRunning ? <span className="thinking-spinner" aria-hidden="true" /> : <span className="thinking-brain" aria-hidden="true">🧠</span>}
+        </span>
+        <span className="thinking-caption">{isRunning ? "Thinking…" : "Thinking"}</span>
+        <span className="thinking-chevron" aria-hidden="true">{isOpen ? "⌃" : "⌄"}</span>
+      </button>
+      {isOpen && (
+        <div className="thinking-details">
+          <MessageContent content={content} />
+        </div>
+      )}
+    </article>
+  );
+}
+
 function ToolRun({ call, result }: ToolRunProps) {
   const [isOpen, setIsOpen] = useState(false);
   const callEvent = call.data as ToolEvent;
@@ -85,7 +111,16 @@ function ToolRun({ call, result }: ToolRunProps) {
 }
 
 // Mirrors `providers::ProviderSummary` as returned by `load_setup_state`.
-type ProviderSummary = { key: string; name: string; detail: string; api_key_set: boolean; models: string[] };
+type ProviderSummary = { key: string; name: string; detail: string; api_key_set: boolean; models: string[]; reasoning?: string | null };
+
+export const REASONING_MODES = [
+  { value: "off", label: "Off" },
+  { value: "minimal", label: "Minimal" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "XHigh" },
+] as const;
 
 type ChatProps = {
   projectTitle: string;
@@ -111,7 +146,7 @@ type ChatProps = {
   activeProvider: string;
   /** The first model in the active provider's list is the backend's current default. */
   activeModel: string;
-  onModelChange: (provider: string, model: string) => void;
+  onModelChange: (provider: string, model: string, reasoning?: string) => void;
 };
 
 export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange }: ChatProps) {
@@ -196,6 +231,17 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
       renderedMessages.push(<article className="message tool_result" key={`tool-result-${index}`}><span>Eggshell</span><MessageContent content={message.content} /></article>);
       continue;
     }
+    if (message.role === "thought") {
+      const isLastMessage = index === messages.length - 1;
+      renderedMessages.push(
+        <ThinkingBlock
+          content={message.content}
+          isRunning={isSending && isLastMessage}
+          key={`thought-${index}`}
+        />
+      );
+      continue;
+    }
     renderedMessages.push(<article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Eggshell"}</span><MessageContent content={message.content} /></article>);
   }
   return <main className="chat-layout">
@@ -261,28 +307,53 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                 <span className="composer-attach-label">Attach</span>
               </button>
               {selectableProviders.length > 0 && (
-                <div className="composer-model-picker">
-                  <span className="composer-model-icon">✨</span>
-                  <select
-                    className="composer-model-select"
-                    value={`${activeProvider}:${activeModel}`}
-                    aria-label="Model Selection"
-                    onChange={({ target }) => {
-                      const [provider, ...rest] = target.value.split(":");
-                      onModelChange(provider, rest.join(":"));
-                    }}
-                  >
-                    {selectableProviders.map(({ key, name, models }) => (
-                      <optgroup key={key} label={name}>
-                        {models.map((model) => (
-                          <option key={`${key}:${model}`} value={`${key}:${model}`}>
-                            {model}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </div>
+                <>
+                  <div className="composer-model-picker">
+                    <span className="composer-model-icon">✨</span>
+                    <select
+                      className="composer-model-select"
+                      value={`${activeProvider}:${activeModel}`}
+                      aria-label="Model Selection"
+                      onChange={({ target }) => {
+                        const [provider, ...rest] = target.value.split(":");
+                        const currentReasoning = providers.find((p) => p.key === provider)?.reasoning ?? "off";
+                        onModelChange(provider, rest.join(":"), currentReasoning || "off");
+                      }}
+                    >
+                      {selectableProviders.map(({ key, name, models }) => (
+                        <optgroup key={key} label={name}>
+                          {models.map((model) => (
+                            <option key={`${key}:${model}`} value={`${key}:${model}`}>
+                              {model}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="composer-reasoning-picker">
+                    <span className="composer-reasoning-icon">🧠</span>
+                    <span className="composer-reasoning-label">Reasoning:</span>
+                    <select
+                      className="composer-reasoning-select"
+                      value={providers.find((p) => p.key === activeProvider)?.reasoning || "off"}
+                      aria-label="Reasoning Effort"
+                      onChange={({ target }) => {
+                        const nextReasoning = target.value;
+                        setProviders((current) =>
+                          current.map((p) => (p.key === activeProvider ? { ...p, reasoning: nextReasoning } : p))
+                        );
+                        onModelChange(activeProvider, activeModel, nextReasoning);
+                      }}
+                    >
+                      {REASONING_MODES.map(({ value, label }) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
               )}
             </div>
             <button className="composer-send-btn" disabled={isSending || !draft.trim()} type="submit">
