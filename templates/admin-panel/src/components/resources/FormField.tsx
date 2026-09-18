@@ -379,6 +379,73 @@ const ComputedWatcher: React.FC<{
   return null;
 };
 
+const LookupWatcher: React.FC<{
+  field: FieldConfig;
+  form: any;
+  fieldName: any;
+  parentName?: string;
+  rowIndex?: number;
+}> = ({ field, form, fieldName, parentName, rowIndex }) => {
+  const lookup = field.lookup;
+  const matchPath = lookup?.matchValue ? lookup.matchValue.replace(/^data\./, '') : null;
+  const watchTarget = parentName && rowIndex !== undefined && matchPath
+    ? [parentName, rowIndex, matchPath]
+    : (matchPath ? matchPath.split('.') : []);
+
+  const watchedValue = Form.useWatch(watchTarget, form);
+  const [lastMatched, setLastMatched] = useState<any>(undefined);
+
+  useEffect(() => {
+    if (!form || !lookup || watchedValue === undefined || watchedValue === null || watchedValue === '') {
+      return;
+    }
+
+    if (watchedValue === lastMatched) {
+      return;
+    }
+
+    let isMounted = true;
+    const executeLookup = async () => {
+      try {
+        const resourceEndpoint = lookup.resource.startsWith('/') ? lookup.resource : `/api/${lookup.resource}`;
+        const matchField = lookup.matchField || 'id';
+        let matchedRecord: any = null;
+
+        if (matchField === 'id') {
+          matchedRecord = await apiService.get(`${resourceEndpoint}/${watchedValue}`);
+        } else {
+          const list = await apiService.get(`${resourceEndpoint}?filters[${matchField}]=${encodeURIComponent(watchedValue)}`);
+          if (Array.isArray(list) && list.length > 0) {
+            matchedRecord = list[0];
+          }
+        }
+
+        if (isMounted && matchedRecord) {
+          const targetVal = matchedRecord[lookup.targetField];
+          if (targetVal !== undefined) {
+            const currentVal = form.getFieldValue(fieldName);
+            if (lookup.overwrite !== false || currentVal === undefined || currentVal === null || currentVal === '') {
+              form.setFieldValue(fieldName, targetVal);
+            }
+          }
+          setLastMatched(watchedValue);
+        }
+      } catch (err) {
+        console.error(`Lookup failed for ${field.name}:`, err);
+      }
+    };
+
+    executeLookup();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [watchedValue, field, form, fieldName, lookup, lastMatched]);
+
+  return null;
+};
+
+
 const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name, noLabel, parentName, resourceName, action, record }) => {
   const [options, setOptions] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -611,6 +678,15 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
     <>
       {(field.compute || field.computeExpression || field.computed) && (
         <ComputedWatcher field={field} form={form} fieldName={fullPath} />
+      )}
+      {field.lookup && (
+        <LookupWatcher
+          field={field}
+          form={form}
+          fieldName={fullPath}
+          parentName={parentName}
+          rowIndex={Array.isArray(fieldName) ? Number(fieldName[0]) : undefined}
+        />
       )}
       <Form.Item
         label={noLabel || field.type === 'boolean' ? undefined : (field.label || field.name)}

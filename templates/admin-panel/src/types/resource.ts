@@ -51,6 +51,15 @@ export interface FieldConfig {
   sqlExpression?: string;
   transforms?: Array<{ type: string; [key: string]: any }>;
   displayRules?: Array<{ condition: string; badge?: { text: string; variant?: string }; [key: string]: any }>;
+  lookup?: {
+    resource: string;
+    matchField?: string;
+    matchValue: string;
+    targetField: string;
+    on?: 'change' | 'init';
+    overwrite?: boolean;
+    [key: string]: any;
+  };
   [key: string]: any;
 }
 
@@ -89,6 +98,7 @@ export interface Field {
   sqlExpression(expression: string): Field;
   transforms(transforms: any[]): Field;
   displayRules(rules: any[]): Field;
+  lookup(config: any): Field;
 }
 
 /**

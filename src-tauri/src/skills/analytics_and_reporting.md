@@ -145,15 +145,17 @@ export default function DashboardDefault() {
 
 ### Available Chart Types
 
-The following chart widgets are available for displaying analytics data:
+The following chart and reporting widgets are available for displaying analytics data:
 
-- **LineChart**: Displays data as a line chart with support for multiple series
+- **LineChartCard** (`components/cards/statistics/LineChart`): Displays trend data as a line chart with support for multiple series.
+- **BarChartCard** (`components/cards/statistics/BarChart`): Displays categorical or time-bucket comparisons as a bar chart.
+- **PieChartCard** (`components/cards/statistics/PieChart`): Displays distribution/breakdown data (e.g. sales by order status, customer tiers). Pass `innerRadius` (e.g. `innerRadius={40}`) for donut charts.
+- **TableCard** (`components/cards/statistics/TableCard`): Displays ranked / top-N tabular data (e.g. top-selling products, low-stock items) with clickable resource link templates (e.g. `link: "/products/{id}"`).
 
-**Note**: All chart widgets use the same data format (Format 1 below).
+### Chart Data Formats
 
-### Chart Data Format
-
-All chart widgets expect the backend to return JSON data in the following format:
+#### Format 1: Cartesian Charts (`LineChartCard`, `BarChartCard`)
+Expects the backend to return JSON data in the following format:
 
 ```json
 {
@@ -166,6 +168,38 @@ All chart widgets expect the backend to return JSON data in the following format
   ]
 }
 ```
+
+#### Format 2: Breakdown / Distribution Charts (`PieChartCard`)
+Expects an array of objects or an object containing `series`:
+
+```json
+[
+  { "id": 1, "label": "Draft", "value": 12 },
+  { "id": 2, "label": "Confirmed", "value": 45 },
+  { "id": 3, "label": "Shipped", "value": 30 },
+  { "id": 4, "label": "Cancelled", "value": 3 }
+]
+```
+Or:
+```json
+{
+  "series": [
+    { "label": "Draft", "value": 12 },
+    { "label": "Confirmed", "value": 45 }
+  ]
+}
+```
+
+#### Format 3: Tabular Reports (`TableCard`)
+Expects an array of row objects (or `{ "data": [...] }`):
+
+```json
+[
+  { "id": 1, "name": "Widget A", "sku": "WID-A", "totalSold": 150, "totalRevenue": 2999.50 },
+  { "id": 2, "name": "Gadget B", "sku": "GAD-B", "totalSold": 95, "totalRevenue": 1425.00 }
+]
+```
+
 
 - `xAxis`: Array of labels for the x-axis
 - `series`: Array of data series, where each series has:
@@ -286,10 +320,101 @@ export default function DashboardDefault() {
 
 ---
 
+## Dedicated Report Pages & Custom Analytics Views
+
+When a requirement calls for a dedicated report page (e.g. date-range filtered order summaries, detailed audit logs, or custom tabular views beyond the dashboard), create the page using `write_page` and use the standalone `DataTable` component.
+
+### `DataTable` Component
+
+The `DataTable` component (`components/crud/DataTable`) provides a table with integrated search, filter inputs (including date range pickers and selects), pagination, and auto-refresh.
+
+#### Props:
+- `endpoint`: API endpoint (e.g., `"/api/analytics/orders/report"`)
+- `columns`: Ant Design table column definitions array
+- `filters`: Array of filter definitions:
+  - `{ name: "dateRange", type: "dateRange", label: "Date Range" }`
+  - `{ name: "status", type: "select", label: "Status", options: { draft: "Draft", confirmed: "Confirmed" } }`
+  - `{ name: "search", type: "text", label: "Search" }`
+- `params`: Object of constant query parameters to pass to the endpoint
+
+### Example: Creating a Dedicated Order Report Page
+
+```javascript
+write_page({
+  route: "/reports/orders",
+  code: `'use client';
+
+import React from 'react';
+import { Tag } from 'antd';
+import DataTable from '@/components/crud/DataTable';
+
+const statusColors = {
+  draft: 'default',
+  confirmed: 'blue',
+  shipped: 'green',
+  cancelled: 'red',
+};
+
+export default function OrderReportPage() {
+  const columns = [
+    { title: 'Order #', dataIndex: 'orderNumber', key: 'orderNumber' },
+    { title: 'Customer', dataIndex: 'customerName', key: 'customerName' },
+    { title: 'Date', dataIndex: 'orderDate', key: 'orderDate' },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      render: (status) => <Tag color={statusColors[status] || 'default'}>{status?.toUpperCase()}</Tag>,
+    },
+    {
+      title: 'Total Value',
+      dataIndex: 'totalAmount',
+      key: 'totalAmount',
+      render: (val) => '$' + Number(val || 0).toFixed(2),
+    },
+  ];
+
+  const filters = [
+    { name: 'dateRange', type: 'dateRange', label: 'Order Date Range' },
+    {
+      name: 'status',
+      type: 'select',
+      label: 'Order Status',
+      options: { draft: 'Draft', confirmed: 'Confirmed', shipped: 'Shipped', cancelled: 'Cancelled' },
+    },
+  ];
+
+  return (
+    <div style={{ padding: 24 }}>
+      <DataTable
+        title="Order & Sales Report"
+        endpoint="/api/analytics/orders/report"
+        columns={columns}
+        filters={filters}
+      />
+    </div>
+  );
+}
+`
+})
+```
+
+Add the report to the navigation menu using `write_menu`:
+```javascript
+write_menu({
+  name: "Reports.OrderReport",
+  route: "/reports/orders",
+  icon: "BarChartOutlined",
+  after: "Orders"
+})
+```
+
+---
+
 ## Best Practices
 
 1. **Always read before writing dashboard files**: Use `read_file` first on `views/dashboard/default.jsx` so you retain existing widgets inside `<Dashboard>`.
 2. **Endpoint matching**: The `endpoint` prop in widgets (e.g., `"/analytics/customers/count"`) must match `"/analytics/" + aggregator.getName()`.
-3. **Chart data format**: All chart widgets use the same format with `xAxis` and `series` arrays. Ensure your backend handlers return data in this structure.
+3. **Chart data format**: All chart widgets use the documented JSON data formats (Cartesian, Distribution, or Tabular).
 4. **Grid Sizing**: Widgets can declare their own 12-column layout sizing directly via the `size` prop (e.g., `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
-5. **Optimized DB queries**: Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
+5. **Optimized DB queries**: Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
