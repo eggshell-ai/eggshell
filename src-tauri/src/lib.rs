@@ -1017,8 +1017,113 @@ async fn fetch_models(
     Ok(models)
 }
 
+/// Tests a provider configuration by attempting to fetch its models.
+/// Does not persist changes to disk.
 #[tauri::command]
-fn save_provider_config(
+async fn test_provider_config(
+    provider: Option<String>,
+    provider_id: Option<String>,
+    provider_type: Option<String>,
+    base_url: Option<String>,
+    api_key: String,
+    app: tauri::AppHandle,
+    log: tauri::State<'_, ProgressLog>,
+) -> Result<Vec<String>, String> {
+    let kind = provider_type
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| provider.as_deref().filter(|p| !p.trim().is_empty()))
+        .unwrap_or("");
+
+    let known = providers::registered_providers()
+        .iter()
+        .any(|descriptor| descriptor.key == kind);
+    if !known {
+        return Err(format!("\"{kind}\" is not a supported provider yet."));
+    }
+
+    let api_key = api_key.trim().to_string();
+    let config = config::ConfigService::load_default(&app).unwrap_or_default();
+
+    let target_id = provider_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .or_else(|| provider.as_deref().filter(|p| !p.trim().is_empty()));
+
+    let existing = target_id.and_then(|id| {
+        config
+            .providers
+            .iter()
+            .find(|candidate| candidate.id() == id || candidate.name == id)
+    });
+
+    let resolved_api_key = match (api_key.is_empty(), existing) {
+        (false, _) => api_key,
+        (true, Some(found)) => found.api_key.clone(),
+        (true, None) => {
+            if kind == "ollama" {
+                String::new()
+            } else {
+                return Err("An API key is required to test the connection.".to_string());
+            }
+        }
+    };
+
+    let final_base_url = base_url
+        .filter(|url| !url.trim().is_empty())
+        .or_else(|| existing.and_then(|p| p.base_url.clone()));
+
+    let provider_config = config::ProviderConfig {
+        id: provider_id.clone(),
+        name: kind.to_string(),
+        provider_type: Some(kind.to_string()),
+        title: None,
+        base_url: final_base_url,
+        api_key: resolved_api_key,
+        models: Vec::new(),
+        reasoning: None,
+    };
+
+    let service = providers::build_service(&provider_config).map_err(|error| error.to_string())?;
+    let mut models = match service.list_models().await {
+        Ok(models) => models,
+        Err(error) => {
+            let message = format!("Connection test failed: {error}");
+            log.line(
+                "warning",
+                format!("test_provider_config failed for {kind}: {error}"),
+            );
+            return Err(message);
+        }
+    };
+
+    models.sort();
+    models.dedup();
+
+    // Cache the verified models
+    if let Ok(cache_path) = config::ConfigService::model_cache_path(&app) {
+        let now = providers::now_seconds();
+        let mut cache = providers::ModelCache::load(&cache_path);
+        if let Some(id) = provider_id.as_deref().filter(|id| !id.trim().is_empty()) {
+            cache.store(id, models.clone(), now);
+        }
+        cache.store(kind, models.clone(), now);
+        let _ = cache.save(&cache_path);
+    }
+
+    log.line(
+        "info",
+        format!(
+            "test_provider_config succeeded for {kind}, fetched {} models",
+            models.len()
+        ),
+    );
+
+    Ok(models)
+}
+
+#[tauri::command]
+async fn save_provider_config(
     provider: String,
     provider_id: Option<String>,
     provider_type: Option<String>,
@@ -1069,7 +1174,13 @@ fn save_provider_config(
     let resolved_api_key = match (api_key.is_empty(), existing) {
         (false, _) => api_key,
         (true, Some(index)) => config.providers[index].api_key.clone(),
-        (true, None) => return Err("An API key is required.".to_string()),
+        (true, None) => {
+            if kind == "ollama" {
+                String::new()
+            } else {
+                return Err("An API key is required.".to_string());
+            }
+        }
     };
 
     let reasoning = existing.and_then(|index| config.providers[index].reasoning.clone());
@@ -1101,7 +1212,7 @@ fn save_provider_config(
         .filter(|url| !url.trim().is_empty())
         .or_else(|| existing.and_then(|idx| config.providers[idx].base_url.clone()));
 
-    let provider_config = config::ProviderConfig {
+    let mut provider_config = config::ProviderConfig {
         id: Some(final_id.clone()),
         name: kind.to_string(),
         provider_type: Some(kind.to_string()),
@@ -1111,6 +1222,37 @@ fn save_provider_config(
         models,
         reasoning,
     };
+
+    // Test the provider connection before saving
+    let service = providers::build_service(&provider_config).map_err(|error| error.to_string())?;
+    let mut fetched_models = match service.list_models().await {
+        Ok(models) => models,
+        Err(error) => {
+            let message = format!("Connection test failed: {error}");
+            log.line(
+                "warning",
+                format!("save_provider_config connection test failed for {kind}: {error}"),
+            );
+            return Err(message);
+        }
+    };
+    fetched_models.sort();
+    fetched_models.dedup();
+
+    // If the provider has no models configured, adopt the models fetched from connection test
+    if provider_config.models.is_empty() && !fetched_models.is_empty() {
+        provider_config.models = fetched_models.clone();
+    }
+
+    if !fetched_models.is_empty() {
+        if let Ok(cache_path) = config::ConfigService::model_cache_path(&app) {
+            let now = providers::now_seconds();
+            let mut cache = providers::ModelCache::load(&cache_path);
+            cache.store(&final_id, fetched_models.clone(), now);
+            cache.store(kind, fetched_models.clone(), now);
+            let _ = cache.save(&cache_path);
+        }
+    }
 
     match existing {
         Some(index) => config.providers[index] = provider_config.clone(),
@@ -1556,6 +1698,7 @@ pub fn run() {
             load_setup_state,
             config::save_mysql_config,
             save_provider_config,
+            test_provider_config,
             delete_provider,
             select_model,
             fetch_models,

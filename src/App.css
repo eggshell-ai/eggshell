@@ -1465,6 +1465,18 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.dialog-success {
+  margin: 14px 0 0;
+  padding: 11px 14px;
+  border-radius: 9px;
+  color: #1b6939;
+  background: #edf8f0;
+  border: 1px solid #bce6c6;
+  font-size: .82rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .dialog-heading {
   display: flex;
   justify-content: space-between;
@@ -1719,6 +1731,8 @@ input {
   background: transparent;
   text-align: left;
   transition: .16s ease;
+  cursor: pointer;
+  box-sizing: border-box;
 }
 
 .provider-item:hover {
@@ -1736,6 +1750,36 @@ input {
   width: 32px;
   height: 32px;
   font-size: .92rem;
+}
+
+.provider-item .provider-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.provider-item-test-btn {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  font-size: .72rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid #dcd9e5;
+  background: #ffffff;
+  color: #4d4a58;
+  cursor: pointer;
+  transition: all .15s ease;
+  white-space: nowrap;
+}
+
+.provider-item-test-btn:hover:not(:disabled) {
+  border-color: #765fe1;
+  color: #765fe1;
+  background: #f7f5ff;
+}
+
+.provider-item-test-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .provider-editor {
@@ -1773,8 +1817,15 @@ input {
 .provider-editor-actions {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 10px;
   margin-top: 24px;
+}
+
+.provider-editor-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 /* Models are edited as rows, one per name, rather than a single

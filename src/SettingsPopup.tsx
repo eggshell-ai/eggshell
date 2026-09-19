@@ -50,7 +50,10 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   const [draftModel, setDraftModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState("");
+  const [testStatus, setTestStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testingSidebarId, setTestingSidebarId] = useState<string | null>(null);
 
   const selected = providers.find((p) => p.id === selectedId || p.key === selectedId) ?? null;
   const isNew = selectedId === null;
@@ -65,6 +68,7 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     setDraftModel("");
     setApiKey("");
     setError("");
+    setTestStatus(null);
   }
 
   function addDraftModel() {
@@ -127,10 +131,113 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     setDraftModel("");
     setApiKey("");
     setError("");
+    setTestStatus(null);
+  }
+
+  async function testProvider() {
+    setError("");
+    setTestStatus(null);
+    const typeToUse = isNew ? selectedType : (selected?.provider_type || selectedType);
+    if (!typeToUse) {
+      setError("Choose a provider type to configure.");
+      return;
+    }
+
+    const keepsSavedKey = !isNew && Boolean(selected?.api_key_set);
+    if (!apiKey.trim() && !keepsSavedKey && typeToUse !== "ollama") {
+      setError("An API key is required to test the connection.");
+      return;
+    }
+
+    setIsTesting(true);
+    try {
+      const fetched = await invoke<string[]>("test_provider_config", {
+        provider: selectedId || typeToUse,
+        providerId: selectedId ?? null,
+        providerType: typeToUse,
+        baseUrl: baseUrl.trim() || null,
+        apiKey,
+      });
+
+      if (fetched && fetched.length > 0) {
+        setModels((current) => {
+          const merged = [...current];
+          for (const m of fetched) {
+            if (!merged.includes(m)) merged.push(m);
+          }
+          return merged;
+        });
+      }
+
+      setTestStatus({
+        type: "success",
+        message: `Connection successful! Fetched ${fetched.length} model${fetched.length === 1 ? "" : "s"}.`,
+      });
+    } catch (reason) {
+      console.error("[SettingsPopup] test_provider_config rejected", { reason });
+      setError(String(reason));
+      setTestStatus({
+        type: "error",
+        message: String(reason),
+      });
+    } finally {
+      setIsTesting(false);
+    }
+  }
+
+  async function testSavedProvider(provider: RegisteredProvider) {
+    const id = provider.id || provider.key;
+    setTestingSidebarId(id);
+    setError("");
+    setTestStatus(null);
+    try {
+      const fetched = await invoke<string[]>("test_provider_config", {
+        provider: id,
+        providerId: id,
+        providerType: provider.provider_type || provider.name.toLowerCase(),
+        baseUrl: provider.base_url || null,
+        apiKey: "",
+      });
+
+      if (fetched && fetched.length > 0) {
+        setProviders((current) =>
+          current.map((p) => {
+            if ((p.id || p.key) === id) {
+              const updatedModels = [...p.models];
+              for (const m of fetched) {
+                if (!updatedModels.includes(m)) updatedModels.push(m);
+              }
+              return { ...p, models: updatedModels };
+            }
+            return p;
+          })
+        );
+        if (selectedId === id) {
+          setModels((current) => {
+            const merged = [...current];
+            for (const m of fetched) {
+              if (!merged.includes(m)) merged.push(m);
+            }
+            return merged;
+          });
+        }
+      }
+
+      setTestStatus({
+        type: "success",
+        message: `Connection to "${provider.title || provider.name}" verified! Fetched ${fetched.length} model${fetched.length === 1 ? "" : "s"}.`,
+      });
+    } catch (reason) {
+      console.error("[SettingsPopup] testSavedProvider rejected", { reason });
+      setError(`Failed to connect to ${provider.title || provider.name}: ${String(reason)}`);
+    } finally {
+      setTestingSidebarId(null);
+    }
   }
 
   async function saveProvider() {
     setError("");
+    setTestStatus(null);
     const typeToUse = isNew ? selectedType : (selected?.provider_type || selectedType);
     if (!typeToUse) return setError("Choose a provider type to configure.");
 
@@ -139,7 +246,7 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     const modelList = Array.from(new Set(models.map((model) => model.trim()).filter(Boolean)));
     // An empty key means "keep the saved one" for an existing provider.
     const keepsSavedKey = !isNew && Boolean(selected?.api_key_set);
-    if (!apiKey.trim() && !keepsSavedKey) return setError("An API key is required.");
+    if (!apiKey.trim() && !keepsSavedKey && typeToUse !== "ollama") return setError("An API key is required.");
 
     setIsSaving(true);
     try {
@@ -166,6 +273,10 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
       } else {
         startNewProvider();
       }
+      setTestStatus({
+        type: "success",
+        message: "Connection verified and provider saved successfully!",
+      });
     } catch (reason) {
       console.error("[SettingsPopup] save_provider_config rejected", { reason });
       setError(String(reason));
@@ -227,18 +338,41 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                       const id = provider.id || provider.key;
                       const isItemActive = id === selectedId;
                       const displayTitle = provider.title || provider.name;
+                      const isTestingThis = testingSidebarId === id;
                       return (
-                        <button
+                        <div
                           className={isItemActive ? "provider-item active" : "provider-item"}
-                          key={id} type="button" aria-pressed={isItemActive}
+                          key={id}
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={isItemActive}
                           onClick={() => editProvider(provider)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              editProvider(provider);
+                            }
+                          }}
                         >
                           <span className="provider-mark" aria-hidden="true">{displayTitle.slice(0, 1).toUpperCase()}</span>
                           <span className="provider-copy">
                             <strong>{displayTitle}</strong>
                             <small>{provider.api_key_set ? describeModels(provider.models) : "Not configured"}</small>
                           </span>
-                        </button>
+                          <button
+                            className="provider-item-test-btn"
+                            type="button"
+                            title={`Test connection for ${displayTitle}`}
+                            aria-label={`Test connection for ${displayTitle}`}
+                            disabled={isTestingThis || isTesting || isSaving}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void testSavedProvider(provider);
+                            }}
+                          >
+                            {isTestingThis ? "…" : "Test"}
+                          </button>
+                        </div>
                       );
                     })}
                     {!providers.length && <p className="setup-note">No providers are configured yet.</p>}
@@ -329,14 +463,32 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                       <input value={apiKey} type="password" autoComplete="off" spellCheck={false}
                         onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your API key" />
                     </label>
+                    {testStatus && testStatus.type === "success" && (
+                      <p className="dialog-success" role="status">{testStatus.message}</p>
+                    )}
                     {error && <p className="dialog-error" role="alert">{error}</p>}
                     <div className="provider-editor-actions">
                       {!isNew && selected
                         ? <button className="secondary-button" type="button" onClick={() => void deleteProvider(selected.id || selected.key)}>Delete provider</button>
                         : <span />}
-                      <button className="add-button" type="button" onClick={() => void saveProvider()} disabled={isSaving}>
-                        {isSaving ? "Saving…" : isNew ? "Add provider" : "Save changes"}
-                      </button>
+                      <div className="provider-editor-buttons">
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => void testProvider()}
+                          disabled={isTesting || isSaving}
+                        >
+                          {isTesting ? "Testing…" : "Test"}
+                        </button>
+                        <button
+                          className="add-button"
+                          type="button"
+                          onClick={() => void saveProvider()}
+                          disabled={isSaving || isTesting}
+                        >
+                          {isSaving ? "Testing & saving…" : isNew ? "Add provider" : "Save changes"}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>}
