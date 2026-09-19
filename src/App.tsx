@@ -118,7 +118,13 @@ function App() {
 
   async function openProject(project: Project) {
     setError(""); setActiveProject(project); setActiveSession(null); setDraft(""); setIsStarting(false); setMode("implement");
-    try { setSessions(await invoke<Session[]>("list_sessions", { projectId: project.id })); }
+    try {
+      const loadedSessions = await invoke<Session[]>("list_sessions", { projectId: project.id });
+      setSessions(loadedSessions);
+      if (loadedSessions.length > 0) {
+        setActiveSession(loadedSessions[0]);
+      }
+    }
     catch (reason) { setError(String(reason)); }
   }
   async function removeSession(session: Session) {

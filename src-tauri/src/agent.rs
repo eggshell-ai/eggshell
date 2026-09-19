@@ -153,6 +153,10 @@ impl AgentService {
                 // schemas expose projectPath for compatibility, but relying on
                 // the model to supply it allows filesystem writes to fall back
                 // to a path relative to the app's current working directory.
+                let call_id = tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 let tool_args = with_project_path(args.clone(), options.project_path.as_deref());
                 self.logger.info(
                     format!("agent turn {turn} tool call {name}: {tool_args}"),
@@ -161,13 +165,9 @@ impl AgentService {
                 emit(
                     &options,
                     "tool_call",
-                    json!({ "name": name, "arguments": tool_args }),
+                    json!({ "id": call_id, "name": name, "arguments": tool_args }),
                 );
                 log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_call", "toolName": name, "toolArgs": tool_args }));
-                let call_id = tool_call
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
                 match tool.execute(tool_args.clone()).await {
                     Ok(result) => {
                         self.logger.info(
@@ -177,7 +177,7 @@ impl AgentService {
                         emit(
                             &options,
                             "tool_result",
-                            json!({ "name": name, "result": result }),
+                            json!({ "id": call_id, "name": name, "result": result }),
                         );
                         log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_result", "toolName": name, "toolResult": result }));
                         messages.push(tool_message(call_id, name, tool_args, result));
@@ -190,13 +190,17 @@ impl AgentService {
                         emit(
                             &options,
                             "tool_result",
-                            json!({ "name": name, "result": result }),
+                            json!({ "id": call_id, "name": name, "result": result }),
                         );
                         log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_error", "toolName": name, "error": result["error"] }));
                         messages.push(tool_message(call_id, name, tool_args, result));
                     }
                 }
             }
+        }
+
+        if final_content.trim().is_empty() && !all_tool_calls.is_empty() {
+            final_content = "Completed requested actions.".to_string();
         }
 
         let result = AgentRunResult {

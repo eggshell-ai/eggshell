@@ -289,21 +289,103 @@ fn conversation_messages(history: &[ChatMessage], system_prompt: &str) -> Vec<LL
         tool_args: None,
         tool_calls: None,
     }];
-    messages.extend(history.iter().filter_map(|message| {
-        let role = match message.role.as_str() {
-            "user" => LLMMessageRole::User,
-            "assistant" => LLMMessageRole::Assistant,
-            _ => return None,
-        };
-        Some(LLMMessage {
-            role,
-            content: message.content.clone(),
-            tool_call_id: None,
-            tool_name: None,
-            tool_args: None,
-            tool_calls: None,
-        })
-    }));
+    let mut last_call_id = None;
+    for (index, message) in history.iter().enumerate() {
+        match message.role.as_str() {
+            "user" => {
+                messages.push(LLMMessage {
+                    role: LLMMessageRole::User,
+                    content: message.content.clone(),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_args: None,
+                    tool_calls: None,
+                });
+            }
+            "tool_call" => {
+                let (call_id, name, args) = if let Some(data) = &message.data {
+                    let id = data
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("call_{index}"));
+                    let name = data
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool")
+                        .to_string();
+                    let args = data.get("arguments").cloned().unwrap_or(Value::Null);
+                    (id, name, args)
+                } else {
+                    (format!("call_{index}"), "tool".to_string(), Value::Null)
+                };
+                last_call_id = Some(call_id.clone());
+                messages.push(LLMMessage {
+                    role: LLMMessageRole::Assistant,
+                    content: String::new(),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_args: None,
+                    tool_calls: Some(vec![json!({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": args,
+                        }
+                    })]),
+                });
+            }
+            "tool_result" => {
+                let (call_id, name, content) = if let Some(data) = &message.data {
+                    let id = data
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(String::from)
+                        .or_else(|| last_call_id.take())
+                        .unwrap_or_else(|| format!("call_{index}"));
+                    let name = data
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool")
+                        .to_string();
+                    let result = data.get("result").cloned().unwrap_or(Value::Null);
+                    let content_str = if let Some(s) = result.as_str() {
+                        s.to_string()
+                    } else if !result.is_null() {
+                        result.to_string()
+                    } else {
+                        message.content.clone()
+                    };
+                    (id, name, content_str)
+                } else {
+                    let id = last_call_id.take().unwrap_or_else(|| format!("call_{index}"));
+                    (id, "tool".to_string(), message.content.clone())
+                };
+                messages.push(LLMMessage {
+                    role: LLMMessageRole::Tool,
+                    content,
+                    tool_call_id: Some(call_id),
+                    tool_name: Some(name),
+                    tool_args: None,
+                    tool_calls: None,
+                });
+            }
+            "assistant" => {
+                if !message.content.trim().is_empty() {
+                    messages.push(LLMMessage {
+                        role: LLMMessageRole::Assistant,
+                        content: message.content.clone(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        tool_calls: None,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
     messages
 }
 
