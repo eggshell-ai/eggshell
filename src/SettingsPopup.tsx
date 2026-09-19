@@ -233,8 +233,9 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     if (!typeToUse) return setError("Choose a provider type to configure.");
 
     // Duplicates are collapsed rather than rejected; models may legitimately be
-    // empty, since they are auto-fetched later.
-    const modelList = Array.from(new Set(models.map((model) => model.trim()).filter(Boolean)));
+    // empty, since they are auto-fetched later. If there is a pending draft model typed, include it.
+    const combinedModels = draftModel.trim() ? [...models, draftModel.trim()] : models;
+    const modelList = Array.from(new Set(combinedModels.map((model) => model.trim()).filter(Boolean)));
     // An empty key means "keep the saved one" for an existing provider.
     const keepsSavedKey = !isNew && Boolean(selected?.api_key_set);
     if (!apiKey.trim() && !keepsSavedKey && typeToUse !== "ollama") return setError("An API key is required.");

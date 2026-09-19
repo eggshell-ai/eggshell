@@ -128,7 +128,7 @@ impl LLMService for OllamaService {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value> {
-        let system = format!(
+        let tools_system = format!(
             "You are an AI assistant with access to these tools:\n{}",
             tools
                 .iter()
@@ -136,15 +136,34 @@ impl LLMService for OllamaService {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+        let mut system_parts = vec![tools_system];
+        for message in messages {
+            if matches!(message.role, crate::llm::LLMMessageRole::System) && !message.content.trim().is_empty() {
+                system_parts.push(message.content.clone());
+            }
+        }
+        let system = system_parts.join("\n\n");
+
         let mut ollama_messages = Vec::with_capacity(messages.len() + 1);
         ollama_messages.push(serde_json::json!({ "role": "system", "content": Self::prompt_with_context(&system, context) }));
         for message in messages {
+            if matches!(message.role, crate::llm::LLMMessageRole::System) {
+                continue;
+            }
             let mut value = serde_json::json!({
-                "role": match &message.role { crate::llm::LLMMessageRole::System => "system", crate::llm::LLMMessageRole::User => "user", crate::llm::LLMMessageRole::Assistant => "assistant", crate::llm::LLMMessageRole::Tool => "tool" },
+                "role": match &message.role {
+                    crate::llm::LLMMessageRole::System => unreachable!(),
+                    crate::llm::LLMMessageRole::User => "user",
+                    crate::llm::LLMMessageRole::Assistant => "assistant",
+                    crate::llm::LLMMessageRole::Tool => "tool",
+                },
                 "content": message.content,
             });
             if let Some(tool_calls) = &message.tool_calls {
                 value["tool_calls"] = Value::Array(tool_calls.clone());
+            }
+            if let Some(call_id) = &message.tool_call_id {
+                value["tool_call_id"] = Value::String(call_id.clone());
             }
             ollama_messages.push(value);
         }

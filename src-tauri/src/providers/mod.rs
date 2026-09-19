@@ -157,14 +157,13 @@ pub fn provider_summaries(
             let title = config.title();
 
             let mut models = config.models.clone();
-            // Cache lookup uses the provider id first, falling back to provider_type
-            let cached_models = cache.fresh(&id, now)
-                .or_else(|| cache.fresh(&provider_type, now));
-            if let Some(fetched) = cached_models {
-                for model in fetched {
-                    if !models.contains(&model) {
-                        models.push(model);
-                    }
+            // Cache lookup uses the provider id first, falling back to provider_type.
+            // Only adopt cached models if the provider has no models configured.
+            if models.is_empty() {
+                let cached_models = cache.fresh(&id, now)
+                    .or_else(|| cache.fresh(&provider_type, now));
+                if let Some(fetched) = cached_models {
+                    models = fetched;
                 }
             }
             ProviderSummary {
