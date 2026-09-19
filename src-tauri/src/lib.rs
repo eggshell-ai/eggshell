@@ -1268,6 +1268,7 @@ async fn send_message(
     session_id: Option<i64>,
     message: String,
     artifacts: Option<Vec<String>>,
+    mode: Option<String>,
     app: tauri::AppHandle,
     pool: tauri::State<'_, SqlitePool>,
     agent: tauri::State<'_, llm::AgentService>,
@@ -1284,8 +1285,11 @@ async fn send_message(
         .filter(|name| !name.trim().is_empty())
         .map(|name| llm::AgentArtifact { name })
         .collect::<Vec<_>>();
-    let event_sink = Arc::new(move |payload| {
-        let _ = app.emit("agent-event", payload);
+    let event_sink = Arc::new({
+        let app = app.clone();
+        move |payload| {
+            let _ = app.emit("agent-event", payload);
+        }
     });
     SessionsRepository::save_exchange(
         pool.inner(),
@@ -1295,6 +1299,8 @@ async fn send_message(
         artifacts,
         agent.inner(),
         event_sink,
+        mode,
+        Some(&app),
     )
     .await
     .map_err(|error| error.to_string())

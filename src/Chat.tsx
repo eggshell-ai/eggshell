@@ -147,9 +147,12 @@ type ChatProps = {
   /** The first model in the active provider's list is the backend's current default. */
   activeModel: string;
   onModelChange: (provider: string, model: string, reasoning?: string) => void;
+  mode: "implement" | "plan";
+  onModeChange: (mode: "implement" | "plan") => void;
+  onProceedToImplement: () => void;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -242,6 +245,33 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
       );
       continue;
     }
+    const isPlan = (message.data as { isPlan?: boolean } | undefined)?.isPlan;
+    const planPath = (message.data as { planPath?: string } | undefined)?.planPath;
+    if (isPlan) {
+      renderedMessages.push(
+        <article className="message assistant plan-message" key={`plan-${index}`}>
+          <div className="plan-header">
+            <div className="plan-title-badge">
+              <span className="plan-icon" aria-hidden="true">📋</span>
+              <span className="plan-title">Implementation Plan</span>
+            </div>
+            {planPath && <span className="plan-path" title={planPath}>Saved to: {planPath.split(/[\\/]/).pop()}</span>}
+          </div>
+          <MessageContent content={message.content} />
+          <div className="plan-actions">
+            <button
+              className="plan-proceed-btn"
+              type="button"
+              disabled={isSending}
+              onClick={onProceedToImplement}
+            >
+              <span aria-hidden="true">⚡</span> Proceed to Implement
+            </button>
+          </div>
+        </article>
+      );
+      continue;
+    }
     renderedMessages.push(<article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Eggshell"}</span><MessageContent content={message.content} /></article>);
   }
   return <main className="chat-layout">
@@ -306,6 +336,20 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                 <span className="composer-attach-icon">📎</span>
                 <span className="composer-attach-label">Attach</span>
               </button>
+              <div className={`composer-mode-picker ${mode === "plan" ? "plan-active" : ""}`}>
+                <span className="composer-mode-icon">{mode === "plan" ? "📋" : "⚙️"}</span>
+                <span className="composer-mode-label">Mode:</span>
+                <select
+                  className="composer-mode-select"
+                  value={mode}
+                  aria-label="Mode Selection"
+                  disabled={isSending}
+                  onChange={({ target }) => onModeChange(target.value as "implement" | "plan")}
+                >
+                  <option value="implement">Implement</option>
+                  <option value="plan">Plan</option>
+                </select>
+              </div>
               {selectableProviders.length > 0 && (
                 <>
                   <div className="composer-model-picker">

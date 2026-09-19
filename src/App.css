@@ -573,6 +573,156 @@
   padding: 0 2px;
 }
 
+.composer-mode-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border: 1px solid #dedae8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #4a4756;
+  transition: all 0.15s ease;
+}
+
+.composer-mode-picker:hover,
+.composer-mode-picker:focus-within {
+  border-color: #bcb6d6;
+  background: #f4f2fb;
+}
+
+.composer-mode-picker.plan-active {
+  border-color: #7952eb;
+  background: #f3effe;
+}
+
+.composer-mode-icon {
+  font-size: 13px;
+}
+
+.composer-mode-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #716c82;
+}
+
+.composer-mode-picker.plan-active .composer-mode-label {
+  color: #6246ea;
+}
+
+.composer-mode-select {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #3e3a4b;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.composer-mode-picker.plan-active .composer-mode-select {
+  color: #5237de;
+}
+
+.composer-mode-select:focus {
+  outline: none;
+}
+
+.plan-message {
+  width: min(100%, 820px);
+  border: 1px solid #d4caf7;
+  border-radius: 14px;
+  background: #fcfbfe;
+  box-shadow: 0 3px 12px rgba(98, 70, 234, 0.07);
+  overflow: hidden;
+}
+
+.plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  background: linear-gradient(135deg, #f0ebff 0%, #ede6fa 100%);
+  border-bottom: 1px solid #e2d9f7;
+}
+
+.plan-title-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plan-icon {
+  font-size: 1.1rem;
+}
+
+.plan-title {
+  font-size: 0.95rem;
+  font-weight: 750;
+  color: #4b36aa;
+}
+
+.plan-path {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #7b7194;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid #ded5f3;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-message .message-content {
+  border-radius: 0;
+  background: transparent;
+  padding: 16px 20px;
+}
+
+.plan-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 20px;
+  border-top: 1px solid #ebe6f5;
+  background: #fbfaff;
+}
+
+.plan-proceed-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 18px;
+  border: none;
+  border-radius: 8px;
+  background: #6246ea;
+  color: #ffffff;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(98, 70, 234, 0.32);
+  transition: all 0.15s ease;
+}
+
+.plan-proceed-btn:hover:not(:disabled) {
+  background: #5034dc;
+  box-shadow: 0 4px 12px rgba(98, 70, 234, 0.42);
+  transform: translateY(-1px);
+}
+
+.plan-proceed-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .composer-reasoning-select:focus {
   outline: none;
 }

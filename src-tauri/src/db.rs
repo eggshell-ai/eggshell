@@ -149,7 +149,10 @@ impl SessionsRepository {
         artifacts: Vec<AgentArtifact>,
         agent: &AgentService,
         event_sink: Arc<dyn Fn(Value) + Send + Sync>,
+        mode: Option<String>,
+        app_handle: Option<&AppHandle>,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
+        let is_plan_mode = mode.as_deref() == Some("plan");
         let existing_history = match session_id {
             Some(id) => {
                 sqlx::query_scalar::<_, String>(
@@ -167,7 +170,7 @@ impl SessionsRepository {
         messages.push(ChatMessage {
             role: "user".to_string(),
             content: user_message.clone(),
-            data: None,
+            data: mode.as_ref().map(|m| json!({ "mode": m })),
         });
         let id = match session_id {
             Some(id) => {
@@ -183,7 +186,14 @@ impl SessionsRepository {
             }
         };
 
-        let app = llm::AdminPanelApp;
+        let (system_prompt, tools) = if is_plan_mode {
+            let app = llm::PlanningApp;
+            (app.system_prompt(), app.tools())
+        } else {
+            let app = llm::AdminPanelApp;
+            (app.system_prompt(), app.tools())
+        };
+
         let project_path = sqlx::query_scalar::<_, String>("SELECT path FROM projects WHERE id = ?")
             .bind(project_id)
             .fetch_one(pool)
@@ -193,8 +203,8 @@ impl SessionsRepository {
         let callback_sink = Arc::clone(&event_sink);
         let result = agent
             .run_agent(
-                conversation_messages(&messages, &app.system_prompt()),
-                app.tools(),
+                conversation_messages(&messages, &system_prompt),
+                tools,
                 AgentOptions {
                     project_path: Some(project_path),
                     artifacts,
@@ -226,10 +236,32 @@ impl SessionsRepository {
                 .expect("agent event lock poisoned")
                 .clone(),
         );
+
+        let mut assistant_data: Option<Value> = None;
+        if is_plan_mode {
+            let plan_path_str = if let Some(handle) = app_handle {
+                if let Ok(data_dir) = handle.path().app_data_dir() {
+                    let plans_dir = data_dir.join("plans");
+                    let _ = std::fs::create_dir_all(&plans_dir);
+                    let plan_file = plans_dir.join(format!("project_{}_session_{}_plan.md", project_id, id));
+                    let _ = std::fs::write(&plan_file, &result.content);
+                    Some(plan_file.to_string_lossy().to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            assistant_data = Some(json!({
+                "isPlan": true,
+                "planPath": plan_path_str
+            }));
+        }
+
         messages.push(ChatMessage {
             role: "assistant".to_string(),
             content: result.content,
-            data: None,
+            data: assistant_data,
         });
         let history = serde_json::to_string(&messages)?;
         let title = messages
