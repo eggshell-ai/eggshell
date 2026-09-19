@@ -161,11 +161,8 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
 
       if (fetched && fetched.length > 0) {
         setModels((current) => {
-          const merged = [...current];
-          for (const m of fetched) {
-            if (!merged.includes(m)) merged.push(m);
-          }
-          return merged;
+          if (current.length > 0) return current;
+          return [...fetched];
         });
       }
 
@@ -203,22 +200,16 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
         setProviders((current) =>
           current.map((p) => {
             if ((p.id || p.key) === id) {
-              const updatedModels = [...p.models];
-              for (const m of fetched) {
-                if (!updatedModels.includes(m)) updatedModels.push(m);
-              }
-              return { ...p, models: updatedModels };
+              if (p.models && p.models.length > 0) return p;
+              return { ...p, models: [...fetched] };
             }
             return p;
           })
         );
         if (selectedId === id) {
           setModels((current) => {
-            const merged = [...current];
-            for (const m of fetched) {
-              if (!merged.includes(m)) merged.push(m);
-            }
-            return merged;
+            if (current.length > 0) return current;
+            return [...fetched];
           });
         }
       }
