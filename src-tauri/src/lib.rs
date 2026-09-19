@@ -902,10 +902,14 @@ const CONFIG_PLACEHOLDER: &str = "...";
 /// What the setup screen needs to know at launch: whether to appear at all, and
 /// which providers exist and how each is configured. The API key is deliberately
 /// not sent back to the frontend — only whether one is set.
+/// What the setup screen needs to know at launch: whether to appear at all,
+/// which configured provider instances exist, and which provider types are available.
+/// The API key is deliberately not sent back to the frontend — only whether one is set.
 #[derive(Debug, Serialize)]
 struct SetupState {
     setup_completed: bool,
     providers: Vec<providers::ProviderSummary>,
+    available_types: Vec<providers::ProviderDescriptor>,
 }
 
 #[tauri::command]
@@ -916,10 +920,12 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
         .map(|path| providers::ModelCache::load(&path))
         .unwrap_or_default();
     let now = providers::now_seconds();
+    let available_types = providers::registered_providers();
     match config::ConfigService::load_default(&app) {
         Ok(config) => SetupState {
             setup_completed: config.setup_completed,
             providers: providers::provider_summaries(&config.providers, &cache, now),
+            available_types,
         },
         // A first launch has no configuration to read yet, which is exactly when
         // setup has to run.
@@ -928,6 +934,7 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
             SetupState {
                 setup_completed: false,
                 providers: providers::provider_summaries(&[], &cache, now),
+                available_types,
             }
         }
     }
@@ -943,13 +950,6 @@ async fn fetch_models(
     log: tauri::State<'_, ProgressLog>,
     hub: tauri::State<'_, Arc<providers::ProviderHub>>,
 ) -> Result<Vec<String>, String> {
-    let known = providers::registered_providers()
-        .iter()
-        .any(|descriptor| descriptor.key == provider);
-    if !known {
-        return Err(format!("\"{provider}\" is not a supported provider yet."));
-    }
-
     let cache_path =
         config::ConfigService::model_cache_path(&app).map_err(|error| error.to_string())?;
     let now = providers::now_seconds();
@@ -998,7 +998,7 @@ async fn fetch_models(
             if let Some(entry) = config
                 .providers
                 .iter_mut()
-                .find(|candidate| candidate.name == provider && candidate.models.is_empty())
+                .find(|candidate| (candidate.id() == provider || candidate.name == provider) && candidate.models.is_empty())
             {
                 entry.models = models.clone();
                 let provider_config = entry.clone();
@@ -1020,18 +1020,29 @@ async fn fetch_models(
 #[tauri::command]
 fn save_provider_config(
     provider: String,
+    provider_id: Option<String>,
+    provider_type: Option<String>,
+    title: Option<String>,
+    base_url: Option<String>,
     models: Vec<String>,
     api_key: String,
     app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
     hub: tauri::State<'_, Arc<providers::ProviderHub>>,
 ) -> Result<(), String> {
+    // Resolve the provider backend type (e.g. "ollama", "openai")
+    let kind = provider_type
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or(&provider);
+
     let known = providers::registered_providers()
         .iter()
-        .any(|descriptor| descriptor.key == provider);
+        .any(|descriptor| descriptor.key == kind);
     if !known {
-        return Err(format!("\"{provider}\" is not a supported provider yet."));
+        return Err(format!("\"{kind}\" is not a supported provider yet."));
     }
+
     let models = models
         .into_iter()
         .map(|model| model.trim().to_string())
@@ -1039,34 +1050,68 @@ fn save_provider_config(
         .collect::<Vec<_>>();
     let api_key = api_key.trim().to_string();
 
-    // Setup writes every field the file holds, and a first launch has nothing to
-    // read, so an unreadable configuration is replaced rather than fatal.
     let mut config = config::ConfigService::load_default(&app).unwrap_or_else(|error| {
         log.line("info", format!("{error}; writing a fresh configuration"));
         config::AppConfig::default()
     });
 
-    // Replace only the provider being edited rather than the whole list, which
-    // would drop every other configured provider. A blank key means "keep the
-    // saved one": stored keys never reach the frontend, so renaming models must
-    // not force the key to be pasted again. Models may be empty on purpose;
-    // they are auto-fetched later.
+    // Check if updating an existing provider by provider_id or legacy provider key
+    let target_id = provider_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or(&provider);
+
     let existing = config
         .providers
         .iter()
-        .position(|candidate| candidate.name == provider);
-    let api_key = match (api_key.is_empty(), existing) {
+        .position(|candidate| candidate.id() == target_id || candidate.name == target_id);
+
+    let resolved_api_key = match (api_key.is_empty(), existing) {
         (false, _) => api_key,
         (true, Some(index)) => config.providers[index].api_key.clone(),
         (true, None) => return Err("An API key is required.".to_string()),
     };
+
     let reasoning = existing.and_then(|index| config.providers[index].reasoning.clone());
+
+    // Generate or preserve an ID
+    let final_id = match existing {
+        Some(index) => config.providers[index].id(),
+        None => {
+            if let Some(id) = provider_id.filter(|id| !id.trim().is_empty()) {
+                id
+            } else {
+                let now = providers::now_seconds();
+                format!("{}-{}", kind, now % 100_000)
+            }
+        }
+    };
+
+    let final_title = title
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| existing.and_then(|idx| config.providers[idx].title.clone()))
+        .or_else(|| {
+            providers::registered_providers()
+                .iter()
+                .find(|d| d.key == kind)
+                .map(|d| d.name.clone())
+        });
+
+    let final_base_url = base_url
+        .filter(|url| !url.trim().is_empty())
+        .or_else(|| existing.and_then(|idx| config.providers[idx].base_url.clone()));
+
     let provider_config = config::ProviderConfig {
-        name: provider.clone(),
-        api_key,
+        id: Some(final_id.clone()),
+        name: kind.to_string(),
+        provider_type: Some(kind.to_string()),
+        title: final_title,
+        base_url: final_base_url,
+        api_key: resolved_api_key,
         models,
         reasoning,
     };
+
     match existing {
         Some(index) => config.providers[index] = provider_config.clone(),
         None => config.providers.push(provider_config.clone()),
@@ -1078,21 +1123,20 @@ fn save_provider_config(
         message
     })?;
 
-    // The agent was built from the configuration read at start-up, so without
-    // this the credentials just entered would only take effect after a restart.
     hub.apply(&provider_config);
     log.line(
         "info",
         format!(
-            "saved {provider} with models {}",
+            "saved {} ({}) with models {}",
+            provider_config.title(),
+            final_id,
             provider_config.models.join(", ")
         ),
     );
     Ok(())
 }
 
-/// Removes a provider from configuration. It stays in the registry, so the
-/// settings screen shows it again as an unconfigured provider.
+/// Removes a provider from configuration by id.
 #[tauri::command]
 fn delete_provider(
     provider: String,
@@ -1101,7 +1145,7 @@ fn delete_provider(
 ) -> Result<(), String> {
     let mut config = config::ConfigService::load_default(&app).map_err(|error| error.to_string())?;
     let before = config.providers.len();
-    config.providers.retain(|candidate| candidate.name != provider);
+    config.providers.retain(|candidate| candidate.id() != provider && candidate.name != provider);
     if config.providers.len() == before {
         return Err(format!("{provider} has not been configured yet."));
     }
@@ -1110,8 +1154,7 @@ fn delete_provider(
     Ok(())
 }
 
-/// Switches the model the running agent uses. The provider itself stays fixed
-/// for the session; only which of its configured models answers changes.
+/// Switches the model the running agent uses.
 #[tauri::command]
 fn select_model(
     provider: String,
@@ -1121,20 +1164,12 @@ fn select_model(
     log: tauri::State<'_, ProgressLog>,
     hub: tauri::State<'_, Arc<providers::ProviderHub>>,
 ) -> Result<(), String> {
-    let known = providers::registered_providers()
-        .iter()
-        .any(|descriptor| descriptor.key == provider);
-    if !known {
-        return Err(format!("\"{provider}\" is not a supported provider yet."));
-    }
     let model = model.trim().to_string();
     if model.is_empty() {
         return Err("A model is required.".to_string());
     }
 
     let mut config = config::ConfigService::load_default(&app).map_err(|error| error.to_string())?;
-    // A model the provider reported automatically is selectable even before it
-    // has been written to config.yaml, so the cache counts as configured too.
     let cached = config::ConfigService::model_cache_path(&app)
         .ok()
         .map(|path| providers::ModelCache::load(&path))
@@ -1143,7 +1178,7 @@ fn select_model(
     let provider_config = config
         .providers
         .iter_mut()
-        .find(|candidate| candidate.name == provider)
+        .find(|candidate| candidate.id() == provider || candidate.name == provider)
         .ok_or_else(|| format!("{provider} has not been configured yet."))?;
     if !provider_config.models.iter().any(|candidate| candidate == &model)
         && !cached.iter().any(|candidate| candidate == &model)
@@ -1154,8 +1189,7 @@ fn select_model(
     if !provider_config.models.iter().any(|candidate| candidate == &model) {
         provider_config.models.push(model.clone());
     }
-    // Move the selection to the front, so it is also the default on the next
-    // launch.
+    // Move the selection to the front, so it is also the default on the next launch.
     provider_config.models.retain(|candidate| candidate != &model);
     provider_config.models.insert(0, model.clone());
     if let Some(r) = reasoning {
@@ -1165,7 +1199,7 @@ fn select_model(
     config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
 
     hub.apply(&provider_config);
-    log.line("info", format!("switched to {provider} model {model} (reasoning: {:?})", provider_config.reasoning));
+    log.line("info", format!("switched to {} model {model} (reasoning: {:?})", provider_config.title(), provider_config.reasoning));
     Ok(())
 }
 

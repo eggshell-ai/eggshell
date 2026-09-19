@@ -120,35 +120,47 @@ pub fn registered_providers() -> Vec<ProviderDescriptor> {
 /// receives it: what it is called, and which models the user has added.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderSummary {
+    pub id: String,
     pub key: String,
+    pub provider_type: String,
     pub name: String,
+    pub title: String,
     pub detail: String,
+    pub base_url: Option<String>,
     pub api_key_set: bool,
     pub models: Vec<String>,
     pub reasoning: Option<String>,
 }
 
-/// Combines the registry with the configuration, so every registered provider
-/// appears (configured or not) and each carries its model list.
-///
-/// Models the user saved come from `config.yaml`; additionally-fetched models
-/// that are still fresh in `cache` are folded in, so a provider whose models
-/// were never written by hand still lists them in the chat picker. A model the
-/// user saved comes first, preserving the stored default.
+/// Combines the configured providers with their descriptors and cached models.
+/// Each configured provider entry in config.yaml becomes a ProviderSummary.
 pub fn provider_summaries(
     configured: &[ProviderConfig],
     cache: &ModelCache,
     now: u64,
 ) -> Vec<ProviderSummary> {
-    registered_providers()
-        .into_iter()
-        .map(|descriptor| {
-            let config = configured
+    let descriptors = registered_providers();
+    configured
+        .iter()
+        .map(|config| {
+            let id = config.id();
+            let provider_type = config.provider_type();
+            let descriptor = descriptors
                 .iter()
-                .find(|provider| provider.name == descriptor.key);
-            let stored = config.map(|provider| provider.models.clone()).unwrap_or_default();
-            let mut models = stored.clone();
-            if let Some(fetched) = cache.fresh(&descriptor.key, now) {
+                .find(|desc| desc.key == provider_type);
+            let name = descriptor
+                .map(|desc| desc.name.clone())
+                .unwrap_or_else(|| provider_type.clone());
+            let detail = descriptor
+                .map(|desc| desc.detail.clone())
+                .unwrap_or_default();
+            let title = config.title();
+
+            let mut models = config.models.clone();
+            // Cache lookup uses the provider id first, falling back to provider_type
+            let cached_models = cache.fresh(&id, now)
+                .or_else(|| cache.fresh(&provider_type, now));
+            if let Some(fetched) = cached_models {
                 for model in fetched {
                     if !models.contains(&model) {
                         models.push(model);
@@ -156,71 +168,62 @@ pub fn provider_summaries(
                 }
             }
             ProviderSummary {
-                key: descriptor.key,
-                name: descriptor.name,
-                detail: descriptor.detail,
-                api_key_set: config.is_some_and(|provider| !provider.api_key.is_empty()),
+                id: id.clone(),
+                key: id,
+                provider_type,
+                name,
+                title,
+                detail,
+                base_url: config.base_url.clone(),
+                api_key_set: !config.api_key.trim().is_empty(),
                 models,
-                reasoning: config.and_then(|provider| provider.reasoning.clone()),
+                reasoning: config.reasoning.clone(),
             }
         })
         .collect()
 }
 
-/// Holds every concrete provider service and forwards prompts to whichever one
-/// is currently active. The setup screen re-points it at runtime without the
-/// agent (which owns it as a plain `Arc<dyn LLMService>`) being rebuilt.
+/// Holds configured provider services and forwards prompts to whichever one
+/// is currently active.
 pub struct ProviderHub {
-    ollama: Arc<OllamaService>,
-    openai: Arc<OpenAiService>,
+    services: RwLock<HashMap<String, Arc<dyn LLMService>>>,
     active: RwLock<Arc<dyn LLMService>>,
 }
 
 impl ProviderHub {
-    /// Starts with the provider named in the configuration, or an empty
-    /// Ollama service (whose per-request errors say it is unconfigured).
     pub fn new(config: Option<&ProviderConfig>) -> Self {
-        let ollama = Arc::new(OllamaService::new(
-            config
-                .filter(|provider| provider.name == "ollama")
-                .map(OllamaSettings::from)
-                .unwrap_or_default(),
-        ));
-        let openai = Arc::new(OpenAiService::new(
-            config
-                .filter(|provider| provider.name == "openai")
-                .map(OpenAiSettings::from)
-                .unwrap_or_default(),
-        ));
-        let active: Arc<dyn LLMService> = match config.map(|provider| provider.name.as_str()) {
-            Some("openai") => openai.clone(),
-            _ => ollama.clone(),
+        let mut services = HashMap::new();
+        let active: Arc<dyn LLMService> = if let Some(cfg) = config {
+            let svc = build_service(cfg).unwrap_or_else(|_| {
+                Arc::new(OllamaService::new(OllamaSettings::default()))
+            });
+            services.insert(cfg.id(), svc.clone());
+            services.insert(cfg.provider_type(), svc.clone());
+            svc
+        } else {
+            Arc::new(OllamaService::new(OllamaSettings::default()))
         };
+
         Self {
-            ollama,
-            openai,
+            services: RwLock::new(services),
             active: RwLock::new(active),
         }
     }
 
-    /// Applies new settings and makes that provider the active one.
+    /// Applies or updates settings for a configured provider and makes it the active one.
     pub fn apply(&self, config: &ProviderConfig) {
-        let active: Arc<dyn LLMService> = match config.name.as_str() {
-            "openai" => {
-                self.openai.apply(OpenAiSettings::from(config));
-                self.openai.clone()
-            }
-            // The registry is closed; anything else keeps behaving like the
-            // Ollama-only era by treating ollama as the default.
-            _ => {
-                self.ollama.apply(OllamaSettings::from(config));
-                self.ollama.clone()
-            }
-        };
-        *self
-            .active
-            .write()
-            .unwrap_or_else(|poison| poison.into_inner()) = active;
+        if let Ok(service) = build_service(config) {
+            let mut services = self
+                .services
+                .write()
+                .unwrap_or_else(|poison| poison.into_inner());
+            services.insert(config.id(), service.clone());
+            services.insert(config.provider_type(), service.clone());
+            *self
+                .active
+                .write()
+                .unwrap_or_else(|poison| poison.into_inner()) = service;
+        }
     }
 
     fn active(&self) -> Arc<dyn LLMService> {
@@ -230,21 +233,18 @@ impl ProviderHub {
             .clone()
     }
 
-    /// The concrete service registered under `key`. The registry is closed, so
-    /// anything else has no service.
-    fn service_for(&self, key: &str) -> Option<Arc<dyn LLMService>> {
-        match key {
-            "ollama" => Some(self.ollama.clone()),
-            "openai" => Some(self.openai.clone()),
-            _ => None,
-        }
+    /// Looks up the service for a given provider id or provider type.
+    pub fn service_for(&self, identifier: &str) -> Option<Arc<dyn LLMService>> {
+        self.services
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(identifier)
+            .cloned()
     }
 
-    /// Fetches the models a provider currently offers, using the credentials it
-    /// was last configured with. An unknown provider reports no models rather
-    /// than failing, so one stale config entry cannot break the chat load.
-    pub async fn fetch_models(&self, key: &str) -> LlmResult<Vec<String>> {
-        match self.service_for(key) {
+    /// Fetches the models a provider currently offers using its configured credentials.
+    pub async fn fetch_models(&self, identifier: &str) -> LlmResult<Vec<String>> {
+        match self.service_for(identifier) {
             Some(service) => service.list_models().await,
             None => Ok(Vec::new()),
         }
@@ -273,11 +273,11 @@ impl LLMService for ProviderHub {
     }
 }
 
-/// Builds the service that talks to the named provider using the given
-/// configuration. The provider registry is deliberately closed: an unknown
-/// name is a configuration error, not a silently ignored entry.
+/// Builds the service that talks to the provider instance using the given
+/// configuration.
 pub fn build_service(config: &ProviderConfig) -> LlmResult<Arc<dyn LLMService>> {
-    match config.name.as_str() {
+    let kind = config.provider_type();
+    match kind.as_str() {
         "ollama" => Ok(Arc::new(OllamaService::new(OllamaSettings::from(config)))),
         "openai" => Ok(Arc::new(OpenAiService::new(OpenAiSettings::from(config)))),
         other => Err(format!("\"{other}\" is not a supported provider.").into()),

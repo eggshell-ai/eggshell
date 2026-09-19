@@ -12,12 +12,25 @@ use crate::llm::{LlmResult, LLMMessage, LLMMessageRole, LLMService, Tool};
 
 /// The settings the OpenAI-compatible provider needs, kept separate from the
 /// file format for the same reason as `OllamaSettings`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OpenAiSettings {
     pub model: String,
     #[serde(rename = "apiKey")]
     pub api_key: String,
+    #[serde(rename = "baseUrl", default)]
+    pub base_url: Option<String>,
     pub reasoning: Option<String>,
+}
+
+impl Default for OpenAiSettings {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            api_key: String::new(),
+            base_url: None,
+            reasoning: None,
+        }
+    }
 }
 
 impl From<&ProviderConfig> for OpenAiSettings {
@@ -26,6 +39,7 @@ impl From<&ProviderConfig> for OpenAiSettings {
             // The first configured model is the default; the rest are choices.
             model: config.models.first().cloned().unwrap_or_default(),
             api_key: config.api_key.clone(),
+            base_url: config.base_url.clone().filter(|url| !url.trim().is_empty()),
             reasoning: config.reasoning.clone(),
         }
     }
@@ -33,7 +47,6 @@ impl From<&ProviderConfig> for OpenAiSettings {
 
 pub struct OpenAiService {
     client: reqwest::Client,
-    api_url: String,
     /// Rewritten in place by the setup screen, so read per request.
     settings: RwLock<OpenAiSettings>,
 }
@@ -42,7 +55,6 @@ impl OpenAiService {
     pub fn new(config: OpenAiSettings) -> Self {
         Self {
             client: reqwest::Client::new(),
-            api_url: "https://api.openai.com/v1".to_string(),
             settings: RwLock::new(config),
         }
     }
@@ -64,15 +76,22 @@ impl OpenAiService {
             .clone()
     }
 
-    fn request(&self, endpoint: &str, api_key: &str) -> reqwest::RequestBuilder {
+    fn api_url(settings: &OpenAiSettings) -> String {
+        settings
+            .base_url
+            .as_deref()
+            .filter(|url| !url.trim().is_empty())
+            .unwrap_or("https://api.openai.com/v1")
+            .trim_end_matches('/')
+            .to_string()
+    }
+
+    fn request(&self, endpoint: &str, settings: &OpenAiSettings) -> reqwest::RequestBuilder {
+        let base_url = Self::api_url(settings);
         self.client
-            .post(format!(
-                "{}/{}",
-                self.api_url.trim_end_matches('/'),
-                endpoint
-            ))
+            .post(format!("{}/{}", base_url, endpoint))
             .header("Content-Type", "application/json")
-            .bearer_auth(api_key)
+            .bearer_auth(&settings.api_key)
     }
 
     fn prompt_with_context(prompt: &str, context: Option<&Map<String, Value>>) -> String {
@@ -97,7 +116,7 @@ impl LLMService for OpenAiService {
     ) -> LlmResult<String> {
         let settings = self.settings();
         let response = self
-            .request("chat/completions", &settings.api_key)
+            .request("chat/completions", &settings)
             .json(&serde_json::json!({
                 "model": settings.model,
                 "messages": [
@@ -175,7 +194,7 @@ impl LLMService for OpenAiService {
             }
         }
         let response = self
-            .request("chat/completions", &settings.api_key)
+            .request("chat/completions", &settings)
             .json(&payload)
             .send()
             .await?
@@ -224,9 +243,10 @@ impl LLMService for OpenAiService {
     /// `{ "data": [{ "id": ... }] }`; OpenRouter, LM Studio and vLLM mirror it.
     async fn list_models(&self) -> LlmResult<Vec<String>> {
         let settings = self.settings();
+        let base_url = Self::api_url(&settings);
         let response = self
             .client
-            .get(format!("{}/models", self.api_url.trim_end_matches('/')))
+            .get(format!("{}/models", base_url))
             .bearer_auth(&settings.api_key)
             .send()
             .await?

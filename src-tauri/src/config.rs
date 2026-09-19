@@ -43,11 +43,19 @@ impl Default for AppConfig {
     }
 }
 
-/// One provider entry in config.yaml. `name` identifies the provider in the
-/// registry (`crate::providers`); the rest is the provider's own business.
+/// One provider entry in config.yaml. `id` uniquely identifies the provider instance.
+/// `name` or `provider_type` identifies the provider backend in the registry (`crate::providers`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderConfig {
+    #[serde(default)]
+    pub id: Option<String>,
     pub name: String,
+    #[serde(rename = "type", default)]
+    pub provider_type: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(rename = "baseUrl", default)]
+    pub base_url: Option<String>,
     #[serde(rename = "apiKey", default)]
     pub api_key: String,
     /// The models the user wants available for this provider: added by hand in
@@ -58,6 +66,32 @@ pub struct ProviderConfig {
     /// Optional reasoning level ("off", "minimal", "low", "medium", "high", "xhigh")
     #[serde(default)]
     pub reasoning: Option<String>,
+}
+
+impl ProviderConfig {
+    pub fn id(&self) -> String {
+        self.id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or(&self.name)
+            .to_string()
+    }
+
+    pub fn provider_type(&self) -> String {
+        self.provider_type
+            .as_deref()
+            .filter(|kind| !kind.trim().is_empty())
+            .unwrap_or(&self.name)
+            .to_string()
+    }
+
+    pub fn title(&self) -> String {
+        self.title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or(&self.name)
+            .to_string()
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

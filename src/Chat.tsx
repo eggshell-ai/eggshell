@@ -111,7 +111,17 @@ function ToolRun({ call, result }: ToolRunProps) {
 }
 
 // Mirrors `providers::ProviderSummary` as returned by `load_setup_state`.
-type ProviderSummary = { key: string; name: string; detail: string; api_key_set: boolean; models: string[]; reasoning?: string | null };
+type ProviderSummary = {
+  id: string;
+  key: string;
+  provider_type: string;
+  name: string;
+  title: string;
+  detail: string;
+  api_key_set: boolean;
+  models: string[];
+  reasoning?: string | null;
+};
 
 export const REASONING_MODES = [
   { value: "off", label: "Off" },
@@ -187,8 +197,11 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
       const current = await loadProviders();
       const configured = current.filter(({ api_key_set }) => api_key_set);
       if (configured.length === 0) return;
-      await Promise.all(configured.map(({ key }) => invoke("fetch_models", { provider: key })
-        .catch((reason: unknown) => console.warn("[Chat] fetch_models failed", { provider: key, reason }))));
+      await Promise.all(configured.map((p) => {
+        const identifier = p.id || p.key;
+        return invoke("fetch_models", { provider: identifier })
+          .catch((reason: unknown) => console.warn("[Chat] fetch_models failed", { provider: identifier, reason }));
+      }));
       await loadProviders();
     } catch (reason) {
       console.error("[Chat] model refresh failed", { reason });
@@ -205,7 +218,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
   useEffect(() => {
     if (activeModel) return;
     const first = selectableProviders[0];
-    if (first?.models.length) onModelChange(first.key, first.models[0]);
+    if (first?.models.length) onModelChange(first.id || first.key, first.models[0]);
   }, [activeModel, providers]);
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -364,15 +377,19 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                         onModelChange(provider, rest.join(":"), currentReasoning || "off");
                       }}
                     >
-                      {selectableProviders.map(({ key, name, models }) => (
-                        <optgroup key={key} label={name}>
-                          {models.map((model) => (
-                            <option key={`${key}:${model}`} value={`${key}:${model}`}>
-                              {model}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
+                      {selectableProviders.map((p) => {
+                        const id = p.id || p.key;
+                        const label = p.title || p.name;
+                        return (
+                          <optgroup key={id} label={label}>
+                            {p.models.map((model) => (
+                              <option key={`${id}:${model}`} value={`${id}:${model}`}>
+                                {model}
+                              </option>
+                            ))}
+                          </optgroup>
+                        );
+                      })}
                     </select>
                   </div>
                   <div className="composer-reasoning-picker">
@@ -380,7 +397,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                     <span className="composer-reasoning-label">Reasoning:</span>
                     <select
                       className="composer-reasoning-select"
-                      value={providers.find((p) => p.key === activeProvider)?.reasoning || "off"}
+                      value={providers.find((p) => (p.id || p.key) === activeProvider)?.reasoning || "off"}
                       aria-label="Reasoning Effort"
                       onChange={({ target }) => {
                         const nextReasoning = target.value;

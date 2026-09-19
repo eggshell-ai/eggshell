@@ -13,7 +13,7 @@ import ReportMenu from "./ReportMenu";
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
 type Session = { id: number; title: string; conversation_history: string };
-type SetupState = { setup_completed: boolean; providers: { key: string; name: string; models: string[] }[] };
+type SetupState = { setup_completed: boolean; providers: { id?: string; key: string; name: string; models: string[] }[] };
 const emptyProject: ProjectForm = { title: "", slug: "", path: "" };
 
 function App() {
@@ -49,7 +49,7 @@ function App() {
         setIsSetupComplete(setup_completed);
         const configured = providers.find(({ models }) => models.length > 0);
         if (configured) {
-          setActiveProvider(configured.key);
+          setActiveProvider(configured.id || configured.key);
           setActiveModel((current) => current || configured.models[0]);
         }
       })

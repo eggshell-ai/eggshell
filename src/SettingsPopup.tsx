@@ -1,8 +1,25 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-type RegisteredProvider = { key: string; name: string; detail: string; api_key_set: boolean; models: string[] };
-type SetupState = { setup_completed: boolean; providers: RegisteredProvider[] };
+type ProviderTypeDescriptor = { key: string; name: string; detail: string };
+
+type RegisteredProvider = {
+  id: string;
+  key: string;
+  provider_type: string;
+  name: string;
+  title: string;
+  detail: string;
+  base_url?: string | null;
+  api_key_set: boolean;
+  models: string[];
+};
+
+type SetupState = {
+  setup_completed: boolean;
+  providers: RegisteredProvider[];
+  available_types?: ProviderTypeDescriptor[];
+};
 
 type SettingsPopupProps = { isOpen: boolean; onClose: () => void };
 
@@ -13,8 +30,6 @@ const settingsSections: { key: SettingsSectionKey; label: string; detail: string
   { key: "providers", label: "Providers", detail: "Models and API keys" },
 ];
 
-// The provider rows are a sidebar of their own: the key identifies the provider
-// the editor on the right is pointed at, and `null` means "compose a new one".
 function describeModels(models: string[]) {
   if (!models.length) return "No models yet";
   return models.length === 1 ? models[0] : `${models.length} models`;
@@ -22,10 +37,13 @@ function describeModels(models: string[]) {
 
 export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   const [providers, setProviders] = useState<RegisteredProvider[]>([]);
+  const [availableTypes, setAvailableTypes] = useState<ProviderTypeDescriptor[]>([]);
   const [loading, setLoading] = useState(false);
   const [section, setSection] = useState<SettingsSectionKey>("providers");
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [newType, setNewType] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedType, setSelectedType] = useState("");
+  const [title, setTitle] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
   const [models, setModels] = useState<string[]>([]);
   // Models are edited one row at a time; this is the value in the "add a model"
   // field, which stays put so several models can be typed in a row.
@@ -34,11 +52,19 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
-  const selected = providers.find(({ key }) => key === selectedKey) ?? null;
-  const isNew = selectedKey === null;
+  const selected = providers.find((p) => p.id === selectedId || p.key === selectedId) ?? null;
+  const isNew = selectedId === null;
+  const currentType = isNew ? selectedType : (selected?.provider_type || selected?.name?.toLowerCase() || "");
 
   function startNewProvider() {
-    setSelectedKey(null); setNewType(""); setModels([]); setDraftModel(""); setApiKey(""); setError("");
+    setSelectedId(null);
+    setSelectedType("");
+    setTitle("");
+    setBaseUrl("");
+    setModels([]);
+    setDraftModel("");
+    setApiKey("");
+    setError("");
   }
 
   function addDraftModel() {
@@ -75,7 +101,17 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     startNewProvider();
     setLoading(true);
     void invoke<SetupState>("load_setup_state")
-      .then(({ providers: loaded }) => setProviders(loaded))
+      .then(({ providers: loaded, available_types: types }) => {
+        setProviders(loaded);
+        if (types && types.length > 0) {
+          setAvailableTypes(types);
+        } else {
+          setAvailableTypes([
+            { key: "ollama", name: "Ollama", detail: "Cloud and local models from ollama.com" },
+            { key: "openai", name: "OpenAI compatible", detail: "Any OpenAI-compatible chat completions API" },
+          ]);
+        }
+      })
       .catch((reason: unknown) => console.error("[SettingsPopup] load_setup_state rejected", { reason }))
       .finally(() => setLoading(false));
   }, [isOpen]);
@@ -83,43 +119,70 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   function editProvider(provider: RegisteredProvider) {
     // The stored API key never crosses back to the frontend, so the field opens
     // empty with a note rather than pretending it is loaded.
-    setSelectedKey(provider.key); setNewType(provider.key);
-    setModels([...provider.models]); setDraftModel(""); setApiKey(""); setError("");
+    setSelectedId(provider.id || provider.key);
+    setSelectedType(provider.provider_type || provider.name.toLowerCase());
+    setTitle(provider.title || provider.name);
+    setBaseUrl(provider.base_url || "");
+    setModels([...provider.models]);
+    setDraftModel("");
+    setApiKey("");
+    setError("");
   }
 
   async function saveProvider() {
     setError("");
-    const target = isNew ? newType : selectedKey;
-    if (!target) return setError("Choose a provider type to configure.");
+    const typeToUse = isNew ? selectedType : (selected?.provider_type || selectedType);
+    if (!typeToUse) return setError("Choose a provider type to configure.");
+
     // Duplicates are collapsed rather than rejected; models may legitimately be
     // empty, since they are auto-fetched later.
     const modelList = Array.from(new Set(models.map((model) => model.trim()).filter(Boolean)));
     // An empty key means "keep the saved one" for an existing provider.
     const keepsSavedKey = !isNew && Boolean(selected?.api_key_set);
     if (!apiKey.trim() && !keepsSavedKey) return setError("An API key is required.");
+
     setIsSaving(true);
     try {
-      await invoke("save_provider_config", { provider: target, models: modelList, apiKey });
+      await invoke("save_provider_config", {
+        provider: selectedId || typeToUse,
+        providerId: selectedId ?? null,
+        providerType: typeToUse,
+        title: title.trim() || null,
+        baseUrl: baseUrl.trim() || null,
+        models: modelList,
+        apiKey,
+      });
       const state = await invoke<SetupState>("load_setup_state");
       setProviders(state.providers);
-      // Keep the saved provider open so its new models are visible right away.
-      setSelectedKey(target); setNewType(target); setModels(modelList); setDraftModel(""); setApiKey("");
+      if (state.available_types) setAvailableTypes(state.available_types);
+
+      // Locate the newly saved or updated provider
+      const updated = state.providers.find((p) =>
+        selectedId ? (p.id === selectedId || p.key === selectedId) : (p.title === title || p.provider_type === typeToUse)
+      ) ?? state.providers[state.providers.length - 1];
+
+      if (updated) {
+        editProvider(updated);
+      } else {
+        startNewProvider();
+      }
     } catch (reason) {
       console.error("[SettingsPopup] save_provider_config rejected", { reason });
       setError(String(reason));
-    } finally { setIsSaving(false); }
+    } finally {
+      setIsSaving(false);
+    }
   }
 
-  async function deleteProvider(key: string) {
+  async function deleteProvider(id: string) {
     if (!window.confirm("Delete this provider from configuration?")) return;
     try {
-      // try backend delete; if not available, fallback to reloading state
-      await invoke("delete_provider", { provider: key });
+      await invoke("delete_provider", { provider: id });
       const state = await invoke<SetupState>("load_setup_state");
       setProviders(state.providers);
     } catch (reason) {
       console.warn("[SettingsPopup] delete_provider failed, falling back to local removal", { reason });
-      setProviders((current) => current.filter((provider) => provider.key !== key));
+      setProviders((current) => current.filter((provider) => provider.id !== id && provider.key !== id));
     }
     startNewProvider();
   }
@@ -160,32 +223,71 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                       <span className="provider-mark" aria-hidden="true">+</span>
                       <span className="provider-copy"><strong>New provider</strong><small>Add a provider</small></span>
                     </button>
-                    {providers.map((provider) => (
-                      <button
-                        className={provider.key === selectedKey ? "provider-item active" : "provider-item"}
-                        key={provider.key} type="button" aria-pressed={provider.key === selectedKey}
-                        onClick={() => editProvider(provider)}
-                      >
-                        <span className="provider-mark" aria-hidden="true">{provider.name.slice(0, 1)}</span>
-                        <span className="provider-copy">
-                          <strong>{provider.name}</strong>
-                          <small>{provider.api_key_set ? describeModels(provider.models) : "Not configured"}</small>
-                        </span>
-                      </button>
-                    ))}
-                    {!providers.length && <p className="setup-note">No providers are registered.</p>}
+                    {providers.map((provider) => {
+                      const id = provider.id || provider.key;
+                      const isItemActive = id === selectedId;
+                      const displayTitle = provider.title || provider.name;
+                      return (
+                        <button
+                          className={isItemActive ? "provider-item active" : "provider-item"}
+                          key={id} type="button" aria-pressed={isItemActive}
+                          onClick={() => editProvider(provider)}
+                        >
+                          <span className="provider-mark" aria-hidden="true">{displayTitle.slice(0, 1).toUpperCase()}</span>
+                          <span className="provider-copy">
+                            <strong>{displayTitle}</strong>
+                            <small>{provider.api_key_set ? describeModels(provider.models) : "Not configured"}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {!providers.length && <p className="setup-note">No providers are configured yet.</p>}
                   </div>
                   <div className="provider-editor">
                     <div className="provider-editor-heading">
-                      <h3>{isNew ? "New provider" : selected?.name}</h3>
+                      <h3>{isNew ? "New provider" : (selected?.title || selected?.name)}</h3>
                       <p>{isNew ? "Pick a provider type, then add its credentials." : selected?.detail}</p>
                     </div>
-                    {isNew && <label>Provider type
-                      <select value={newType} onChange={(event) => { setNewType(event.target.value); setError(""); }}>
-                        <option value="">Select type</option>
-                        {providers.map(({ key, name }) => <option key={key} value={key}>{name}</option>)}
-                      </select>
-                    </label>}
+                    {isNew ? (
+                      <label>Provider type
+                        <select
+                          value={selectedType}
+                          onChange={(event) => {
+                            const newType = event.target.value;
+                            setSelectedType(newType);
+                            const matched = availableTypes.find((t) => t.key === newType);
+                            if (matched && !title) setTitle(matched.name);
+                            setError("");
+                          }}
+                        >
+                          <option value="">Select type</option>
+                          {availableTypes.map(({ key, name }) => <option key={key} value={key}>{name}</option>)}
+                        </select>
+                      </label>
+                    ) : null}
+
+                    <label>Title <span>Custom display name</span>
+                      <input
+                        value={title}
+                        autoComplete="off"
+                        spellCheck={false}
+                        onChange={(event) => setTitle(event.target.value)}
+                        placeholder="e.g. Local Ollama, OpenRouter, Work OpenAI"
+                      />
+                    </label>
+
+                    {currentType === "openai" && (
+                      <label>Base URL <span>Optional &mdash; defaults to https://api.openai.com/v1</span>
+                        <input
+                          value={baseUrl}
+                          autoComplete="off"
+                          spellCheck={false}
+                          onChange={(event) => setBaseUrl(event.target.value)}
+                          placeholder="https://api.openai.com/v1 or http://localhost:1234/v1"
+                        />
+                      </label>
+                    )}
+
                     <div className="model-field">
                       <div className="model-field-label">Models <span>Optional &mdash; fetched automatically when left empty</span></div>
                       {models.length > 0 && (
@@ -229,8 +331,8 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                     </label>
                     {error && <p className="dialog-error" role="alert">{error}</p>}
                     <div className="provider-editor-actions">
-                      {!isNew && selected?.api_key_set
-                        ? <button className="secondary-button" type="button" onClick={() => void deleteProvider(selected.key)}>Delete provider</button>
+                      {!isNew && selected
+                        ? <button className="secondary-button" type="button" onClick={() => void deleteProvider(selected.id || selected.key)}>Delete provider</button>
                         : <span />}
                       <button className="add-button" type="button" onClick={() => void saveProvider()} disabled={isSaving}>
                         {isSaving ? "Saving…" : isNew ? "Add provider" : "Save changes"}
