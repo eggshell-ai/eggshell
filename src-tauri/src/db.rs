@@ -151,6 +151,7 @@ impl SessionsRepository {
         event_sink: Arc<dyn Fn(Value) + Send + Sync>,
         mode: Option<String>,
         app_handle: Option<&AppHandle>,
+        cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
         let is_plan_mode = mode.as_deref() == Some("plan");
         let existing_history = match session_id {
@@ -225,6 +226,7 @@ impl SessionsRepository {
                             json!({ "projectId": project_id, "sessionId": id, "event": event }),
                         );
                     })),
+                    cancellation_token: cancel_token,
                     ..Default::default()
                 },
             )

@@ -33,6 +33,7 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [draft, setDraft] = useState("");
+  const [pendingPrompt, setPendingPrompt] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
@@ -149,18 +150,21 @@ function App() {
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!activeProject || !draft.trim() || isSending) return;
+    const promptToSend = draft;
+    setDraft("");
+    setPendingPrompt(promptToSend);
     setError(""); setIsSending(true); setStreamedMessages([]);
     try {
       const session = await invoke<Session>("send_message", {
         projectId: activeProject.id,
         sessionId: activeSession?.id ?? null,
-        message: draft,
+        message: promptToSend,
         artifacts: attachments,
         mode,
       });
-      setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setDraft(""); setAttachments([]);
+      setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); }
+    finally { setIsSending(false); setPendingPrompt(""); }
   }
 
   async function proceedToImplement() {
@@ -168,6 +172,7 @@ function App() {
     setMode("implement");
     setError(""); setIsSending(true); setStreamedMessages([]);
     const proceedMessage = "Proceed with implementation of the approved plan.";
+    setPendingPrompt(proceedMessage);
     try {
       const session = await invoke<Session>("send_message", {
         projectId: activeProject.id,
@@ -178,11 +183,21 @@ function App() {
       });
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setDraft(""); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); }
+    finally { setIsSending(false); setPendingPrompt(""); }
   }
+
+  async function stopChat() {
+    if (!activeProject) return;
+    try {
+      await invoke("stop_chat", { projectId: activeProject.id });
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
   const persistedMessages: ChatMessage[] = activeSession ? JSON.parse(activeSession.conversation_history) : [];
   const messages: ChatMessage[] = isSending
-    ? [...persistedMessages, { role: "user", content: draft || "Proceed with implementation of the approved plan." }, ...streamedMessages]
+    ? [...persistedMessages, { role: "user", content: pendingPrompt || "Proceed with implementation of the approved plan." }, ...streamedMessages]
     : persistedMessages;
   const lastAssistantIndex = messages.map(({ role }) => role).lastIndexOf("assistant");
   const lastThoughtIndex = messages.map(({ role }) => role).lastIndexOf("thought");
@@ -213,7 +228,7 @@ function App() {
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
   if (!isSetupComplete) return <SetupPage onComplete={() => setIsSetupComplete(true)} />;
-  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} />;
+  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} />;
 
   return (
     <main className="home">

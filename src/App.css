@@ -834,6 +834,34 @@
   box-shadow: none;
 }
 
+.composer-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 8px;
+  background: #e03131;
+  color: #ffffff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(224, 49, 49, 0.28);
+  transition: all 0.15s ease;
+  margin-left: auto;
+}
+
+.composer-stop-btn:hover {
+  background: #c92a2a;
+  box-shadow: 0 3px 10px rgba(224, 49, 49, 0.38);
+}
+
+.composer-stop-icon {
+  font-size: 0.75rem;
+}
+
 .attachment-list {
   display: flex;
   flex-wrap: wrap;

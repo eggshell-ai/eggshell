@@ -12,11 +12,15 @@ use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository};
 use progress::ProgressLog;
 use serde::Serialize;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
+
+type ActiveGenerationMap = Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -1448,6 +1452,7 @@ async fn send_message(
     app: tauri::AppHandle,
     pool: tauri::State<'_, SqlitePool>,
     agent: tauri::State<'_, llm::AgentService>,
+    active_generations: tauri::State<'_, ActiveGenerationMap>,
 ) -> Result<Session, String> {
     let message = message.trim().to_string();
     if message.is_empty() {
@@ -1467,7 +1472,14 @@ async fn send_message(
             let _ = app.emit("agent-event", payload);
         }
     });
-    SessionsRepository::save_exchange(
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        map.insert(project_id, cancel_flag.clone());
+    }
+
+    let result = SessionsRepository::save_exchange(
         pool.inner(),
         project_id,
         session_id,
@@ -1477,9 +1489,28 @@ async fn send_message(
         event_sink,
         mode,
         Some(&app),
+        Some(cancel_flag),
     )
-    .await
-    .map_err(|error| error.to_string())
+    .await;
+
+    {
+        let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(&project_id);
+    }
+
+    result.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn stop_chat(
+    project_id: i64,
+    active_generations: tauri::State<'_, ActiveGenerationMap>,
+) -> Result<(), String> {
+    let map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(flag) = map.get(&project_id) {
+        flag.store(true, Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 /// The question a project asks of MySQL too, so it is the one worth asking here:
@@ -1682,6 +1713,8 @@ pub fn run() {
                 llm::AgentService::new(hub.clone()).with_logger(log.logger().clone());
             app.manage(agent);
             app.manage(hub);
+            let active_generations: ActiveGenerationMap = Arc::new(Mutex::new(HashMap::new()));
+            app.manage(active_generations);
 
             // Probing the port and waiting for the daemon both block, and the
             // window should not wait on a database it does not use itself.
@@ -1708,7 +1741,8 @@ pub fn run() {
             start_project,
             list_sessions,
             delete_session,
-            send_message
+            send_message,
+            stop_chat
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

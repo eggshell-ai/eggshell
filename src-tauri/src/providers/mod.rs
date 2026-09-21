@@ -270,6 +270,18 @@ impl LLMService for ProviderHub {
             .execute_prompt_with_tools(messages, tools, context)
             .await
     }
+
+    async fn execute_prompt_with_tools_cancellable(
+        &self,
+        messages: &[LLMMessage],
+        tools: &[Box<dyn Tool>],
+        context: Option<&Map<String, Value>>,
+        cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> LlmResult<Value> {
+        self.active()
+            .execute_prompt_with_tools_cancellable(messages, tools, context, cancel)
+            .await
+    }
 }
 
 /// Builds the service that talks to the provider instance using the given

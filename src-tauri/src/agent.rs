@@ -5,6 +5,7 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -87,13 +88,28 @@ impl AgentService {
         let mut all_tool_calls = Vec::new();
         let mut log = Vec::new();
         let mut final_content = String::new();
+        let cancel_token = options.cancellation_token.clone();
 
         while turn < max_turns {
+            if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                self.logger.info("agent run interrupted by user".to_string(), false);
+                break;
+            }
             turn += 1;
-            let response = self
+            let response = match self
                 .llm_service
-                .execute_prompt_with_tools(&messages, &tools, Some(&context))
-                .await?;
+                .execute_prompt_with_tools_cancellable(&messages, &tools, Some(&context), cancel_token.clone())
+                .await
+            {
+                Ok(resp) => resp,
+                Err(err) => {
+                    if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                        self.logger.info("agent LLM call interrupted by user".to_string(), false);
+                        break;
+                    }
+                    return Err(err);
+                }
+            };
             let content = response
                 .get("content")
                 .and_then(Value::as_str)
@@ -142,7 +158,12 @@ impl AgentService {
             }
             all_tool_calls.extend(tool_calls.clone());
 
+            let mut cancelled_during_tools = false;
             for tool_call in tool_calls {
+                if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    cancelled_during_tools = true;
+                    break;
+                }
                 let (name, args) = tool_call_parts(&tool_call);
                 let Some(tool) = tools.iter().find(|tool| tool.name() == name) else {
                     log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_error", "toolName": name, "error": "Tool not found" }));
@@ -197,10 +218,18 @@ impl AgentService {
                     }
                 }
             }
+            if cancelled_during_tools {
+                self.logger.info("agent tool loop interrupted by user".to_string(), false);
+                break;
+            }
         }
 
-        if final_content.trim().is_empty() && !all_tool_calls.is_empty() {
-            final_content = "Completed requested actions.".to_string();
+        if final_content.trim().is_empty() {
+            if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                final_content = "Response stopped by user.".to_string();
+            } else if !all_tool_calls.is_empty() {
+                final_content = "Completed requested actions.".to_string();
+            }
         }
 
         let result = AgentRunResult {

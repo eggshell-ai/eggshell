@@ -5,7 +5,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use crate::config::ProviderConfig;
 use crate::llm::{LlmResult, LLMMessage, LLMMessageRole, LLMService, Tool};
@@ -140,6 +141,19 @@ impl LLMService for OpenAiService {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value> {
+        self.execute_prompt_with_tools_cancellable(messages, tools, context, None).await
+    }
+
+    async fn execute_prompt_with_tools_cancellable(
+        &self,
+        messages: &[LLMMessage],
+        tools: &[Box<dyn Tool>],
+        context: Option<&Map<String, Value>>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> LlmResult<Value> {
+        if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err("Execution interrupted by user.".into());
+        }
         let tools_system = format!(
             "You are an AI assistant with access to these tools:\n{}",
             tools
@@ -207,14 +221,34 @@ impl LLMService for OpenAiService {
                 payload["reasoning_effort"] = Value::String(reasoning);
             }
         }
-        let response = self
+
+        let send_future = self
             .request("chat/completions", &settings)
             .json(&payload)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
+            .send();
+
+        let response = if let Some(cancel_token) = cancel {
+            let cancel_watcher = async move {
+                while !cancel_token.load(Ordering::Relaxed) {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            };
+            tokio::select! {
+                res = send_future => res?
+                    .error_for_status()?
+                    .json::<Value>()
+                    .await?,
+                _ = cancel_watcher => {
+                    return Err("Execution interrupted by user.".into());
+                }
+            }
+        } else {
+            send_future.await?
+                .error_for_status()?
+                .json::<Value>()
+                .await?
+        };
+
         let message = response
             .get("choices")
             .and_then(Value::as_array)

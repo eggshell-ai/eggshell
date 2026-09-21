@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use std::error::Error;
 use std::fs;
 use std::path::Path;
-use std::sync::RwLock;
+use std::sync::Arc;
 
 use crate::progress::ProgressLog;
 
@@ -59,6 +59,7 @@ pub struct AgentOptions {
     pub on_event: Option<Box<dyn Fn(AgentEvent) + Send + Sync>>,
     pub log_conversation: bool,
     pub log_dir: Option<String>,
+    pub cancellation_token: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Default for AgentOptions {
@@ -71,6 +72,7 @@ impl Default for AgentOptions {
             on_event: None,
             log_conversation: true,
             log_dir: None,
+            cancellation_token: None,
         }
     }
 }
@@ -246,6 +248,17 @@ pub trait LLMService: Send + Sync {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value>;
+
+    /// Execute a prompt with tools while checking for cancellation.
+    async fn execute_prompt_with_tools_cancellable(
+        &self,
+        messages: &[LLMMessage],
+        tools: &[Box<dyn Tool>],
+        context: Option<&Map<String, Value>>,
+        _cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> LlmResult<Value> {
+        self.execute_prompt_with_tools(messages, tools, context).await
+    }
 
     /// Fetch the models this provider currently offers, using the credentials it
     /// was configured with. Providers that can enumerate their models override

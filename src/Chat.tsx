@@ -160,9 +160,10 @@ type ChatProps = {
   mode: "implement" | "plan";
   onModeChange: (mode: "implement" | "plan") => void;
   onProceedToImplement: () => void;
+  onStop?: () => void;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -417,9 +418,20 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                 </>
               )}
             </div>
-            <button className="composer-send-btn" disabled={isSending || !draft.trim()} type="submit">
-              {isSending ? "Sending…" : "Send"}
-            </button>
+            {isSending ? (
+              <button
+                className="composer-stop-btn"
+                type="button"
+                onClick={onStop}
+                aria-label="Stop generation"
+              >
+                <span className="composer-stop-icon" aria-hidden="true">■</span> Stop
+              </button>
+            ) : (
+              <button className="composer-send-btn" disabled={!draft.trim()} type="submit">
+                Send
+              </button>
+            )}
           </div>
         </div>
       </form>
