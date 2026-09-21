@@ -141,7 +141,7 @@ impl LLMService for OpenAiService {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value> {
-        self.execute_prompt_with_tools_cancellable(messages, tools, context, None).await
+        self.execute_prompt_with_tools_cancellable(messages, tools, context, None, None).await
     }
 
     async fn execute_prompt_with_tools_cancellable(
@@ -150,6 +150,7 @@ impl LLMService for OpenAiService {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
         cancel: Option<Arc<AtomicBool>>,
+        on_chunk: Option<crate::llm::StreamCallback>,
     ) -> LlmResult<Value> {
         if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
             return Err("Execution interrupted by user.".into());
@@ -249,6 +250,7 @@ impl LLMService for OpenAiService {
             "model": settings.model,
             "messages": openai_messages,
             "tools": tool_definitions,
+            "stream": true,
         });
         if let Some(reasoning) = &settings.reasoning {
             let reasoning = reasoning.to_lowercase();
@@ -262,51 +264,116 @@ impl LLMService for OpenAiService {
             .json(&payload)
             .send();
 
-        let response = if let Some(cancel_token) = cancel {
+        let response = if let Some(cancel_token) = &cancel {
+            let cancel_token = cancel_token.clone();
             let cancel_watcher = async move {
                 while !cancel_token.load(Ordering::Relaxed) {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             };
             tokio::select! {
-                res = send_future => res?
-                    .error_for_status()?
-                    .json::<Value>()
-                    .await?,
+                res = send_future => res?.error_for_status()?,
                 _ = cancel_watcher => {
                     return Err("Execution interrupted by user.".into());
                 }
             }
         } else {
-            send_future.await?
-                .error_for_status()?
-                .json::<Value>()
-                .await?
+            send_future.await?.error_for_status()?
         };
 
-        let message = response
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("message"))
-            .cloned()
-            .unwrap_or_default();
-        let calls = message
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let mut raw_content = message
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let mut thought = message
-            .get("reasoning_content")
-            .or_else(|| message.get("thought"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        use eventsource_stream::Eventsource;
+        use tokio_stream::StreamExt;
+
+        let mut event_stream = response.bytes_stream().eventsource();
+        let mut raw_content = String::new();
+        let mut thought = String::new();
+        let mut tool_calls_map: std::collections::BTreeMap<usize, (Option<String>, String, String)> = std::collections::BTreeMap::new();
+
+        while let Some(event_result) = event_stream.next().await {
+            if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err("Execution interrupted by user.".into());
+            }
+            let event = match event_result {
+                Ok(ev) => ev,
+                Err(err) => return Err(err.into()),
+            };
+            if event.data == "[DONE]" {
+                break;
+            }
+            let chunk: Value = match serde_json::from_str(&event.data) {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
+                continue;
+            };
+            for choice in choices {
+                let Some(delta) = choice.get("delta") else {
+                    continue;
+                };
+
+                // Extract reasoning delta if present
+                if let Some(r_delta) = delta
+                    .get("reasoning_content")
+                    .or_else(|| delta.get("thought"))
+                    .and_then(Value::as_str)
+                {
+                    if !r_delta.is_empty() {
+                        thought.push_str(r_delta);
+                        if let Some(cb) = &on_chunk {
+                            cb(crate::llm::StreamChunk::ThoughtDelta(r_delta.to_string()));
+                        }
+                    }
+                }
+
+                // Extract content delta
+                if let Some(c_delta) = delta.get("content").and_then(Value::as_str) {
+                    if !c_delta.is_empty() {
+                        raw_content.push_str(c_delta);
+                        if let Some(cb) = &on_chunk {
+                            cb(crate::llm::StreamChunk::ContentDelta(c_delta.to_string()));
+                        }
+                    }
+                }
+
+                // Extract tool call deltas
+                if let Some(t_deltas) = delta.get("tool_calls").and_then(Value::as_array) {
+                    for t_delta in t_deltas {
+                        let index = t_delta.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let entry = tool_calls_map.entry(index).or_insert_with(|| (None, String::new(), String::new()));
+                        if let Some(id) = t_delta.get("id").and_then(Value::as_str) {
+                            entry.0 = Some(id.to_string());
+                        }
+                        if let Some(func) = t_delta.get("function") {
+                            if let Some(name) = func.get("name").and_then(Value::as_str) {
+                                entry.1.push_str(name);
+                            }
+                            if let Some(args) = func.get("arguments").and_then(Value::as_str) {
+                                entry.2.push_str(args);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let calls: Vec<Value> = tool_calls_map
+            .into_iter()
+            .map(|(_idx, (id, name, args))| {
+                let parsed_args = serde_json::from_str::<Value>(&args)
+                    .unwrap_or(Value::String(args));
+                serde_json::json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": parsed_args,
+                    }
+                })
+            })
+            .collect();
+
         if thought.is_empty() {
             if let Some(start) = raw_content.find("<think>") {
                 if let Some(end) = raw_content.find("</think>") {

@@ -96,9 +96,24 @@ impl AgentService {
                 break;
             }
             turn += 1;
+
+            let stream_cb: Option<crate::llm::StreamCallback> = options.on_event.as_ref().map(|on_event| {
+                let on_event = Arc::clone(on_event);
+                Arc::new(move |chunk: crate::llm::StreamChunk| {
+                    match chunk {
+                        crate::llm::StreamChunk::ThoughtDelta(delta) => {
+                            on_event(json!({ "type": "thought_delta", "data": { "delta": delta, "turn": turn } }));
+                        }
+                        crate::llm::StreamChunk::ContentDelta(delta) => {
+                            on_event(json!({ "type": "content_delta", "data": { "delta": delta, "turn": turn } }));
+                        }
+                    }
+                }) as crate::llm::StreamCallback
+            });
+
             let response = match self
                 .llm_service
-                .execute_prompt_with_tools_cancellable(&messages, &tools, Some(&context), cancel_token.clone())
+                .execute_prompt_with_tools_cancellable(&messages, &tools, Some(&context), cancel_token.clone(), stream_cb)
                 .await
             {
                 Ok(resp) => resp,

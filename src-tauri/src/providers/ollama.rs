@@ -129,7 +129,7 @@ impl LLMService for OllamaService {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value> {
-        self.execute_prompt_with_tools_cancellable(messages, tools, context, None).await
+        self.execute_prompt_with_tools_cancellable(messages, tools, context, None, None).await
     }
 
     async fn execute_prompt_with_tools_cancellable(
@@ -138,6 +138,7 @@ impl LLMService for OllamaService {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
         cancel: Option<Arc<AtomicBool>>,
+        _on_chunk: Option<crate::llm::StreamCallback>,
     ) -> LlmResult<Value> {
         if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
             return Err("Execution interrupted by user.".into());

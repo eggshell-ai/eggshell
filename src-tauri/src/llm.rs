@@ -44,6 +44,15 @@ pub use mock_llm::MockLlmService;
 
 pub type LlmResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+/// Incremental delta streamed from an LLM during completion.
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    ThoughtDelta(String),
+    ContentDelta(String),
+}
+
+pub type StreamCallback = Arc<dyn Fn(StreamChunk) + Send + Sync>;
+
 /// An event emitted while an agent is running.
 pub type AgentEvent = Value;
 
@@ -56,7 +65,7 @@ pub struct AgentOptions {
     /// Files the user attached to the message. Only their names reach the
     /// prompt; the contents are never sent to the upstream provider.
     pub artifacts: Vec<AgentArtifact>,
-    pub on_event: Option<Box<dyn Fn(AgentEvent) + Send + Sync>>,
+    pub on_event: Option<Arc<dyn Fn(AgentEvent) + Send + Sync>>,
     pub log_conversation: bool,
     pub log_dir: Option<String>,
     pub cancellation_token: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -116,6 +125,9 @@ impl App for AdminPanelApp {
         If a user requests something that's not possible from the tools provided to you, explain the situation and tell them that they can
         create an issue report or feature request. Ask them to click the Purple icon in the bottom right, select either \"Report a Bug\" or
         \"Request a Feature\" and share their feedback with the developer.
+
+        Do not attempt to read and analyze the underyling framework, instead, rely on the skills to tell you what is available and
+        provide instructions.
         
         ".to_string()
     }
@@ -249,13 +261,14 @@ pub trait LLMService: Send + Sync {
         context: Option<&Map<String, Value>>,
     ) -> LlmResult<Value>;
 
-    /// Execute a prompt with tools while checking for cancellation.
+    /// Execute a prompt with tools while checking for cancellation and optionally streaming deltas.
     async fn execute_prompt_with_tools_cancellable(
         &self,
         messages: &[LLMMessage],
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
         _cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+        _on_chunk: Option<StreamCallback>,
     ) -> LlmResult<Value> {
         self.execute_prompt_with_tools(messages, tools, context).await
     }

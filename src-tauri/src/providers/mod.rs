@@ -277,9 +277,10 @@ impl LLMService for ProviderHub {
         tools: &[Box<dyn Tool>],
         context: Option<&Map<String, Value>>,
         cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+        on_chunk: Option<crate::llm::StreamCallback>,
     ) -> LlmResult<Value> {
         self.active()
-            .execute_prompt_with_tools_cancellable(messages, tools, context, cancel)
+            .execute_prompt_with_tools_cancellable(messages, tools, context, cancel, on_chunk)
             .await
     }
 }

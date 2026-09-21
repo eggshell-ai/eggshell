@@ -63,10 +63,60 @@ function App() {
     let unlisten: UnlistenFn | undefined;
     void listen<{ projectId: number; event: { type: string; data: unknown } }>("agent-event", ({ payload }) => {
       if (payload.projectId !== activeProject?.id || payload.event.type === "complete") return;
+      const { type, data } = payload.event;
+      if (type === "thought_delta") {
+        const delta = (data as { delta?: string })?.delta ?? "";
+        setStreamedMessages((current) => {
+          const lastIdx = current.map((m) => m.role).lastIndexOf("thought");
+          if (lastIdx >= 0) {
+            const updated = [...current];
+            updated[lastIdx] = {
+              ...updated[lastIdx],
+              content: updated[lastIdx].content + delta,
+            };
+            return updated;
+          }
+          return [...current, { role: "thought", content: delta, data }];
+        });
+        return;
+      }
+      if (type === "content_delta") {
+        const delta = (data as { delta?: string })?.delta ?? "";
+        setStreamedMessages((current) => {
+          const lastIdx = current.map((m) => m.role).lastIndexOf("assistant");
+          if (lastIdx >= 0) {
+            const updated = [...current];
+            updated[lastIdx] = {
+              ...updated[lastIdx],
+              content: updated[lastIdx].content + delta,
+            };
+            return updated;
+          }
+          return [...current, { role: "assistant", content: delta, data }];
+        });
+        return;
+      }
+      if (type === "thought") {
+        const content = (data as { content?: string })?.content ?? "";
+        setStreamedMessages((current) => {
+          const lastIdx = current.map((m) => m.role).lastIndexOf("thought");
+          if (lastIdx >= 0) {
+            const updated = [...current];
+            updated[lastIdx] = {
+              ...updated[lastIdx],
+              content,
+              data,
+            };
+            return updated;
+          }
+          return [...current, { role: "thought", content, data }];
+        });
+        return;
+      }
       setStreamedMessages((current) => [...current, {
-        role: payload.event.type as ChatMessage["role"],
-        content: eventContent(payload.event.type, payload.event.data),
-        data: payload.event.data,
+        role: type as ChatMessage["role"],
+        content: eventContent(type, data),
+        data,
       }]);
     }).then((stop) => { unlisten = stop; });
     return () => unlisten?.();

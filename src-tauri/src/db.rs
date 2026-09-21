@@ -209,10 +209,10 @@ impl SessionsRepository {
                 AgentOptions {
                     project_path: Some(project_path),
                     artifacts,
-                    on_event: Some(Box::new(move |event| {
+                    on_event: Some(Arc::new(move |event| {
                         let event_type =
                             event.get("type").and_then(Value::as_str).unwrap_or("event");
-                        if event_type != "complete" {
+                        if event_type != "complete" && event_type != "thought_delta" && event_type != "content_delta" {
                             callback_messages
                                 .lock()
                                 .expect("agent event lock poisoned")
