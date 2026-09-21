@@ -22,9 +22,16 @@ const buildBaseSchema = (field: FieldConfig): z.ZodTypeAny => {
     case 'boolean':
       return isRequired ? z.boolean() : z.boolean().optional();
     case 'date':
-      return isRequired ? z.any() : z.any().optional();
     case 'time':
       return isRequired ? z.any() : z.any().optional();
+    case 'select':
+      return isRequired
+        ? z.union([z.string(), z.number()])
+        : z.union([z.string(), z.number()]).optional();
+    case 'tags':
+      return isRequired
+        ? z.array(z.union([z.string(), z.number()]))
+        : z.array(z.union([z.string(), z.number()])).optional();
     default:
       return isRequired ? z.string({ invalid_type_error: ' ' }) : z.string().optional();
   }
@@ -118,8 +125,8 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
   // Static select validation — value must be one of the configured options (or empty if not required)
   if (field.options && Object.keys(field.options).length > 0) {
     const allowedValues = Object.keys(field.options);
-    let optionsSchema = z.string().refine(
-      (val) => allowedValues.includes(val),
+    let optionsSchema = z.union([z.string(), z.number()]).refine(
+      (val) => allowedValues.includes(String(val)),
       { message: messages.options || `${field.label || field.name} must be one of: ${allowedValues.map((v) => field.options![v]).join(', ')}` }
     );
     if (!validations.required) {
