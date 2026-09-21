@@ -182,7 +182,7 @@ fn frontend_code(r: &Resource, _class: &str) -> String {
         .map(field_js)
         .collect::<Vec<_>>()
         .join(",\n");
-    format!("import defineResource from '../utils/defineResource';\nimport field from '../utils/field';\nimport {}Service from '../api/{}Service';\n\nexport default defineResource({{\n  name: {},\n  endpoint: {},\n  fields: [\n{}\n  ],\n{}  titleExpression: {}\n}});\n", r.name, r.name, js(&r.name), js(&r.endpoint), fields, actions_js(r), js(r.title_expression.as_deref().unwrap_or("{id}")))
+    format!("import defineResource from '../utils/defineResource';\nimport field from '../utils/field';\n\nexport default defineResource({{\n  name: {},\n  endpoint: {},\n  fields: [\n{}\n  ],\n{}  titleExpression: {}\n}});\n", js(&r.name), js(&r.endpoint), fields, actions_js(r), js(r.title_expression.as_deref().unwrap_or("{id}")))
 }
 
 fn actions_js(r: &Resource) -> String {
