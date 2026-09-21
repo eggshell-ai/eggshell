@@ -471,10 +471,14 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
     if (field.default !== undefined && form) {
       const currentValue = form.getFieldValue(fullPath);
       if (currentValue === undefined || currentValue === null) {
-        form.setFieldValue(fullPath, field.default);
+        let defaultValue = field.default;
+        if (field.type === 'date' && defaultValue === 'today') {
+          defaultValue = dayjs();
+        }
+        form.setFieldValue(fullPath, defaultValue);
       }
     }
-  }, [field.default, form, fullPath]);
+  }, [field.default, field.type, form, fullPath]);
 
   const fetchOptions = async () => {
     try {
@@ -698,7 +702,8 @@ const FormField: React.FC<FormFieldProps> = ({ field, form, initialValues, name,
             return { checked: val };
           }
           if (field.type === 'date' && val) {
-            return { value: dayjs.isDayjs(val) ? val : dayjs(val) };
+            const dateVal = val === 'today' ? dayjs() : (dayjs.isDayjs(val) ? val : dayjs(val));
+            return { value: dateVal.isValid() ? dateVal : null };
           }
           if (field.type === 'time' && val) {
             return { value: dayjs.isDayjs(val) ? val : dayjs(val, 'HH:mm:ss') };
