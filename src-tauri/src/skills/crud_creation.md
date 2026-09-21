@@ -229,7 +229,7 @@ The behavioral defaults are important. Do not assume that omission means `false`
 | `accept` | unset | No field-specific file accept restriction |
 | `minSize` | unset | No minimum-size rule |
 | `maxSize` | unset | No maximum-size rule |
-| `resource` | unset | No remote/dynamic select resource |
+| `resource` | unset | Remote/dynamic select resource name, or child item resource name for `type: "table"` |
 | `options` | unset | No static select options |
 | `visibleWhen` | unset | Field is not conditionally hidden |
 | `columns` | unset | Child table columns for `type: "table"` |
@@ -559,7 +559,9 @@ Behavior:
 
 ### 2.13 One-to-Many Child Line Items (`type: "table"`)
 
-Use `type: "table"` paired with `columns`, `map`, and `targetEntity` to model master-detail relationships (such as order line items, invoice lines, or task sub-items).
+Use `type: "table"` paired with `resource`, `columns`, `map`, and `targetEntity` to model master-detail relationships (such as order line items, invoice lines, or task sub-items).
+
+**Important:** Always pass the name of the child item resource to `resource` (e.g. `resource: "order_items"`). This allows `ResourcePage` and form components to load the child resource definition, resolve field types, labels, and auto-lookup/calculated column properties.
 
 Example:
 
@@ -568,6 +570,7 @@ Example:
   name: "items",
   type: "table",
   label: "Order Items",
+  resource: "order_items",
   map: "orderId",
   targetEntity: "OrderItem",
   columns: [
@@ -581,6 +584,7 @@ Example:
 
 Behavior:
 - In forms, `ResourcePage` renders an interactive line-item editor with **Add Item** and delete row buttons.
+- `resource: "<child_resource_name>"` connects the table to the child resource definition so columns inherit the child field configurations.
 - On the backend, `ResourceController` automatically handles transactional persistence:
   - Existing child lines are updated.
   - New child lines are created with the parent's primary key assigned to `map` (`orderId`).
@@ -631,7 +635,7 @@ Use this mapping as the default interpretation.
 | "Whole number" | `integer: true` |
 | "Calculated / computed value (not stored in DB)" | `computed: true, computeExpression: "...", form: false` |
 | "Highlight or badge based on row state (e.g. Out of Stock)" | `displayRules: [{ condition: "...", badge: { text: "...", variant: "..." } }]` |
-| "Line items / child records in parent form" | `type: "table", map: "foreignKey", targetEntity: "ChildClass", columns: [...]` |
+| "Line items / child records in parent form" | `type: "table", resource: "child_resource_name", map: "foreignKey", targetEntity: "ChildClass", columns: [...]` |
 | "Auto-fill price or snapshot related field on selection" | `lookup: { resource: "...", matchValue: "data.fieldId", targetField: "..." }` |
 | "Server-side subquery / virtual calculation" | `sqlExpression: "(SELECT ... FROM ... WHERE ...)"` |
 
