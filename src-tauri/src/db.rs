@@ -316,10 +316,15 @@ fn conversation_messages(history: &[ChatMessage], system_prompt: &str) -> Vec<LL
                         .and_then(Value::as_str)
                         .unwrap_or("tool")
                         .to_string();
-                    let args = data.get("arguments").cloned().unwrap_or(Value::Null);
-                    (id, name, args)
+                    let raw_args = data.get("arguments").cloned().unwrap_or(Value::Null);
+                    let args_str = match raw_args {
+                        Value::String(s) => s,
+                        Value::Null => "{}".to_string(),
+                        other => other.to_string(),
+                    };
+                    (id, name, args_str)
                 } else {
-                    (format!("call_{index}"), "tool".to_string(), Value::Null)
+                    (format!("call_{index}"), "tool".to_string(), "{}".to_string())
                 };
                 last_call_id = Some(call_id.clone());
                 messages.push(LLMMessage {

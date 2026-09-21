@@ -189,7 +189,42 @@ impl LLMService for OpenAiService {
                 "content": message.content,
             });
             if let Some(tool_calls) = &message.tool_calls {
-                value["tool_calls"] = Value::Array(tool_calls.clone());
+                let normalized_calls = tool_calls
+                    .iter()
+                    .map(|call| {
+                        let mut call = call.clone();
+                        if let Some(function) = call.get_mut("function").and_then(Value::as_object_mut) {
+                            if let Some(args) = function.get("arguments") {
+                                if !args.is_string() {
+                                    let serialized = match args {
+                                        Value::Null => "{}".to_string(),
+                                        other => other.to_string(),
+                                    };
+                                    function.insert("arguments".to_string(), Value::String(serialized));
+                                }
+                            }
+                        } else if let Some(args) = call.get("arguments") {
+                            // In case the tool call had top-level arguments instead of nested under function
+                            let serialized = match args {
+                                Value::String(s) => s.clone(),
+                                Value::Null => "{}".to_string(),
+                                other => other.to_string(),
+                            };
+                            let name = call.get("name").cloned().unwrap_or(Value::String("tool".to_string()));
+                            if let Some(call_obj) = call.as_object_mut() {
+                                call_obj.insert(
+                                    "function".to_string(),
+                                    serde_json::json!({
+                                        "name": name,
+                                        "arguments": serialized,
+                                    }),
+                                );
+                            }
+                        }
+                        call
+                    })
+                    .collect::<Vec<_>>();
+                value["tool_calls"] = Value::Array(normalized_calls);
             }
             if let Some(call_id) = &message.tool_call_id {
                 value["tool_call_id"] = Value::String(call_id.clone());
