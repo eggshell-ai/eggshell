@@ -9,6 +9,16 @@ import { runValidationHooks } from './resourceValidationHooks';
  * (to facilitate cross-validation later).
  */
 
+const coerceNumeric = (val: any) => {
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (trimmed === '') return undefined;
+    const num = Number(trimmed);
+    if (!Number.isNaN(num)) return num;
+  }
+  return val;
+};
+
 /**
  * Map field type to a base zod schema
  */
@@ -17,8 +27,10 @@ const buildBaseSchema = (field: FieldConfig): z.ZodTypeAny => {
 
   switch (field.type) {
     case 'number':
-    case 'decimal':
-      return isRequired ? z.number({ invalid_type_error: ' ' }) : z.number().optional();
+    case 'decimal': {
+      const baseNum = isRequired ? z.number({ invalid_type_error: ' ' }) : z.number().optional();
+      return z.preprocess(coerceNumeric, baseNum);
+    }
     case 'boolean':
       return isRequired ? z.boolean() : z.boolean().optional();
     case 'date':
@@ -88,7 +100,15 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
     if (!validations.required) {
       numSchema = numSchema.optional() as any;
     }
-    schema = numSchema;
+    let coercedSchema = z.preprocess(coerceNumeric, numSchema);
+    if (validations.required) {
+      coercedSchema = (coercedSchema as any).refine((val: any) => {
+        if (val === undefined || val === null) return false;
+        if (typeof val === 'string') return val.trim().length > 0;
+        return true;
+      }, { message: messages.required || `Please enter ${field.label || field.name}` });
+    }
+    schema = coercedSchema;
   }
 
   // Built-in type rules
