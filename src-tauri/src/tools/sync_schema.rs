@@ -48,6 +48,7 @@ struct Field {
     compute_expression: Option<String>,
     sql_expression: Option<String>,
     display_rules: Option<Value>,
+    target_entity: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -236,6 +237,7 @@ fn field_js(f: &Field) -> String {
     call!("source", f.source.as_deref());
     call!("accept", f.accept.as_deref());
     call!("map", f.map.as_deref());
+    call!("targetEntity", f.target_entity.as_deref());
     if let Some(v) = &f.resource {
         s.push_str(&format!("\n      .resource({})", v));
     }
@@ -304,7 +306,42 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse Doctrine\\DBAL\\Types\\Types;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\OneOf as OneOfConstraint;\nuse App\\Validator\\Time as TimeConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
+    let mut import_lines = vec![
+        "use Doctrine\\ORM\\Mapping as ORM;".to_string(),
+        "use Doctrine\\DBAL\\Types\\Types;".to_string(),
+        "use App\\Resource\\ResourceEntity;".to_string(),
+        "use App\\Resource\\Attribute\\Form;".to_string(),
+        "use App\\Resource\\Attribute\\Phone as PhoneAttribute;".to_string(),
+        "use App\\Validator\\Phone as PhoneConstraint;".to_string(),
+        "use App\\Validator\\OneOf as OneOfConstraint;".to_string(),
+        "use App\\Validator\\Time as TimeConstraint;".to_string(),
+        "use App\\Validator\\Unique as UniqueConstraint;".to_string(),
+        "use Symfony\\Component\\Validator\\Constraints as Assert;".to_string(),
+    ];
+
+    let has_table_relations = r.fields.iter().any(|f| f.field_type == "table" && f.target_entity.is_some());
+    if has_table_relations {
+        import_lines.push("use Doctrine\\Common\\Collections\\ArrayCollection;".to_string());
+        import_lines.push("use Doctrine\\Common\\Collections\\Collection;".to_string());
+        import_lines.push("use App\\Resource\\MapField;".to_string());
+    }
+
+    let mut imported_entities = std::collections::BTreeSet::new();
+    for f in &r.fields {
+        if f.field_type == "table" {
+            if let Some(target) = &f.target_entity {
+                let target_class = pascal(target);
+                if target_class != class && !imported_entities.contains(&target_class) {
+                    import_lines.push(format!("use App\\Entity\\{};", target_class));
+                    imported_entities.insert(target_class);
+                }
+            }
+        }
+    }
+
+    let imports = import_lines.join("\n");
+    let mut collection_inits = Vec::new();
+
     let props = r
         .fields
         .iter()
@@ -314,6 +351,17 @@ fn backend_code(r: &Resource, class: &str) -> String {
                     "    #[Form(type: '{}')]\n    public mixed ${} = null;",
                     f.field_type, f.name
                 );
+            }
+            if f.field_type == "table" {
+                if let Some(target) = &f.target_entity {
+                    let target_class = pascal(target);
+                    let mapped_by = f.map.as_deref().unwrap_or("orderId");
+                    collection_inits.push(format!("        $this->{} = new ArrayCollection();", f.name));
+                    return format!(
+                        "    #[ORM\\OneToMany(targetEntity: {}::class, mappedBy: '{}')]\n    #[MapField(field: '{}', targetEntity: {}::class)]\n    public Collection ${};",
+                        target_class, mapped_by, mapped_by, target_class, f.name
+                    );
+                }
             }
             let mut asserts = String::new();
             if f.required.unwrap_or(false) {
@@ -435,7 +483,17 @@ fn backend_code(r: &Resource, class: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    format!("<?php\n\nnamespace App\\Entity;\n\n{}\n\n#[ORM\\Entity()]\n#[ORM\\Table(name: '{}')]\nclass {} extends ResourceEntity\n{{\n    #[ORM\\Id]\n    #[ORM\\GeneratedValue]\n    #[ORM\\Column]\n    public ?int $id = null;\n\n{}\n\n    public function getTitle(): string\n    {{\n        return (string) $this->id;\n    }}\n}}\n",imports,r.name,class,props)
+
+    let constructor = if collection_inits.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n    public function __construct()\n    {{\n{}\n    }}",
+            collection_inits.join("\n")
+        )
+    };
+
+    format!("<?php\n\nnamespace App\\Entity;\n\n{}\n\n#[ORM\\Entity()]\n#[ORM\\Table(name: '{}')]\nclass {} extends ResourceEntity\n{{\n    #[ORM\\Id]\n    #[ORM\\GeneratedValue]\n    #[ORM\\Column]\n    public ?int $id = null;\n\n{}{}\n\n    public function getTitle(): string\n    {{\n        return (string) $this->id;\n    }}\n}}\n",imports,r.name,class,props,constructor)
 }
 fn php_type(t: &str) -> &str {
     match t {

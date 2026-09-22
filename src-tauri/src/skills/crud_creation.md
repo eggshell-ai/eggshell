@@ -585,6 +585,8 @@ Example:
 Behavior:
 - In forms, `ResourcePage` renders an interactive line-item editor with **Add Item** and delete row buttons.
 - `resource: "<child_resource_name>"` connects the table to the child resource definition so columns inherit the child field configurations.
+- On the backend, `sync_schema` automatically generates a one-sided `#[ORM\OneToMany]` association on the parent entity towards `targetEntity` (along with `Collection` initialization in `__construct`), allowing parent-to-child DQL joins like `->innerJoin('o.items', 'i')`.
+- Note: Only `type: "table"` fields generate an automated ORM association. Reverse relationships (e.g. `OrderItem` back to `Order`) or other foreign keys (e.g. `customerId`) must be joined explicitly using `Join::WITH` on the foreign key (e.g. `->innerJoin(Order::class, 'o', Join::WITH, 'i.orderId = o.id')`).
 - On the backend, `ResourceController` automatically handles transactional persistence:
   - Existing child lines are updated.
   - New child lines are created with the parent's primary key assigned to `map` (`orderId`).

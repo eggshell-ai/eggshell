@@ -420,4 +420,31 @@ write_menu({
 2. **Endpoint matching & 2-segment rule**: The `endpoint` prop in widgets (e.g., `"/analytics/customers/count"`, `"/analytics/products/lowStock"`) must match `"/analytics/" + aggregator.getName()`. Aggregator names and endpoints must **strictly follow the 2-segment pattern** (`/analytics/<resource>/<metric>`). Never introduce extra slashes (such as `/analytics/products/lowStock/count`), as this will fail with a 404.
 3. **Chart data format**: All chart widgets use the documented JSON data formats (Cartesian, Distribution, or Tabular).
 4. **Grid Sizing**: Widgets can declare their own 12-column layout sizing directly via the `size` prop (e.g., `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
-5. **Optimized DB queries**: Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
+5. **Optimized DB queries & QueryBuilder filtering**:
+   - Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
+   - **Always use `andWhere()` (or `orWhere()`) instead of chaining multiple `where()` calls**: In Doctrine QueryBuilder, calling `->where(...)` multiple times overwrites prior conditions. Use `->where(...)` for the initial condition and subsequent `->andWhere(...)` for additional filters.
+6. **Entity Associations and Joins**:
+   - **Only `type: "table"` fields generate an automated, one-sided ORM association**: When a resource declares a child table with `targetEntity` (e.g., `Order` having `items` with `targetEntity: "OrderItem"`), `sync_schema` automatically generates `#[ORM\OneToMany]` on the parent entity. You can join directly from the parent:
+     ```php
+     // Valid: Order has an automated OneToMany association to items
+     $qb = $this->entityManager->createQueryBuilder()
+         ->select("DATE_FORMAT(o.orderDate, '%Y-%m') AS month, SUM(i.quantity * i.unitPrice) AS total")
+         ->from(Order::class, 'o')
+         ->innerJoin('o.items', 'i')
+         ->where('o.orderDate >= :startDate')
+         ->andWhere('o.status != :cancelled');
+     ```
+   - **Everything else has NO automated association and requires an explicit Join with `Join::WITH`**: Child entities (such as `OrderItem` back to `Order`), or foreign key relationships (such as `Order` to `Customer` via `customerId`), do not have automated ORM navigation properties. Attempting `->innerJoin('i.order', 'o')` or `->innerJoin('o.customer', 'c')` will fail with an association error. Instead, perform an explicit join specifying the entity class and the `Join::WITH` condition:
+     ```php
+     use Doctrine\ORM\Query\Expr\Join;
+     use App\Entity\Order;
+     use App\Entity\OrderItem;
+
+     // Explicit join: querying from child OrderItem to parent Order via orderId
+     $qb = $this->entityManager->createQueryBuilder()
+         ->select("DATE_FORMAT(o.orderDate, '%Y-%m') AS month, SUM(i.quantity * i.unitPrice) AS total")
+         ->from(OrderItem::class, 'i')
+         ->innerJoin(Order::class, 'o', Join::WITH, 'i.orderId = o.id')
+         ->where('o.orderDate >= :startDate')
+         ->andWhere('o.status != :cancelled');
+     ```
