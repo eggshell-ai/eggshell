@@ -156,8 +156,13 @@ export default function ResourceGrid({
         await apiService.post(`${endpoint}/${record[rowKey]}${actionPath}`, {});
         message.success(`${label} completed successfully`);
         await fetchData();
-      } catch (error) {
-        message.error(`Failed to ${label.toLowerCase()} record`);
+      } catch (error: any) {
+        const errorMsg =
+          error?.response?.data?.detail ||
+          error?.response?.data?.message ||
+          error?.response?.data?.error ||
+          `Failed to ${label.toLowerCase()} record`;
+        message.error(errorMsg);
         console.error('Error executing action:', error);
       } finally {
         setActionLoadingKeys((keys) => keys.filter((key) => key !== loadingKey));
