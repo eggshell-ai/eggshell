@@ -86,8 +86,11 @@ class CustomerCountAggregator implements AnalyticsAggregatorInterface
 
 #### Key Aggregator Requirements:
 - Must implement `App\Service\Analytics\AnalyticsAggregatorInterface`.
-- `getName()`: Returns the unique metric key path (e.g., `'customers/count'`), corresponding to the endpoint path `/analytics/{getName()}`.
-- `getValue()`: Calculates and returns the calculated aggregate metric value (e.g., total count, sum, average, or enter array of objects).
+- `getName()`: Returns the unique metric key path corresponding to `/analytics/{getName()}`.
+  - **CRITICAL: Format must strictly consist of exactly TWO segments**: `<resource>/<metric>` (e.g., `'customers/count'`, `'products/lowStock'`).
+  - **Never use 3 or more segments with slashes**: e.g., `'products/lowStock/count'` ❌ will cause a **404 Not Found** because the backend analytics routing matches `/analytics/{resource}/{metric}`.
+  - For specific or compound metrics, use camelCase for the second segment instead (e.g., `'products/lowStock'` or `'products/lowStockCount'` ✅).
+- `getValue()`: Calculates and returns the aggregate metric value (e.g., total count, sum, average, or array of objects).
 
 ---
 
@@ -414,7 +417,7 @@ write_menu({
 ## Best Practices
 
 1. **Always read before writing dashboard files**: Use `read_file` first on `views/dashboard/default.jsx` so you retain existing widgets inside `<Dashboard>`.
-2. **Endpoint matching**: The `endpoint` prop in widgets (e.g., `"/analytics/customers/count"`) must match `"/analytics/" + aggregator.getName()`.
+2. **Endpoint matching & 2-segment rule**: The `endpoint` prop in widgets (e.g., `"/analytics/customers/count"`, `"/analytics/products/lowStock"`) must match `"/analytics/" + aggregator.getName()`. Aggregator names and endpoints must **strictly follow the 2-segment pattern** (`/analytics/<resource>/<metric>`). Never introduce extra slashes (such as `/analytics/products/lowStock/count`), as this will fail with a 404.
 3. **Chart data format**: All chart widgets use the documented JSON data formats (Cartesian, Distribution, or Tabular).
 4. **Grid Sizing**: Widgets can declare their own 12-column layout sizing directly via the `size` prop (e.g., `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
 5. **Optimized DB queries**: Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
