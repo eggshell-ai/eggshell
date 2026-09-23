@@ -180,6 +180,36 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [draft]);
 
+  // Keep track of whether the user is scrolled to the bottom so streaming auto-scrolls
+  // only when the user is already at the bottom.
+  const isAtBottomRef = useRef(true);
+  const bottomThresholdPx = 60;
+
+  useEffect(() => {
+    function checkIfAtBottom() {
+      const scrollY = window.scrollY || document.documentElement.scrollTop;
+      const viewportHeight = window.innerHeight;
+      const fullHeight = document.documentElement.scrollHeight;
+      isAtBottomRef.current = fullHeight - (scrollY + viewportHeight) <= bottomThresholdPx;
+    }
+
+    checkIfAtBottom();
+    window.addEventListener("scroll", checkIfAtBottom, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", checkIfAtBottom);
+    };
+  }, []);
+
+  // When messages update (e.g. streaming new text or tokens), scroll to bottom if user is already at bottom
+  useEffect(() => {
+    if (isAtBottomRef.current) {
+      window.scrollTo({
+        top: document.documentElement.scrollHeight,
+        behavior: "instant",
+      });
+    }
+  }, [messages]);
+
   // The model list lives in config.yaml; the chat header needs it to offer the
   // switcher. Reading it here keeps App.tsx out of provider business.
   async function loadProviders() {
