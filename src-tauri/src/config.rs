@@ -132,6 +132,30 @@ pub fn save_mysql_config(app: tauri::AppHandle, password: String) -> Result<(), 
     ConfigService::save_default(&app, &config).map_err(|error| error.to_string())
 }
 
+/// Updates and saves the full MySQL configuration (kind, port, user, pass).
+/// If `pass` is None, the existing saved password is kept.
+#[tauri::command]
+pub fn save_mysql_settings(
+    app: tauri::AppHandle,
+    kind: String,
+    port: u16,
+    user: String,
+    pass: Option<String>,
+) -> Result<(), String> {
+    let mut config = ConfigService::load_default(&app).unwrap_or_default();
+    let effective_pass = match pass {
+        Some(p) if !p.trim().is_empty() => p,
+        _ => config.mysql.pass,
+    };
+    config.mysql = MysqlConfig {
+        kind,
+        port,
+        user,
+        pass: effective_pass,
+    };
+    ConfigService::save_default(&app, &config).map_err(|error| error.to_string())
+}
+
 /// Service responsible for loading and exposing application configuration.
 ///
 /// The service does not load configuration automatically. Call `load` when a

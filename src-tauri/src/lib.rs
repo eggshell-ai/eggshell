@@ -907,6 +907,15 @@ const CONFIG_PLACEHOLDER: &str = "...";
 /// which providers exist and how each is configured. The API key is deliberately
 /// not sent back to the frontend — only whether one is set.
 /// What the setup screen needs to know at launch: whether to appear at all,
+#[derive(Debug, Serialize)]
+pub struct MysqlSummary {
+    pub kind: String,
+    pub port: u16,
+    pub user: String,
+    pub pass_set: bool,
+}
+
+/// The state returned to the frontend on startup and settings: whether setup is finished,
 /// which configured provider instances exist, and which provider types are available.
 /// The API key is deliberately not sent back to the frontend — only whether one is set.
 #[derive(Debug, Serialize)]
@@ -914,6 +923,7 @@ struct SetupState {
     setup_completed: bool,
     providers: Vec<providers::ProviderSummary>,
     available_types: Vec<providers::ProviderDescriptor>,
+    mysql: MysqlSummary,
 }
 
 #[tauri::command]
@@ -926,19 +936,38 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
     let now = providers::now_seconds();
     let available_types = providers::registered_providers();
     match config::ConfigService::load_default(&app) {
-        Ok(config) => SetupState {
-            setup_completed: config.setup_completed,
-            providers: providers::provider_summaries(&config.providers, &cache, now),
-            available_types,
-        },
+        Ok(config) => {
+            let pass_set = !config.mysql.pass.trim().is_empty();
+            let mysql = MysqlSummary {
+                kind: config.mysql.kind,
+                port: config.mysql.port,
+                user: config.mysql.user,
+                pass_set,
+            };
+            SetupState {
+                setup_completed: config.setup_completed,
+                providers: providers::provider_summaries(&config.providers, &cache, now),
+                available_types,
+                mysql,
+            }
+        }
         // A first launch has no configuration to read yet, which is exactly when
         // setup has to run.
         Err(error) => {
             log.line("info", format!("{error}; treating setup as incomplete"));
+            let default_mysql = config::MysqlConfig::default();
+            let pass_set = !default_mysql.pass.trim().is_empty();
+            let mysql = MysqlSummary {
+                kind: default_mysql.kind,
+                port: default_mysql.port,
+                user: default_mysql.user,
+                pass_set,
+            };
             SetupState {
                 setup_completed: false,
                 providers: providers::provider_summaries(&[], &cache, now),
                 available_types,
+                mysql,
             }
         }
     }
@@ -1730,6 +1759,7 @@ pub fn run() {
             read_logs,
             load_setup_state,
             config::save_mysql_config,
+            config::save_mysql_settings,
             save_provider_config,
             test_provider_config,
             delete_provider,

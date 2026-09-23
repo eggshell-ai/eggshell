@@ -15,19 +15,28 @@ type RegisteredProvider = {
   models: string[];
 };
 
+type MysqlSummary = {
+  kind: string;
+  port: number;
+  user: string;
+  pass_set: boolean;
+};
+
 type SetupState = {
   setup_completed: boolean;
   providers: RegisteredProvider[];
   available_types?: ProviderTypeDescriptor[];
+  mysql?: MysqlSummary;
 };
 
 type SettingsPopupProps = { isOpen: boolean; onClose: () => void };
 
 // Add an entry here (and a matching panel in the body) to give the settings
-// sidebar another section. Only providers exist today.
-type SettingsSectionKey = "providers";
+// sidebar another section.
+type SettingsSectionKey = "providers" | "mysql";
 const settingsSections: { key: SettingsSectionKey; label: string; detail: string }[] = [
   { key: "providers", label: "Providers", detail: "Models and API keys" },
+  { key: "mysql", label: "MySQL", detail: "Database connection & mode" },
 ];
 
 function describeModels(models: string[]) {
@@ -54,6 +63,16 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testingSidebarId, setTestingSidebarId] = useState<string | null>(null);
+
+  // MySQL settings state
+  const [mysqlKind, setMysqlKind] = useState<"managed" | "external">("managed");
+  const [mysqlPort, setMysqlPort] = useState<number>(3306);
+  const [mysqlUser, setMysqlUser] = useState<string>("root");
+  const [mysqlPass, setMysqlPass] = useState<string>("");
+  const [mysqlPassSet, setMysqlPassSet] = useState<boolean>(false);
+  const [mysqlError, setMysqlError] = useState<string>("");
+  const [mysqlSuccess, setMysqlSuccess] = useState<string>("");
+  const [isSavingMysql, setIsSavingMysql] = useState<boolean>(false);
 
   const selected = providers.find((p) => p.id === selectedId || p.key === selectedId) ?? null;
   const isNew = selectedId === null;
@@ -103,9 +122,12 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     if (!isOpen) return;
     setSection("providers");
     startNewProvider();
+    setMysqlPass("");
+    setMysqlError("");
+    setMysqlSuccess("");
     setLoading(true);
     void invoke<SetupState>("load_setup_state")
-      .then(({ providers: loaded, available_types: types }) => {
+      .then(({ providers: loaded, available_types: types, mysql }) => {
         setProviders(loaded);
         if (types && types.length > 0) {
           setAvailableTypes(types);
@@ -114,6 +136,12 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
             { key: "ollama", name: "Ollama", detail: "Cloud and local models from ollama.com" },
             { key: "openai", name: "OpenAI compatible", detail: "Any OpenAI-compatible chat completions API" },
           ]);
+        }
+        if (mysql) {
+          setMysqlKind(mysql.kind === "external" ? "external" : "managed");
+          setMysqlPort(mysql.port || 3306);
+          setMysqlUser(mysql.user || "root");
+          setMysqlPassSet(Boolean(mysql.pass_set));
         }
       })
       .catch((reason: unknown) => console.error("[SettingsPopup] load_setup_state rejected", { reason }))
@@ -290,6 +318,42 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     startNewProvider();
   }
 
+  async function saveMysqlSettings() {
+    setMysqlError("");
+    setMysqlSuccess("");
+    const parsedPort = Number(mysqlPort);
+    if (!parsedPort || isNaN(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+      setMysqlError("Please specify a valid port number between 1 and 65535.");
+      return;
+    }
+    if (!mysqlUser.trim()) {
+      setMysqlError("MySQL user cannot be empty.");
+      return;
+    }
+
+    setIsSavingMysql(true);
+    try {
+      await invoke("save_mysql_settings", {
+        kind: mysqlKind,
+        port: parsedPort,
+        user: mysqlUser.trim(),
+        pass: mysqlPass ? mysqlPass : null,
+      });
+
+      if (mysqlPass.trim()) {
+        setMysqlPassSet(true);
+        setMysqlPass("");
+      }
+
+      setMysqlSuccess("MySQL settings saved successfully.");
+    } catch (reason) {
+      console.error("[SettingsPopup] save_mysql_settings rejected", { reason });
+      setMysqlError(String(reason));
+    } finally {
+      setIsSavingMysql(false);
+    }
+  }
+
   if (!isOpen) return null;
 
   const activeSection = settingsSections.find(({ key }) => key === section) ?? settingsSections[0];
@@ -315,175 +379,264 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
             <button className="icon-button" type="button" aria-label="Close settings" onClick={onClose}>&times;</button>
           </header>
           <div className="settings-body">
-            {loading
-              ? <p className="setup-note">Loading&hellip;</p>
-              : <div className="providers-pane">
-                  <div className="provider-sidebar" aria-label="Providers">
-                    <button
-                      className={isNew ? "provider-item active" : "provider-item"}
-                      type="button" aria-pressed={isNew} onClick={startNewProvider}
-                    >
-                      <span className="provider-mark" aria-hidden="true">+</span>
-                      <span className="provider-copy"><strong>New provider</strong><small>Add a provider</small></span>
-                    </button>
-                    {providers.map((provider) => {
-                      const id = provider.id || provider.key;
-                      const isItemActive = id === selectedId;
-                      const displayTitle = provider.title || provider.name;
-                      const isTestingThis = testingSidebarId === id;
-                      return (
-                        <div
-                          className={isItemActive ? "provider-item active" : "provider-item"}
-                          key={id}
-                          role="button"
-                          tabIndex={0}
-                          aria-pressed={isItemActive}
-                          onClick={() => editProvider(provider)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              editProvider(provider);
-                            }
-                          }}
-                        >
-                          <span className="provider-mark" aria-hidden="true">{displayTitle.slice(0, 1).toUpperCase()}</span>
-                          <span className="provider-copy">
-                            <strong>{displayTitle}</strong>
-                            <small>{provider.api_key_set ? describeModels(provider.models) : "Not configured"}</small>
-                          </span>
-                          <button
-                            className="provider-item-test-btn"
-                            type="button"
-                            title={`Test connection for ${displayTitle}`}
-                            aria-label={`Test connection for ${displayTitle}`}
-                            disabled={isTestingThis || isTesting || isSaving}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void testSavedProvider(provider);
-                            }}
-                          >
-                            {isTestingThis ? "…" : "Test"}
-                          </button>
-                        </div>
-                      );
-                    })}
-                    {!providers.length && <p className="setup-note">No providers are configured yet.</p>}
-                  </div>
-                  <div className="provider-editor">
-                    <div className="provider-editor-heading">
-                      <h3>{isNew ? "New provider" : (selected?.title || selected?.name)}</h3>
-                      <p>{isNew ? "Pick a provider type, then add its credentials." : selected?.detail}</p>
-                    </div>
-                    {isNew ? (
-                      <label>Provider type
-                        <select
-                          value={selectedType}
-                          onChange={(event) => {
-                            const newType = event.target.value;
-                            setSelectedType(newType);
-                            const matched = availableTypes.find((t) => t.key === newType);
-                            if (matched && !title) setTitle(matched.name);
-                            setError("");
-                          }}
-                        >
-                          <option value="">Select type</option>
-                          {availableTypes.map(({ key, name }) => <option key={key} value={key}>{name}</option>)}
-                        </select>
-                      </label>
-                    ) : null}
+            {loading ? (
+              <p className="setup-note">Loading&hellip;</p>
+            ) : section === "mysql" ? (
+              <div className="settings-form-pane">
+                <label>
+                  Type
+                  <select
+                    value={mysqlKind}
+                    onChange={(e) => {
+                      setMysqlKind(e.target.value as "managed" | "external");
+                      setMysqlError("");
+                      setMysqlSuccess("");
+                    }}
+                  >
+                    <option value="managed">Managed (Eggshell automatically starts and manages MySQL)</option>
+                    <option value="external">External (Connect to an existing local or remote MySQL service)</option>
+                  </select>
+                </label>
+                <span className="settings-field-hint">
+                  {mysqlKind === "managed"
+                    ? "Eggshell will automatically start the portable MySQL instance when needed."
+                    : "Use an existing MySQL instance running on this machine or a network server."}
+                </span>
 
-                    <label>Title <span>Custom display name</span>
+                <label>
+                  Port <span>Standard MySQL port is 3306</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={mysqlPort}
+                    onChange={(e) => {
+                      setMysqlPort(parseInt(e.target.value, 10) || 0);
+                      setMysqlError("");
+                      setMysqlSuccess("");
+                    }}
+                    placeholder="3306"
+                  />
+                </label>
+
+                <label>
+                  User <span>Default administrative user is root</span>
+                  <input
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={mysqlUser}
+                    onChange={(e) => {
+                      setMysqlUser(e.target.value);
+                      setMysqlError("");
+                      setMysqlSuccess("");
+                    }}
+                    placeholder="root"
+                  />
+                </label>
+
+                <label>
+                  Password {mysqlPassSet && <span>Saved &mdash; leave empty to keep unchanged</span>}
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={mysqlPass}
+                    onChange={(e) => {
+                      setMysqlPass(e.target.value);
+                      setMysqlError("");
+                      setMysqlSuccess("");
+                    }}
+                    placeholder={mysqlPassSet ? "Enter new password to change" : "Leave empty if root has no password"}
+                  />
+                </label>
+
+                {mysqlSuccess && <p className="dialog-success" role="status">{mysqlSuccess}</p>}
+                {mysqlError && <p className="dialog-error" role="alert">{mysqlError}</p>}
+
+                <div className="provider-editor-actions">
+                  <span />
+                  <div className="provider-editor-buttons">
+                    <button
+                      className="add-button"
+                      type="button"
+                      onClick={() => void saveMysqlSettings()}
+                      disabled={isSavingMysql}
+                    >
+                      {isSavingMysql ? "Saving…" : "Save MySQL settings"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="providers-pane">
+                <div className="provider-sidebar" aria-label="Providers">
+                  <button
+                    className={isNew ? "provider-item active" : "provider-item"}
+                    type="button" aria-pressed={isNew} onClick={startNewProvider}
+                  >
+                    <span className="provider-mark" aria-hidden="true">+</span>
+                    <span className="provider-copy"><strong>New provider</strong><small>Add a provider</small></span>
+                  </button>
+                  {providers.map((provider) => {
+                    const id = provider.id || provider.key;
+                    const isItemActive = id === selectedId;
+                    const displayTitle = provider.title || provider.name;
+                    const isTestingThis = testingSidebarId === id;
+                    return (
+                      <div
+                        className={isItemActive ? "provider-item active" : "provider-item"}
+                        key={id}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={isItemActive}
+                        onClick={() => editProvider(provider)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            editProvider(provider);
+                          }
+                        }}
+                      >
+                        <span className="provider-mark" aria-hidden="true">{displayTitle.slice(0, 1).toUpperCase()}</span>
+                        <span className="provider-copy">
+                          <strong>{displayTitle}</strong>
+                          <small>{provider.api_key_set ? describeModels(provider.models) : "Not configured"}</small>
+                        </span>
+                        <button
+                          className="provider-item-test-btn"
+                          type="button"
+                          title={`Test connection for ${displayTitle}`}
+                          aria-label={`Test connection for ${displayTitle}`}
+                          disabled={isTestingThis || isTesting || isSaving}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void testSavedProvider(provider);
+                          }}
+                        >
+                          {isTestingThis ? "…" : "Test"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {!providers.length && <p className="setup-note">No providers are configured yet.</p>}
+                </div>
+                <div className="provider-editor">
+                  <div className="provider-editor-heading">
+                    <h3>{isNew ? "New provider" : (selected?.title || selected?.name)}</h3>
+                    <p>{isNew ? "Pick a provider type, then add its credentials." : selected?.detail}</p>
+                  </div>
+                  {isNew ? (
+                    <label>Provider type
+                      <select
+                        value={selectedType}
+                        onChange={(event) => {
+                          const newType = event.target.value;
+                          setSelectedType(newType);
+                          const matched = availableTypes.find((t) => t.key === newType);
+                          if (matched && !title) setTitle(matched.name);
+                          setError("");
+                        }}
+                      >
+                        <option value="">Select type</option>
+                        {availableTypes.map(({ key, name }) => <option key={key} value={key}>{name}</option>)}
+                      </select>
+                    </label>
+                  ) : null}
+
+                  <label>Title <span>Custom display name</span>
+                    <input
+                      value={title}
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(event) => setTitle(event.target.value)}
+                      placeholder="e.g. Local Ollama, OpenRouter, Work OpenAI"
+                    />
+                  </label>
+
+                  {currentType === "openai" && (
+                    <label>Base URL <span>Optional &mdash; defaults to https://api.openai.com/v1</span>
                       <input
-                        value={title}
+                        value={baseUrl}
                         autoComplete="off"
                         spellCheck={false}
-                        onChange={(event) => setTitle(event.target.value)}
-                        placeholder="e.g. Local Ollama, OpenRouter, Work OpenAI"
+                        onChange={(event) => setBaseUrl(event.target.value)}
+                        placeholder="https://api.openai.com/v1 or http://localhost:1234/v1"
                       />
                     </label>
+                  )}
 
-                    {currentType === "openai" && (
-                      <label>Base URL <span>Optional &mdash; defaults to https://api.openai.com/v1</span>
-                        <input
-                          value={baseUrl}
-                          autoComplete="off"
-                          spellCheck={false}
-                          onChange={(event) => setBaseUrl(event.target.value)}
-                          placeholder="https://api.openai.com/v1 or http://localhost:1234/v1"
-                        />
-                      </label>
+                  <div className="model-field">
+                    <div className="model-field-label">Models <span>Optional &mdash; fetched automatically when left empty</span></div>
+                    {models.length > 0 && (
+                      <ul className="model-list">
+                        {models.map((model, index) => (
+                          <li className="model-row" key={index}>
+                            <input value={model} autoComplete="off" spellCheck={false}
+                              aria-label={`Model ${index + 1}`}
+                              onChange={(event) => renameModel(index, event.target.value)}
+                              onBlur={() => commitModel(index)} />
+                            <button className="model-remove" type="button"
+                              aria-label={`Remove ${model || "model"}`}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => removeModel(index)}>&times;</button>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-
-                    <div className="model-field">
-                      <div className="model-field-label">Models <span>Optional &mdash; fetched automatically when left empty</span></div>
-                      {models.length > 0 && (
-                        <ul className="model-list">
-                          {models.map((model, index) => (
-                            <li className="model-row" key={index}>
-                              <input value={model} autoComplete="off" spellCheck={false}
-                                aria-label={`Model ${index + 1}`}
-                                onChange={(event) => renameModel(index, event.target.value)}
-                                onBlur={() => commitModel(index)} />
-                              <button className="model-remove" type="button"
-                                aria-label={`Remove ${model || "model"}`}
-                                onMouseDown={(event) => event.preventDefault()}
-                                onClick={() => removeModel(index)}>&times;</button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      {!models.length && (
-                        <p className="model-empty">
-                          No models yet &mdash; we&apos;ll fetch this provider&apos;s models automatically once it is connected.
-                          You can add them by hand below in the meantime.
-                        </p>
-                      )}
-                      <div className="model-add">
-                        <input value={draftModel} autoComplete="off" spellCheck={false}
-                          aria-label="Add a model" placeholder="Add a model, e.g. gemma4:31b-cloud"
-                          onChange={(event) => setDraftModel(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter") return;
-                            event.preventDefault();
-                            addDraftModel();
-                          }} />
-                        <button className="secondary-button" type="button"
-                          onClick={addDraftModel} disabled={!draftModel.trim()}>Add</button>
-                      </div>
-                    </div>
-                    <label>API key {!isNew && selected?.api_key_set && <span>Saved &mdash; paste it again to replace</span>}
-                      <input value={apiKey} type="password" autoComplete="off" spellCheck={false}
-                        onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your API key" />
-                    </label>
-                    {testStatus && testStatus.type === "success" && (
-                      <p className="dialog-success" role="status">{testStatus.message}</p>
+                    {!models.length && (
+                      <p className="model-empty">
+                        No models yet &mdash; we&apos;ll fetch this provider&apos;s models automatically once it is connected.
+                        You can add them by hand below in the meantime.
+                      </p>
                     )}
-                    {error && <p className="dialog-error" role="alert">{error}</p>}
-                    <div className="provider-editor-actions">
-                      {!isNew && selected
-                        ? <button className="secondary-button" type="button" onClick={() => void deleteProvider(selected.id || selected.key)}>Delete provider</button>
-                        : <span />}
-                      <div className="provider-editor-buttons">
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          onClick={() => void testProvider()}
-                          disabled={isTesting || isSaving}
-                        >
-                          {isTesting ? "Testing…" : "Test"}
-                        </button>
-                        <button
-                          className="add-button"
-                          type="button"
-                          onClick={() => void saveProvider()}
-                          disabled={isSaving || isTesting}
-                        >
-                          {isSaving ? "Testing & saving…" : isNew ? "Add provider" : "Save changes"}
-                        </button>
-                      </div>
+                    <div className="model-add">
+                      <input value={draftModel} autoComplete="off" spellCheck={false}
+                        aria-label="Add a model" placeholder="Add a model, e.g. gemma4:31b-cloud"
+                        onChange={(event) => setDraftModel(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return;
+                          event.preventDefault();
+                          addDraftModel();
+                        }} />
+                      <button className="secondary-button" type="button"
+                        onClick={addDraftModel} disabled={!draftModel.trim()}>Add</button>
                     </div>
                   </div>
-                </div>}
+                  <label>API key {!isNew && selected?.api_key_set && <span>Saved &mdash; paste it again to replace</span>}
+                    <input value={apiKey} type="password" autoComplete="off" spellCheck={false}
+                      onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your API key" />
+                  </label>
+                  {testStatus && testStatus.type === "success" && (
+                    <p className="dialog-success" role="status">{testStatus.message}</p>
+                  )}
+                  {error && <p className="dialog-error" role="alert">{error}</p>}
+                  <div className="provider-editor-actions">
+                    {!isNew && selected
+                      ? <button className="secondary-button" type="button" onClick={() => void deleteProvider(selected.id || selected.key)}>Delete provider</button>
+                      : <span />}
+                    <div className="provider-editor-buttons">
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => void testProvider()}
+                        disabled={isTesting || isSaving}
+                      >
+                        {isTesting ? "Testing…" : "Test"}
+                      </button>
+                      <button
+                        className="add-button"
+                        type="button"
+                        onClick={() => void saveProvider()}
+                        disabled={isSaving || isTesting}
+                      >
+                        {isSaving ? "Testing & saving…" : isNew ? "Add provider" : "Save changes"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </section>
