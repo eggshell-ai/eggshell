@@ -202,6 +202,10 @@ impl SessionsRepository {
         let streamed_messages = Arc::new(Mutex::new(Vec::new()));
         let callback_messages = Arc::clone(&streamed_messages);
         let callback_sink = Arc::clone(&event_sink);
+        let log_dir = app_handle
+            .and_then(|handle| handle.path().app_log_dir().ok().or_else(|| handle.path().app_data_dir().ok()))
+            .map(|path| path.join("agent-conversations").to_string_lossy().to_string());
+
         let result = agent
             .run_agent(
                 conversation_messages(&messages, &system_prompt),
@@ -209,6 +213,7 @@ impl SessionsRepository {
                 AgentOptions {
                     project_path: Some(project_path),
                     artifacts,
+                    log_dir,
                     on_event: Some(Arc::new(move |event| {
                         let event_type =
                             event.get("type").and_then(Value::as_str).unwrap_or("event");

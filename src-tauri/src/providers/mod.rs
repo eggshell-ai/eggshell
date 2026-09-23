@@ -191,17 +191,32 @@ pub struct ProviderHub {
 
 impl ProviderHub {
     pub fn new(config: Option<&ProviderConfig>) -> Self {
+        match config {
+            Some(cfg) => Self::from_configs(std::slice::from_ref(cfg)),
+            None => Self::from_configs(&[]),
+        }
+    }
+
+    pub fn from_configs(configs: &[ProviderConfig]) -> Self {
         let mut services = HashMap::new();
-        let active: Arc<dyn LLMService> = if let Some(cfg) = config {
-            let svc = build_service(cfg).unwrap_or_else(|_| {
-                Arc::new(OllamaService::new(OllamaSettings::default()))
-            });
-            services.insert(cfg.id(), svc.clone());
-            services.insert(cfg.provider_type(), svc.clone());
-            svc
-        } else {
-            Arc::new(OllamaService::new(OllamaSettings::default()))
-        };
+        let mut active: Option<Arc<dyn LLMService>> = None;
+
+        for cfg in configs {
+            if let Ok(svc) = build_service(cfg) {
+                services.insert(cfg.id(), svc.clone());
+                services.insert(cfg.provider_type(), svc.clone());
+                if active.is_none() {
+                    let is_configured = !cfg.api_key.trim().is_empty() || !cfg.models.is_empty();
+                    if is_configured {
+                        active = Some(svc);
+                    }
+                }
+            }
+        }
+
+        let active = active
+            .or_else(|| services.values().next().cloned())
+            .unwrap_or_else(|| Arc::new(OllamaService::new(OllamaSettings::default())));
 
         Self {
             services: RwLock::new(services),

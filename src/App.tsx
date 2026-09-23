@@ -13,7 +13,10 @@ import ReportMenu from "./ReportMenu";
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
 type Session = { id: number; title: string; conversation_history: string };
-type SetupState = { setup_completed: boolean; providers: { id?: string; key: string; name: string; models: string[] }[] };
+type SetupState = {
+  setup_completed: boolean;
+  providers: { id?: string; key: string; name: string; models: string[]; api_key_set?: boolean }[];
+};
 const emptyProject: ProjectForm = { title: "", slug: "", path: "" };
 
 function App() {
@@ -22,7 +25,7 @@ function App() {
   const [isSetupComplete, setIsSetupComplete] = useState<boolean | null>(null);
   // Which provider and model currently answer; the first model of the first
   // configured provider is the backend's default, so preselect that.
-  const [activeProvider, setActiveProvider] = useState("ollama");
+  const [activeProvider, setActiveProvider] = useState("");
   const [activeModel, setActiveModel] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
   const [isAdding, setIsAdding] = useState(false);
@@ -43,21 +46,26 @@ function App() {
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
 
+  async function syncSetupState() {
+    try {
+      const { setup_completed, providers } = await invoke<SetupState>("load_setup_state");
+      setIsSetupComplete(setup_completed);
+      const configured = providers.find((p) => p.models.length > 0 && (p.api_key_set ?? true))
+        || providers.find((p) => p.models.length > 0)
+        || providers.find((p) => p.api_key_set);
+      if (configured) {
+        setActiveProvider((current) => current && providers.some((p) => (p.id || p.key) === current) ? current : (configured.id || configured.key));
+        setActiveModel((current) => current || configured.models[0] || "");
+      }
+    } catch (reason: unknown) {
+      console.error("[App] load_setup_state rejected", { reason });
+      setIsSetupComplete(false);
+    }
+  }
+
   useEffect(() => { void loadProjects(); }, []);
   useEffect(() => {
-    void invoke<SetupState>("load_setup_state")
-      .then(({ setup_completed, providers }) => {
-        setIsSetupComplete(setup_completed);
-        const configured = providers.find(({ models }) => models.length > 0);
-        if (configured) {
-          setActiveProvider(configured.id || configured.key);
-          setActiveModel((current) => current || configured.models[0]);
-        }
-      })
-      .catch((reason: unknown) => {
-        console.error("[App] load_setup_state rejected", { reason });
-        setIsSetupComplete(false);
-      });
+    void syncSetupState();
   }, []);
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -277,7 +285,7 @@ function App() {
   // open, so the lines and the reason belong together.
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
-  if (!isSetupComplete) return <SetupPage onComplete={() => setIsSetupComplete(true)} />;
+  if (!isSetupComplete) return <SetupPage onComplete={() => { setIsSetupComplete(true); void syncSetupState(); }} />;
   if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} />;
 
   return (
@@ -311,7 +319,7 @@ function App() {
         {!projects.length && <div className="empty-state">No projects yet. Add one to get started.</div>}
       </section>
       <ReportMenu screenName="Home" />
-      <SettingsPopup isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsPopup isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); void syncSetupState(); }} />
     </main>
   );
 }

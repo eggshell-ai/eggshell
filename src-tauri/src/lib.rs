@@ -1287,9 +1287,21 @@ async fn save_provider_config(
         }
     }
 
+    // If the config currently only has an unconfigured default Ollama provider,
+    // remove it so the newly configured provider becomes the primary provider.
+    if existing.is_none() && config.providers.len() == 1 {
+        let first = &config.providers[0];
+        if first.id() == "ollama" && first.api_key.trim().is_empty() && first.models.is_empty() {
+            config.providers.clear();
+        }
+    }
+
     match existing {
-        Some(index) => config.providers[index] = provider_config.clone(),
-        None => config.providers.push(provider_config.clone()),
+        Some(index) => {
+            config.providers.remove(index);
+            config.providers.insert(0, provider_config.clone());
+        }
+        None => config.providers.insert(0, provider_config.clone()),
     }
     config.setup_completed = true;
     config::ConfigService::save_default(&app, &config).map_err(|error| {
@@ -1370,7 +1382,15 @@ fn select_model(
     if let Some(r) = reasoning {
         provider_config.reasoning = Some(r);
     }
+    let target_id = provider_config.id();
     let provider_config = provider_config.clone();
+
+    // Also move this provider to the front of config.providers so it remains default on launch
+    if let Some(pos) = config.providers.iter().position(|p| p.id() == target_id) {
+        let p = config.providers.remove(pos);
+        config.providers.insert(0, p);
+    }
+
     config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
 
     hub.apply(&provider_config);
@@ -1735,7 +1755,7 @@ pub fn run() {
             // chat screen can switch models within it. The hub holds every
             // concrete provider service and forwards prompts to the active one,
             // so the setup screen can switch providers while Eggshell runs.
-            let hub = Arc::new(providers::ProviderHub::new(config.providers.first()));
+            let hub = Arc::new(providers::ProviderHub::from_configs(&config.providers));
             // The agent shares the central logger so its prompts and tool calls
             // land in the same log the report menu reads from.
             let agent =

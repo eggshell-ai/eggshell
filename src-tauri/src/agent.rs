@@ -257,7 +257,7 @@ impl AgentService {
             json!({ "content": result.content, "tool_calls": result.tool_calls }),
         );
         if options.log_conversation {
-            self.write_conversation_log(
+            if let Err(error) = self.write_conversation_log(
                 &conversation_id,
                 &log,
                 &messages,
@@ -266,7 +266,12 @@ impl AgentService {
                 max_turns,
                 &result,
                 options.log_dir.as_deref(),
-            )?;
+            ) {
+                self.logger.error(
+                    format!("Failed to write agent conversation log: {error}"),
+                    false,
+                );
+            }
         }
         Ok(result)
     }

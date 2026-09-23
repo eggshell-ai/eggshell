@@ -244,13 +244,20 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
   const selectableProviders = providers.filter(({ models }) => models.length > 0);
 
   // Models only reach the picker once a fetch has populated them, which happens
-  // after App.tsx reads its initial defaults. Adopt the first available model so
-  // the picker and the backend agree on what answers.
+  // after App.tsx reads its initial defaults. Ensure the active provider and model
+  // always point to a valid, selectable provider.
   useEffect(() => {
-    if (activeModel) return;
-    const first = selectableProviders[0];
-    if (first?.models.length) onModelChange(first.id || first.key, first.models[0]);
-  }, [activeModel, providers]);
+    if (selectableProviders.length === 0) return;
+    const currentProvider = selectableProviders.find((p) => (p.id || p.key) === activeProvider);
+    const hasValidModel = Boolean(currentProvider && activeModel && currentProvider.models.includes(activeModel));
+    if (!currentProvider || !hasValidModel) {
+      const first = selectableProviders[0];
+      if (first?.models.length) {
+        const reasoning = first.reasoning || "off";
+        onModelChange(first.id || first.key, first.models[0], reasoning);
+      }
+    }
+  }, [activeProvider, activeModel, selectableProviders]);
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -404,7 +411,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                       aria-label="Model Selection"
                       onChange={({ target }) => {
                         const [provider, ...rest] = target.value.split(":");
-                        const currentReasoning = providers.find((p) => p.key === provider)?.reasoning ?? "off";
+                        const currentReasoning = providers.find((p) => (p.id || p.key) === provider)?.reasoning ?? "off";
                         onModelChange(provider, rest.join(":"), currentReasoning || "off");
                       }}
                     >
@@ -432,10 +439,14 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                       aria-label="Reasoning Effort"
                       onChange={({ target }) => {
                         const nextReasoning = target.value;
+                        const providerToUse = activeProvider || (selectableProviders[0] ? (selectableProviders[0].id || selectableProviders[0].key) : "");
+                        const modelToUse = activeModel || selectableProviders[0]?.models[0] || "";
                         setProviders((current) =>
-                          current.map((p) => (p.key === activeProvider ? { ...p, reasoning: nextReasoning } : p))
+                          current.map((p) => ((p.id || p.key) === providerToUse ? { ...p, reasoning: nextReasoning } : p))
                         );
-                        onModelChange(activeProvider, activeModel, nextReasoning);
+                        if (providerToUse && modelToUse) {
+                          onModelChange(providerToUse, modelToUse, nextReasoning);
+                        }
                       }}
                     >
                       {REASONING_MODES.map(({ value, label }) => (
@@ -467,6 +478,6 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
       </form>
     </section>
     <ReportMenu screenName="Project" />
-    <SettingsPopup isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); loadProviders(); }} />
+    <SettingsPopup isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); void refreshModels(); }} />
   </main>;
 }
