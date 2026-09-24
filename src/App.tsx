@@ -75,12 +75,12 @@ function App() {
       if (type === "thought_delta") {
         const delta = (data as { delta?: string })?.delta ?? "";
         setStreamedMessages((current) => {
-          const lastIdx = current.map((m) => m.role).lastIndexOf("thought");
-          if (lastIdx >= 0) {
+          const last = current[current.length - 1];
+          if (last && last.role === "thought") {
             const updated = [...current];
-            updated[lastIdx] = {
-              ...updated[lastIdx],
-              content: updated[lastIdx].content + delta,
+            updated[updated.length - 1] = {
+              ...last,
+              content: last.content + delta,
             };
             return updated;
           }
@@ -91,12 +91,12 @@ function App() {
       if (type === "content_delta") {
         const delta = (data as { delta?: string })?.delta ?? "";
         setStreamedMessages((current) => {
-          const lastIdx = current.map((m) => m.role).lastIndexOf("assistant");
-          if (lastIdx >= 0) {
+          const last = current[current.length - 1];
+          if (last && last.role === "assistant") {
             const updated = [...current];
-            updated[lastIdx] = {
-              ...updated[lastIdx],
-              content: updated[lastIdx].content + delta,
+            updated[updated.length - 1] = {
+              ...last,
+              content: last.content + delta,
             };
             return updated;
           }
@@ -107,11 +107,11 @@ function App() {
       if (type === "thought") {
         const content = (data as { content?: string })?.content ?? "";
         setStreamedMessages((current) => {
-          const lastIdx = current.map((m) => m.role).lastIndexOf("thought");
-          if (lastIdx >= 0) {
+          const last = current[current.length - 1];
+          if (last && last.role === "thought") {
             const updated = [...current];
-            updated[lastIdx] = {
-              ...updated[lastIdx],
+            updated[updated.length - 1] = {
+              ...last,
               content,
               data,
             };
