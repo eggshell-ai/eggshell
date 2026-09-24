@@ -70,6 +70,8 @@ class InitCommand extends Command
             $pdo = new \PDO($dsn, self::DB_ROOT_USER, $this->getDatabasePassword());
             $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
 
+            $this->serverVersion = $this->detectServerVersion($pdo);
+
             // Check if database exists
             $stmt = $pdo->prepare("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?");
             $stmt->execute([$this->databaseName]);
@@ -119,6 +121,7 @@ class InitCommand extends Command
     private string $mysqlPassword = '';
     private string $databaseName = '';
     private string $databaseUser = '';
+    private string $serverVersion = '';
 
     private function getDatabasePassword(): string { return $this->mysqlPassword; }
 
@@ -131,21 +134,53 @@ class InitCommand extends Command
         $envContent = preg_replace('/^DATABASE_URL=.*$/m', '', $envContent);
         $envContent = trim($envContent);
 
+        $serverVersion = $this->serverVersion ?: $this->resolveServerVersion();
+
         // Add new DATABASE_URL at the end
         $databaseUrl = sprintf(
-            'DATABASE_URL="pdo-mysql://%s:%s@%s:%s/%s?serverVersion=8.0.32&charset=utf8mb4"',
+            'DATABASE_URL="pdo-mysql://%s:%s@%s:%s/%s?serverVersion=%s&charset=utf8mb4"',
             $this->databaseUser,
             self::DB_PASSWORD,
             self::DB_HOST,
             self::DB_PORT,
-            $this->databaseName
+            $this->databaseName,
+            $serverVersion
         );
 
         $envContent .= "\n\n" . $databaseUrl . "\n";
 
         file_put_contents($envPath, $envContent);
 
-        $io->success('.env file updated with DATABASE_URL');
+        $io->success(sprintf('.env file updated with DATABASE_URL (serverVersion: %s)', $serverVersion));
+    }
+
+    private function resolveServerVersion(): string
+    {
+        $dsn = sprintf('mysql:host=%s;port=%s', self::DB_HOST, self::DB_PORT);
+
+        try {
+            $pdo = new \PDO($dsn, self::DB_ROOT_USER, $this->getDatabasePassword());
+            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+
+            return $this->detectServerVersion($pdo);
+        } catch (\Throwable) {
+            return 'mariadb-10.11.2';
+        }
+    }
+
+    private function detectServerVersion(\PDO $pdo): string
+    {
+        try {
+            $rawVersion = (string) $pdo->query('SELECT VERSION()')->fetchColumn();
+            $normalized = preg_replace('/^5\.5\.5-/', '', $rawVersion);
+
+            if (preg_match('/(\d+\.\d+(?:\.\d+)?)/', $normalized, $matches)) {
+                return 'mariadb-' . $matches[1];
+            }
+        } catch (\Throwable) {
+        }
+
+        return 'mariadb-10.11.2';
     }
 
     private function runMigrations(SymfonyStyle $io): void
