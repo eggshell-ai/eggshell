@@ -237,7 +237,6 @@ fn field_js(f: &Field) -> String {
     call!("source", f.source.as_deref());
     call!("accept", f.accept.as_deref());
     call!("map", f.map.as_deref());
-    call!("targetEntity", f.target_entity.as_deref());
     if let Some(v) = &f.resource {
         s.push_str(&format!("\n      .resource({})", v));
     }
@@ -511,7 +510,7 @@ fn pascal(s: &str) -> String {
         .map(|x| {
             let mut c = x.chars();
             match c.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
                 None => String::new(),
             }
         })
