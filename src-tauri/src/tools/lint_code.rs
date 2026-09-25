@@ -347,6 +347,58 @@ fn lint_php_shell(backend_dir: &Path, relative_filter: Option<&str>) -> LlmResul
         }
     }
 
+    // Run Doctrine schema validation if bin/console and vendor exist
+    let console_bin = backend_dir.join("bin").join("console");
+    let vendor_dir = backend_dir.join("vendor");
+    if console_bin.is_file() && vendor_dir.is_dir() {
+        let mut cmd = Command::new("php");
+        configure_env_php(&mut cmd);
+        cmd.args(["bin/console", "doctrine:schema:validate", "--skip-sync", "--no-interaction"])
+            .current_dir(backend_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        if let Ok(output) = cmd.output() {
+            if !output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let combined = format!("{}\n{}", stdout, stderr);
+
+                // Collect any mapping error lines or output
+                let mut mapping_errors = Vec::new();
+                for line in combined.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("[FAIL]") || trimmed.starts_with("[ERROR]") || trimmed.contains("The mapping files") || trimmed.contains("Exception") {
+                        mapping_errors.push(trimmed);
+                    }
+                }
+
+                let error_message = if !mapping_errors.is_empty() {
+                    mapping_errors.join("\n")
+                } else {
+                    combined.trim().to_string()
+                };
+
+                issues.push(json!({
+                    "shell": "backend",
+                    "file": "src/Entity",
+                    "line": 1,
+                    "column": null,
+                    "message": format!("Doctrine schema validation failed: {}", error_message),
+                    "severity": "error",
+                    "source": "doctrine:schema:validate"
+                }));
+            }
+        }
+    }
+
     Ok(issues)
 }
 

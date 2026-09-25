@@ -404,10 +404,11 @@ class OrderReportAggregator implements AnalyticsAggregatorInterface
                  c.name AS customerName,
                  o.orderDate AS orderDate,
                  o.status AS status,
-                 COALESCE((SELECT SUM(i.quantity * i.unitPrice) FROM App\\\\Entity\\\\OrderItem i WHERE i.orderId = o.id), 0) AS totalAmount'
+                 COALESCE(SUM(i.quantity * i.unitPrice), 0) AS totalAmount'
             )
             ->from(Order::class, 'o')
-            ->innerJoin(Customer::class, 'c', Join::WITH, 'o.customerId = c.id');
+            ->innerJoin(Customer::class, 'c', Join::WITH, 'o.customerId = c.id')
+            ->leftJoin('o.items', 'i');
 
         // Handle date range filter: filters[dateRange][0] and filters[dateRange][1]
         if (!empty($filters['dateRange'][0])) {
@@ -431,7 +432,8 @@ class OrderReportAggregator implements AnalyticsAggregatorInterface
                ->setParameter('search', '%' . $search . '%');
         }
 
-        $qb->orderBy('o.orderDate', 'DESC');
+        $qb->groupBy('o.id, c.name')
+           ->orderBy('o.orderDate', 'DESC');
 
         $results = $qb->getQuery()->getResult();
 
@@ -568,4 +570,8 @@ write_menu({
          ->innerJoin(Order::class, 'o', Join::WITH, 'i.orderId = o.id')
          ->where('o.orderDate >= :startDate')
          ->andWhere('o.status != :cancelled');
-     ```
+     ```
+9. **Never use correlated subqueries inside `select()`**:
+   - DQL does not reliably support scalar subqueries in `select()` (e.g. `COALESCE((SELECT SUM(...) FROM App\Entity\OrderItem ...), 0)` ❌).
+   - Instead, always join the related entity (e.g. `->leftJoin('o.items', 'i')` or `->leftJoin(OrderItem::class, 'i', Join::WITH, 'i.orderId = o.id')`), use `COALESCE(SUM(...), 0)`, and group by the primary identifier (`->groupBy('o.id')` ✅).
+
