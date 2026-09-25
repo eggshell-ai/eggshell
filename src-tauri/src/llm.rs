@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::progress::ProgressLog;
 
 use crate::tools::{
-    LoadSkillTool, MoveFileTool, ReadFileTool, SyncSchemaTool, WriteFileTool, WriteMenuTool,
-    WritePageTool,
+    LintCodeTool, LoadSkillTool, MoveFileTool, ReadFileTool, SyncSchemaTool, WriteFileTool,
+    WriteMenuTool, WritePageTool,
 };
 
 #[path = "symfony.rs"]
@@ -109,6 +109,7 @@ impl App for AdminPanelApp {
             Box::new(WriteMenuTool::new()),
             Box::new(WritePageTool::new()),
             Box::new(SyncSchemaTool::new()),
+            Box::new(LintCodeTool::new()),
         ]
     }
 
@@ -128,7 +129,9 @@ impl App for AdminPanelApp {
 
         Do not attempt to read and analyze the underyling framework, instead, rely on the skills to tell you what is available and
         provide instructions.
-        
+
+        You have access to the `lint_code` tool to lint and detect syntax or lint errors in the frontend (JS/JSX/TS/TSX) and backend (PHP) code.
+        Always run `lint_code` after writing or modifying code to verify that there are no syntax errors or breaking lint issues.
         ".to_string()
     }
 }

@@ -4,10 +4,13 @@ This skill explains how to build analytics and reporting capabilities in the sys
 
 ## Overview
 
-Creating analytics metrics and displaying them on the dashboard involves two primary parts:
+Creating analytics metrics and reports (both dashboard widgets and dedicated report pages) involves two primary parts:
 
-1. **Backend Aggregator**: A PHP service class in `Service/Analytics` implementing `AnalyticsAggregatorInterface` that queries the database using Doctrine ORM.
-2. **Frontend Dashboard Widget**: Updating `views/dashboard/default.jsx` by adding `KPICard` widgets inside the `<Dashboard>` container.
+1. **Backend Aggregator / Handler**: A PHP service class in `Service/Analytics/` implementing `AnalyticsAggregatorInterface` that queries the database using Doctrine ORM.
+   - **NEVER create a custom Symfony Controller (e.g., `OrderReportController`, `#[Route('/api/analytics/...')]`)**.
+   - All analytics endpoints (`/api/analytics/{category}/{metric}`) are centrally routed and handled by the system's `AnalyticsController`, which automatically autowires and dispatches to services implementing `AnalyticsAggregatorInterface`.
+   - Dedicated reports and datatables use the exact same aggregator mechanism as dashboard widgets.
+2. **Frontend View**: Either updating `views/dashboard/default.jsx` with KPI/chart widgets inside `<Dashboard>` or creating a dedicated report page with `DataTable`.
 
 To read and write these files across shells, use the `read_file` and `write_file` tools.
 
@@ -340,7 +343,121 @@ The `DataTable` component (`components/crud/DataTable`) provides a table with in
   - `{ name: "search", type: "text", label: "Search" }`
 - `params`: Object of constant query parameters to pass to the endpoint
 
-### Example: Creating a Dedicated Order Report Page
+### Backend Handler for Dedicated Reports (NEVER Write a Controller!)
+
+> [!CAUTION]
+> **DO NOT write a custom Symfony Controller (e.g. `OrderReportController`, `#[Route('/api/analytics/...')]`)**.
+> The application has a built-in `AnalyticsController` that routes all `/api/analytics/{category}/{metric}` requests to tagged `AnalyticsAggregatorInterface` services.
+> 
+> Dedicated reports and data tables MUST be powered by a backend aggregator class in `Service/Analytics/` implementing `AnalyticsAggregatorInterface`.
+
+When `DataTable` fetches data, it sends query parameters:
+- `search`: Value from the search input (`?search=...`).
+- `filters[<filterName>]`: Scalar filter values (e.g., `?filters[status]=confirmed`).
+- `filters[<filterName>][0]` and `filters[<filterName>][1]`: For range filters such as `dateRange` (e.g., start date and end date).
+- Any extra parameters passed via the `params` prop.
+
+To access these request parameters in your aggregator, implement `getValueWithRequest(\Symfony\Component\HttpFoundation\Request $request)` (or inspect `Request::createFromGlobals()` in `getValue()`):
+
+#### Step 1: Create the Backend Report Aggregator
+
+**Tool call example:**
+```javascript
+write_file({
+  shell: "backend",
+  path: "Service/Analytics/OrderReportAggregator.php",
+  content: `<?php
+
+namespace App\Service\Analytics;
+
+use App\Entity\Customer;
+use App\Entity\Order;
+use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\Query\Expr\Join;
+use Symfony\Component\HttpFoundation\Request;
+
+class OrderReportAggregator implements AnalyticsAggregatorInterface
+{
+    public function __construct(
+        private readonly EntityManagerInterface $entityManager
+    ) {}
+
+    public function getName(): string
+    {
+        return 'orders/report';
+    }
+
+    public function getValue(): array
+    {
+        return $this->getValueWithRequest(Request::createFromGlobals());
+    }
+
+    public function getValueWithRequest(Request $request): array
+    {
+        $filters = $request->query->all('filters');
+        $search = $request->query->get('search');
+
+        $qb = $this->entityManager->createQueryBuilder()
+            ->select(
+                'o.id AS id,
+                 o.orderNumber AS orderNumber,
+                 c.name AS customerName,
+                 o.orderDate AS orderDate,
+                 o.status AS status,
+                 COALESCE((SELECT SUM(i.quantity * i.unitPrice) FROM App\\\\Entity\\\\OrderItem i WHERE i.orderId = o.id), 0) AS totalAmount'
+            )
+            ->from(Order::class, 'o')
+            ->innerJoin(Customer::class, 'c', Join::WITH, 'o.customerId = c.id');
+
+        // Handle date range filter: filters[dateRange][0] and filters[dateRange][1]
+        if (!empty($filters['dateRange'][0])) {
+            $qb->andWhere('o.orderDate >= :dateFrom')
+               ->setParameter('dateFrom', $filters['dateRange'][0]);
+        }
+        if (!empty($filters['dateRange'][1])) {
+            $qb->andWhere('o.orderDate <= :dateTo')
+               ->setParameter('dateTo', $filters['dateRange'][1]);
+        }
+
+        // Handle select or text filters: filters[status]
+        if (!empty($filters['status'])) {
+            $qb->andWhere('o.status = :status')
+               ->setParameter('status', $filters['status']);
+        }
+
+        // Handle search query
+        if (!empty($search)) {
+            $qb->andWhere('o.orderNumber LIKE :search OR c.name LIKE :search')
+               ->setParameter('search', '%' . $search . '%');
+        }
+
+        $qb->orderBy('o.orderDate', 'DESC');
+
+        $results = $qb->getQuery()->getResult();
+
+        return array_map(function ($row) {
+            $orderDate = $row['orderDate'];
+            if ($orderDate instanceof \\DateTimeInterface) {
+                $orderDate = $orderDate->format('Y-m-d');
+            }
+            return [
+                'id' => (int) $row['id'],
+                'orderNumber' => $row['orderNumber'],
+                'customerName' => $row['customerName'],
+                'orderDate' => $orderDate,
+                'status' => $row['status'],
+                'totalAmount' => (float) $row['totalAmount'],
+            ];
+        }, $results);
+    }
+}
+`
+})
+```
+
+#### Step 2: Create the Dedicated Frontend Report Page
+
+Use `write_page` with the `DataTable` component. The `endpoint` property points directly to `"/analytics/orders/report"` (matching `"/analytics/" + aggregator.getName()`):
 
 ```javascript
 write_page({
@@ -402,6 +519,8 @@ export default function OrderReportPage() {
 })
 ```
 
+#### Step 3: Add to Navigation Menu
+
 Add the report to the navigation menu using `write_menu`:
 ```javascript
 write_menu({
@@ -418,13 +537,14 @@ write_menu({
 
 1. **Always read before writing dashboard files**: Use `read_file` first on `views/dashboard/default.jsx` so you retain existing widgets inside `<Dashboard>`.
 2. **Endpoint matching & 2-segment rule**: The `endpoint` prop in widgets and pages (e.g., `"/analytics/customers/count"`, `"/analytics/products/lowStock"`, `"/analytics/orders/report"`) must match `"/analytics/" + aggregator.getName()`. Aggregator names and endpoints must **strictly follow the 2-segment pattern** (`/analytics/<resource>/<metric>`). Never introduce extra slashes (such as `/analytics/products/lowStock/count`), as this will fail with a 404.
-3. **Never include `/api` in frontend endpoints**: Frontend requests go through `apiService` which already prefixes `/api`. Using `"/api/analytics/..."` will result in `"/api/api/analytics/..."` and fail with a 404. Always use `"/analytics/..."`.
-4. **Chart data format**: All chart widgets use the documented JSON data formats (Cartesian, Distribution, or Tabular).
-5. **Grid Sizing**: Widgets can declare their own 12-column layout sizing directly via the `size` prop (e.g., `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
-6. **Optimized DB queries & QueryBuilder filtering**:
+3. **Never create custom Symfony controllers for reports**: Never create an `AbstractController` or `#[Route('/api/analytics/...')]` class. The framework automatically dispatches `/api/analytics/{category}/{metric}` to any service implementing `AnalyticsAggregatorInterface` under `App\Service\Analytics\`. Use `getValueWithRequest(Request $request)` to read filter or search params.
+4. **Never include `/api` in frontend endpoints**: Frontend requests go through `apiService` which already prefixes `/api`. Using `"/api/analytics/..."` will result in `"/api/api/analytics/..."` and fail with a 404. Always use `"/analytics/..."`.
+5. **Chart data format**: All chart widgets use the documented JSON data formats (Cartesian, Distribution, or Tabular).
+6. **Grid Sizing**: Widgets can declare their own 12-column layout sizing directly via the `size` prop (e.g., `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
+7. **Optimized DB queries & QueryBuilder filtering**:
    - Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
    - **Always use `andWhere()` (or `orWhere()`) instead of chaining multiple `where()` calls**: In Doctrine QueryBuilder, calling `->where(...)` multiple times overwrites prior conditions. Use `->where(...)` for the initial condition and subsequent `->andWhere(...)` for additional filters.
-7. **Entity Associations and Joins**:
+8. **Entity Associations and Joins**:
    - **Only `type: "table"` fields generate an automated, one-sided ORM association**: When a resource declares a child table with `targetEntity` (e.g., `Order` having `items` with `targetEntity: "OrderItem"`), `sync_schema` automatically generates `#[ORM\OneToMany]` on the parent entity. You can join directly from the parent:
      ```php
      // Valid: Order has an automated OneToMany association to items
