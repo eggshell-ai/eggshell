@@ -332,7 +332,7 @@ When a requirement calls for a dedicated report page (e.g. date-range filtered o
 The `DataTable` component (`components/crud/DataTable`) provides a table with integrated search, filter inputs (including date range pickers and selects), pagination, and auto-refresh.
 
 #### Props:
-- `endpoint`: API endpoint (e.g., `"/api/analytics/orders/report"`)
+- `endpoint`: API endpoint (e.g., `"/analytics/orders/report"`). **Do NOT prefix with `/api`** — the frontend `apiService` automatically prefixes `/api`.
 - `columns`: Ant Design table column definitions array
 - `filters`: Array of filter definitions:
   - `{ name: "dateRange", type: "dateRange", label: "Date Range" }`
@@ -391,7 +391,7 @@ export default function OrderReportPage() {
     <div style={{ padding: 24 }}>
       <DataTable
         title="Order & Sales Report"
-        endpoint="/api/analytics/orders/report"
+        endpoint="/analytics/orders/report"
         columns={columns}
         filters={filters}
       />
@@ -417,13 +417,14 @@ write_menu({
 ## Best Practices
 
 1. **Always read before writing dashboard files**: Use `read_file` first on `views/dashboard/default.jsx` so you retain existing widgets inside `<Dashboard>`.
-2. **Endpoint matching & 2-segment rule**: The `endpoint` prop in widgets (e.g., `"/analytics/customers/count"`, `"/analytics/products/lowStock"`) must match `"/analytics/" + aggregator.getName()`. Aggregator names and endpoints must **strictly follow the 2-segment pattern** (`/analytics/<resource>/<metric>`). Never introduce extra slashes (such as `/analytics/products/lowStock/count`), as this will fail with a 404.
-3. **Chart data format**: All chart widgets use the documented JSON data formats (Cartesian, Distribution, or Tabular).
-4. **Grid Sizing**: Widgets can declare their own 12-column layout sizing directly via the `size` prop (e.g., `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
-5. **Optimized DB queries & QueryBuilder filtering**:
+2. **Endpoint matching & 2-segment rule**: The `endpoint` prop in widgets and pages (e.g., `"/analytics/customers/count"`, `"/analytics/products/lowStock"`, `"/analytics/orders/report"`) must match `"/analytics/" + aggregator.getName()`. Aggregator names and endpoints must **strictly follow the 2-segment pattern** (`/analytics/<resource>/<metric>`). Never introduce extra slashes (such as `/analytics/products/lowStock/count`), as this will fail with a 404.
+3. **Never include `/api` in frontend endpoints**: Frontend requests go through `apiService` which already prefixes `/api`. Using `"/api/analytics/..."` will result in `"/api/api/analytics/..."` and fail with a 404. Always use `"/analytics/..."`.
+4. **Chart data format**: All chart widgets use the documented JSON data formats (Cartesian, Distribution, or Tabular).
+5. **Grid Sizing**: Widgets can declare their own 12-column layout sizing directly via the `size` prop (e.g., `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
+6. **Optimized DB queries & QueryBuilder filtering**:
    - Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
    - **Always use `andWhere()` (or `orWhere()`) instead of chaining multiple `where()` calls**: In Doctrine QueryBuilder, calling `->where(...)` multiple times overwrites prior conditions. Use `->where(...)` for the initial condition and subsequent `->andWhere(...)` for additional filters.
-6. **Entity Associations and Joins**:
+7. **Entity Associations and Joins**:
    - **Only `type: "table"` fields generate an automated, one-sided ORM association**: When a resource declares a child table with `targetEntity` (e.g., `Order` having `items` with `targetEntity: "OrderItem"`), `sync_schema` automatically generates `#[ORM\OneToMany]` on the parent entity. You can join directly from the parent:
      ```php
      // Valid: Order has an automated OneToMany association to items

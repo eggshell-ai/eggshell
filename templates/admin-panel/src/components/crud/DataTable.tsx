@@ -37,50 +37,111 @@ export default function DataTable({
   const [loading, setLoading] = useState(false);
   const [filterValues, setFilterValues] = useState<Record<string, any>>({});
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+
+  // Debounce search term changes to prevent spamming requests on typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  const serializedParams = JSON.stringify(params);
+  const serializedFilters = JSON.stringify(filterValues);
 
   useEffect(() => {
-    fetchData();
-  }, [endpoint, filterValues, searchTerm, params]);
+    let isMounted = true;
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const queryParams = new URLSearchParams();
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        const queryParams = new URLSearchParams();
 
-      // Attach params prop
-      Object.entries(params).forEach(([k, v]) => {
-        if (v !== undefined && v !== null && v !== '') {
-          queryParams.append(k, String(v));
-        }
-      });
-
-      // Attach filter values
-      Object.entries(filterValues).forEach(([k, v]) => {
-        if (v !== undefined && v !== null && v !== '') {
-          if (Array.isArray(v)) {
-            queryParams.append(`filters[${k}][0]`, String(v[0]));
-            queryParams.append(`filters[${k}][1]`, String(v[1]));
-          } else {
-            queryParams.append(`filters[${k}]`, String(v));
+        // Attach params prop
+        Object.entries(params).forEach(([k, v]) => {
+          if (v !== undefined && v !== null && v !== '') {
+            queryParams.append(k, String(v));
           }
+        });
+
+        // Attach filter values
+        Object.entries(filterValues).forEach(([k, v]) => {
+          if (v !== undefined && v !== null && v !== '') {
+            if (Array.isArray(v)) {
+              if (v[0] !== undefined && v[0] !== '') {
+                queryParams.append(`filters[${k}][0]`, String(v[0]));
+              }
+              if (v[1] !== undefined && v[1] !== '') {
+                queryParams.append(`filters[${k}][1]`, String(v[1]));
+              }
+            } else {
+              queryParams.append(`filters[${k}]`, String(v));
+            }
+          }
+        });
+
+        if (debouncedSearchTerm) {
+          queryParams.append('search', debouncedSearchTerm);
         }
-      });
 
-      if (searchTerm) {
-        queryParams.append('search', searchTerm);
+        // Clean leading /api or api/ from endpoint so apiService baseURL does not create /api/api/
+        const normalizedEndpoint = endpoint.replace(/^\/?api(\/|$)/, '/');
+        const queryString = queryParams.toString();
+        const url = `${normalizedEndpoint}${queryString ? (normalizedEndpoint.includes('?') ? '&' : '?') + queryString : ''}`;
+        const res = await apiService.get(url);
+
+        if (isMounted) {
+          const items = Array.isArray(res) ? res : (res?.data || res?.items || []);
+          setData(items);
+        }
+      } catch (err) {
+        if (isMounted) {
+          console.error('Error fetching DataTable data:', err);
+        }
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
       }
+    };
 
-      const queryString = queryParams.toString();
-      const url = `${endpoint}${queryString ? (endpoint.includes('?') ? '&' : '?') + queryString : ''}`;
-      const res = await apiService.get(url);
+    fetchData();
 
-      const items = Array.isArray(res) ? res : (res?.data || res?.items || []);
-      setData(items);
-    } catch (err) {
-      console.error('Error fetching DataTable data:', err);
-    } finally {
-      setLoading(false);
-    }
+    return () => {
+      isMounted = false;
+    };
+  }, [endpoint, serializedFilters, debouncedSearchTerm, serializedParams]);
+
+  const handleReload = () => {
+    // Manually trigger a re-fetch by updating state or invoking reload
+    const queryParams = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') queryParams.append(k, String(v));
+    });
+    Object.entries(filterValues).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') {
+        if (Array.isArray(v)) {
+          if (v[0]) queryParams.append(`filters[${k}][0]`, String(v[0]));
+          if (v[1]) queryParams.append(`filters[${k}][1]`, String(v[1]));
+        } else {
+          queryParams.append(`filters[${k}]`, String(v));
+        }
+      }
+    });
+    if (debouncedSearchTerm) queryParams.append('search', debouncedSearchTerm);
+    const normalizedEndpoint = endpoint.replace(/^\/?api(\/|$)/, '/');
+    const queryString = queryParams.toString();
+    const url = `${normalizedEndpoint}${queryString ? (normalizedEndpoint.includes('?') ? '&' : '?') + queryString : ''}`;
+
+    setLoading(true);
+    apiService.get(url)
+      .then((res) => {
+        const items = Array.isArray(res) ? res : (res?.data || res?.items || []);
+        setData(items);
+      })
+      .catch((err) => console.error('Error fetching DataTable data:', err))
+      .finally(() => setLoading(false));
   };
 
   const handleFilterChange = (filterName: string, value: any) => {
@@ -99,7 +160,7 @@ export default function DataTable({
     <Card
       title={title}
       extra={
-        <Button icon={<ReloadOutlined />} onClick={fetchData}>
+        <Button icon={<ReloadOutlined />} onClick={handleReload}>
           Refresh
         </Button>
       }
