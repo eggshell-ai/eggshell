@@ -117,10 +117,11 @@ final class CustomerController extends ResourceController
                     "id": "mock-write-page",
                     "type": "function",
                     "function": {
-                        "name": "write_page",
+                        "name": "write_file",
                         "arguments": {
-                            "route": "/customers",
-                            "code": "'use client';
+                            "shell": "frontend",
+                            "path": "app/(dashboard)/customers/page.tsx",
+                            "content": "'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import customersResource from '@/resources/customers';
@@ -135,15 +136,13 @@ export default function CustomersPage() {
             10 => Ok(serde_json::json!({
                 "content": "",
                 "tool_calls": [{
-                    "id": "mock-write-menu",
+                    "id": "mock-patch-menu",
                     "type": "function",
                     "function": {
-                        "name": "write_menu",
+                        "name": "patch_file",
                         "arguments": {
-                            "name": "CRM.Customers",
-                            "route": "/customers",
-                            "icon": "PersonOutlined",
-                            "after": "Dashboard"
+                            "shell": "frontend",
+                            "patch": "*** Begin Patch\n*** Update File: menu-items/menu.json\n@@ -15,4 +15,10 @@\n     \"permission\": \"roles.index\"\n   }\n+  {\n+    \"name\": \"CRM.Customers\",\n+    \"route\": \"/customers\",\n+    \"icon\": \"UserOutlined\"\n+  }\n ]\n*** End Patch"
                         }
                     }
                 }]

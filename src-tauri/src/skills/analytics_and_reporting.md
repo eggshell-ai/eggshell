@@ -328,7 +328,7 @@ export default function DashboardDefault() {
 
 ## Dedicated Report Pages & Custom Analytics Views
 
-When a requirement calls for a dedicated report page (e.g. date-range filtered order summaries, detailed audit logs, or custom tabular views beyond the dashboard), create the page using `write_page` and use the standalone `DataTable` component.
+When a requirement calls for a dedicated report page (e.g. date-range filtered order summaries, detailed audit logs, or custom tabular views beyond the dashboard), create the page using `write_file` (at `app/(dashboard)/<route>/page.tsx` as documented in the system prompt) and use the standalone `DataTable` component.
 
 ### `DataTable` Component
 
@@ -368,13 +368,13 @@ write_file({
   path: "Service/Analytics/OrderReportAggregator.php",
   content: `<?php
 
-namespace App\Service\Analytics;
+namespace App\\Service\\Analytics;
 
-use App\Entity\Customer;
-use App\Entity\Order;
-use Doctrine\ORM\EntityManagerInterface;
-use Doctrine\ORM\Query\Expr\Join;
-use Symfony\Component\HttpFoundation\Request;
+use App\\Entity\\Customer;
+use App\\Entity\\Order;
+use Doctrine\\ORM\\EntityManagerInterface;
+use Doctrine\\ORM\\Query\\Expr\\Join;
+use Symfony\\Component\\HttpFoundation\\Request;
 
 class OrderReportAggregator implements AnalyticsAggregatorInterface
 {
@@ -459,12 +459,13 @@ class OrderReportAggregator implements AnalyticsAggregatorInterface
 
 #### Step 2: Create the Dedicated Frontend Report Page
 
-Use `write_page` with the `DataTable` component. The `endpoint` property points directly to `"/analytics/orders/report"` (matching `"/analytics/" + aggregator.getName()`):
+Use `write_file` with the `DataTable` component. The `endpoint` property points directly to `"/analytics/orders/report"` (matching `"/analytics/" + aggregator.getName()`):
 
 ```javascript
-write_page({
-  route: "/reports/orders",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/reports/orders/page.tsx",
+  content: `'use client';
 
 import React from 'react';
 import { Tag } from 'antd';
@@ -523,13 +524,22 @@ export default function OrderReportPage() {
 
 #### Step 3: Add to Navigation Menu
 
-Add the report to the navigation menu using `write_menu`:
+Add the report to the navigation menu using `patch_file` on `menu-items/menu.json`:
 ```javascript
-write_menu({
-  name: "Reports.OrderReport",
-  route: "/reports/orders",
-  icon: "BarChartOutlined",
-  after: "Orders"
+patch_file({
+  shell: "frontend",
+  patch: `*** Begin Patch
+*** Update File: menu-items/menu.json
+@@ -15,4 +15,10 @@
+     "permission": "roles.index"
+   }
++  {
++    "name": "Reports.OrderReport",
++    "route": "/reports/orders",
++    "icon": "BarChartOutlined"
++  }
+ ]
+*** End Patch`
 })
 ```
 

@@ -818,12 +818,13 @@ If custom routes are required, add them to this same controller file.
 
 ### Step 5 — Create frontend page
 
-Use `write_page` and `ResourcePage`.
+Use `write_file` (at `app/(dashboard)/<route>/page.tsx` as documented in the system prompt) and `ResourcePage`.
 
 ```javascript
-write_page({
-  route: "/products",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/products/page.tsx",
+  content: `'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import productsResource from '@/resources/products';
@@ -839,12 +840,23 @@ Do not build a separate CRUD table/form implementation.
 
 ### Step 6 — Add menu entry
 
+Add the menu entry to `menu-items/menu.json` using `patch_file`:
+
 ```javascript
-write_menu({
-  name: "Inventory.Products",
-  route: "/products",
-  icon: "ShoppingOutlined",
-  after: "Dashboard"
+patch_file({
+  shell: "frontend",
+  patch: `*** Begin Patch
+*** Update File: menu-items/menu.json
+@@ -15,4 +15,10 @@
+     "permission": "roles.index"
+   }
++  {
++    "name": "Inventory.Products",
++    "route": "/products",
++    "icon": "ShoppingOutlined"
++  }
+ ]
+*** End Patch`
 })
 ```
 
@@ -1690,14 +1702,15 @@ Keep standard CRUD behavior inherited from `ResourceController`.
 
 ### 8.2 Frontend page
 
-Use `write_page`.
+Use `write_file` (at `app/(dashboard)/<route>/page.tsx` as documented in the system prompt).
 
 Example:
 
 ```javascript
-write_page({
-  route: "/customers",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/customers/page.tsx",
+  content: `'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import customersResource from '@/resources/customers';
@@ -1724,16 +1737,25 @@ when `ResourcePage` already supplies them.
 
 ### 8.3 Menu
 
-Use `write_menu`.
+Use `patch_file` on `menu-items/menu.json`.
 
 Example:
 
 ```javascript
-write_menu({
-  name: "CRM.Customers",
-  route: "/customers",
-  icon: "TeamOutlined",
-  after: "Dashboard"
+patch_file({
+  shell: "frontend",
+  patch: `*** Begin Patch
+*** Update File: menu-items/menu.json
+@@ -15,4 +15,10 @@
+     "permission": "roles.index"
+   }
++  {
++    "name": "CRM.Customers",
++    "route": "/customers",
++    "icon": "TeamOutlined"
++  }
+ ]
+*** End Patch`
 })
 ```
 
@@ -2152,9 +2174,10 @@ This is consistent.
 ### Step 6 — Create frontend page
 
 ```javascript
-write_page({
-  route: "/leads",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/leads/page.tsx",
+  content: `'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import leadsResource from '@/resources/leads';
@@ -2182,11 +2205,20 @@ The resource plus `ResourcePage` already provide those behaviors.
 ### Step 7 — Add menu item
 
 ```javascript
-write_menu({
-  name: "CRM.Leads",
-  route: "/leads",
-  icon: "TeamOutlined",
-  after: "Dashboard"
+patch_file({
+  shell: "frontend",
+  patch: `*** Begin Patch
+*** Update File: menu-items/menu.json
+@@ -15,4 +15,10 @@
+     "permission": "roles.index"
+   }
++  {
++    "name": "CRM.Leads",
++    "route": "/leads",
++    "icon": "TeamOutlined"
++  }
+ ]
+*** End Patch`
 })
 ```
 
@@ -2508,9 +2540,10 @@ final class OrderController extends ResourceController
 
 Orders page:
 ```javascript
-write_page({
-  route: "/orders",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/orders/page.tsx",
+  content: `'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import ordersResource from '@/resources/orders';
@@ -2524,9 +2557,10 @@ export default function OrdersPage() {
 
 Products page:
 ```javascript
-write_page({
-  route: "/products",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/products/page.tsx",
+  content: `'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import productsResource from '@/resources/products';
@@ -2540,9 +2574,10 @@ export default function ProductsPage() {
 
 Customers page:
 ```javascript
-write_page({
-  route: "/customers",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/customers/page.tsx",
+  content: `'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import customersResource from '@/resources/customers';
@@ -2557,26 +2592,31 @@ export default function CustomersPage() {
 ### Step 4 — Add Menu Items
 
 ```javascript
-write_menu({
-  name: "Sales.Orders",
-  route: "/orders",
-  icon: "ShoppingOutlined",
-  after: "Dashboard"
-});
-
-write_menu({
-  name: "Inventory.Products",
-  route: "/products",
-  icon: "AppstoreOutlined",
-  after: "Orders"
-});
-
-write_menu({
-  name: "CRM.Customers",
-  route: "/customers",
-  icon: "TeamOutlined",
-  after: "Products"
-});
+patch_file({
+  shell: "frontend",
+  patch: `*** Begin Patch
+*** Update File: menu-items/menu.json
+@@ -15,4 +15,18 @@
+     "permission": "roles.index"
+   }
++  {
++    "name": "Sales.Orders",
++    "route": "/orders",
++    "icon": "ShoppingOutlined"
++  },
++  {
++    "name": "Inventory.Products",
++    "route": "/products",
++    "icon": "AppstoreOutlined"
++  },
++  {
++    "name": "CRM.Customers",
++    "route": "/customers",
++    "icon": "TeamOutlined"
++  }
+ ]
+*** End Patch`
+})
 ```
 
 ---

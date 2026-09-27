@@ -1,14 +1,57 @@
 // project import
-import { DashboardOutlined, UserOutlined, TeamOutlined, AppstoreOutlined } from '@ant-design/icons';
+import {
+  DashboardOutlined,
+  UserOutlined,
+  TeamOutlined,
+  AppstoreOutlined,
+  ShoppingOutlined,
+  ShoppingCartOutlined,
+  BarChartOutlined,
+  DotChartOutlined,
+  LineChartOutlined,
+  PieChartOutlined,
+  FundOutlined,
+  FileTextOutlined,
+  SettingOutlined,
+  FolderOutlined,
+  DatabaseOutlined,
+  TableOutlined,
+  TagsOutlined,
+  DollarOutlined,
+  CreditCardOutlined,
+  InboxOutlined,
+  ScheduleOutlined,
+  SolutionOutlined,
+  AuditOutlined
+} from '@ant-design/icons';
 import authService from '../services/authService';
-import menuData from '../../schemas/menu.json';
+import menuData from './menu.json';
 
 // icons
 const icons = {
   DashboardOutlined,
   UserOutlined,
   TeamOutlined,
-  AppstoreOutlined
+  AppstoreOutlined,
+  ShoppingOutlined,
+  ShoppingCartOutlined,
+  BarChartOutlined,
+  DotChartOutlined,
+  LineChartOutlined,
+  PieChartOutlined,
+  FundOutlined,
+  FileTextOutlined,
+  SettingOutlined,
+  FolderOutlined,
+  DatabaseOutlined,
+  TableOutlined,
+  TagsOutlined,
+  DollarOutlined,
+  CreditCardOutlined,
+  InboxOutlined,
+  ScheduleOutlined,
+  SolutionOutlined,
+  AuditOutlined
 };
 
 // ==============================|| MENU GENERATION FROM JSON ||============================== //
