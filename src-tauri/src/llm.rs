@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::progress::ProgressLog;
 
 use crate::tools::{
-    LintCodeTool, LoadSkillTool, MoveFileTool, PatchFileTool, ReadFileTool, SyncSchemaTool,
-    WriteFileTool,
+    LintCodeTool, LoadSkillTool, MoveFileTool, PatchFileTool, ReadFileTool, ReadSchemaTool,
+    SyncSchemaTool, WriteFileTool,
 };
 
 #[path = "symfony.rs"]
@@ -112,6 +112,7 @@ impl App for AdminPanelApp {
             Box::new(PatchFileTool::new()),
             Box::new(MoveFileTool::new()),
             Box::new(SyncSchemaTool::new()),
+            Box::new(ReadSchemaTool::new()),
             Box::new(LintCodeTool::new()),
         ]
     }
@@ -186,6 +187,7 @@ impl App for PlanningApp {
         vec![
             Box::new(LoadSkillTool::new(default_skills())),
             Box::new(ReadFileTool::new()),
+            Box::new(ReadSchemaTool::new()),
         ]
     }
 
