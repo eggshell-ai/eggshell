@@ -422,8 +422,8 @@ fn backend_code(r: &Resource, class: &str) -> String {
                     let mapped_by = f.map.as_deref().unwrap_or("orderId");
                     collection_inits.push(format!("        $this->{} = new ArrayCollection();", f.name));
                     return format!(
-                        "    #[ORM\\OneToMany(targetEntity: {}::class, mappedBy: '{}')]\n    #[MapField(field: '{}', targetEntity: {}::class)]\n    public Collection ${};",
-                        target_class, mapped_by, mapped_by, target_class, f.name
+                        "    #[MapField(field: '{}', targetEntity: {}::class)]\n    public Collection ${};",
+                        mapped_by, target_class, f.name
                     );
                 }
             }

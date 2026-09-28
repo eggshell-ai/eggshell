@@ -557,22 +557,22 @@ patch_file({
    - Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
    - **Always use `andWhere()` (or `orWhere()`) instead of chaining multiple `where()` calls**: In Doctrine QueryBuilder, calling `->where(...)` multiple times overwrites prior conditions. Use `->where(...)` for the initial condition and subsequent `->andWhere(...)` for additional filters.
 8. **Entity Associations and Joins**:
-   - **Only `type: "table"` fields generate an automated, one-sided ORM association**: When a resource declares a child table with `targetEntity` (e.g., `Order` having `items` with `targetEntity: "OrderItem"`), `sync_schema` automatically generates `#[ORM\OneToMany]` on the parent entity. You can join directly from the parent:
-     ```php
-     // Valid: Order has an automated OneToMany association to items
-     $qb = $this->entityManager->createQueryBuilder()
-         ->select("DATE_FORMAT(o.orderDate, '%Y-%m') AS month, SUM(i.quantity * i.unitPrice) AS total")
-         ->from(Order::class, 'o')
-         ->innerJoin('o.items', 'i')
-         ->where('o.orderDate >= :startDate')
-         ->andWhere('o.status != :cancelled');
-     ```
-   - **Everything else has NO automated association and requires an explicit Join with `Join::WITH`**: Child entities (such as `OrderItem` back to `Order`), or foreign key relationships (such as `Order` to `Customer` via `customerId`), do not have automated ORM navigation properties. Attempting `->innerJoin('i.order', 'o')` or `->innerJoin('o.customer', 'c')` will fail with an association error. Instead, perform an explicit join specifying the entity class and the `Join::WITH` condition:
+   - **No automated ORM navigation associations**: Child entities (such as `OrderItem` to `Order` or `Order` to `OrderItem`), as well as foreign key relationships (such as `Order` to `Customer` via `customerId`), do not have automated ORM navigation associations. Attempting `->innerJoin('o.items', 'i')` or `->innerJoin('i.order', 'o')` will fail with an association mapping error.
+   - **Always perform explicit joins with `Join::WITH`**: Specify the entity class and the `Join::WITH` foreign key condition explicitly:
      ```php
      use Doctrine\ORM\Query\Expr\Join;
      use App\Entity\Order;
      use App\Entity\OrderItem;
 
+     // Explicit join: querying from Order to child OrderItem via orderId
+     $qb = $this->entityManager->createQueryBuilder()
+         ->select("DATE_FORMAT(o.orderDate, '%Y-%m') AS month, SUM(i.quantity * i.unitPrice) AS total")
+         ->from(Order::class, 'o')
+         ->innerJoin(OrderItem::class, 'i', Join::WITH, 'i.orderId = o.id')
+         ->where('o.orderDate >= :startDate')
+         ->andWhere('o.status != :cancelled');
+     ```
+     ```php
      // Explicit join: querying from child OrderItem to parent Order via orderId
      $qb = $this->entityManager->createQueryBuilder()
          ->select("DATE_FORMAT(o.orderDate, '%Y-%m') AS month, SUM(i.quantity * i.unitPrice) AS total")
