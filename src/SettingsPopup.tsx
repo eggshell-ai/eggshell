@@ -20,6 +20,7 @@ type MysqlSummary = {
   port: number;
   user: string;
   pass_set: boolean;
+  is_mariadb?: boolean;
 };
 
 type SetupState = {
@@ -70,6 +71,7 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   const [mysqlUser, setMysqlUser] = useState<string>("root");
   const [mysqlPass, setMysqlPass] = useState<string>("");
   const [mysqlPassSet, setMysqlPassSet] = useState<boolean>(false);
+  const [mysqlIsMariadb, setMysqlIsMariadb] = useState<boolean>(false);
   const [mysqlError, setMysqlError] = useState<string>("");
   const [mysqlSuccess, setMysqlSuccess] = useState<string>("");
   const [isSavingMysql, setIsSavingMysql] = useState<boolean>(false);
@@ -142,6 +144,7 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
           setMysqlPort(mysql.port || 3306);
           setMysqlUser(mysql.user || "root");
           setMysqlPassSet(Boolean(mysql.pass_set));
+          setMysqlIsMariadb(Boolean(mysql.is_mariadb));
         }
       })
       .catch((reason: unknown) => console.error("[SettingsPopup] load_setup_state rejected", { reason }))
@@ -338,6 +341,7 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
         port: parsedPort,
         user: mysqlUser.trim(),
         pass: mysqlPass ? mysqlPass : null,
+        is_mariadb: mysqlIsMariadb,
       });
 
       if (mysqlPass.trim()) {
@@ -450,6 +454,22 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                     placeholder={mysqlPassSet ? "Enter new password to change" : "Leave empty if root has no password"}
                   />
                 </label>
+
+                <label className="settings-checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={mysqlIsMariadb}
+                    onChange={(e) => {
+                      setMysqlIsMariadb(e.target.checked);
+                      setMysqlError("");
+                      setMysqlSuccess("");
+                    }}
+                  />
+                  <span>Use MariaDB</span>
+                </label>
+                <span className="settings-field-hint">
+                  Enable this if your database server is MariaDB rather than standard MySQL. This configures Symfony and Doctrine with MariaDB compatibility.
+                </span>
 
                 {mysqlSuccess && <p className="dialog-success" role="status">{mysqlSuccess}</p>}
                 {mysqlError && <p className="dialog-error" role="alert">{mysqlError}</p>}

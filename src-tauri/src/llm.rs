@@ -229,6 +229,7 @@ pub async fn initialize_project(
     template_root: &Path,
     log: &ProgressLog,
     mysql_password: &str,
+    is_mariadb: bool,
 ) -> LlmResult<()> {
     let path = Path::new(project_path);
     fs::create_dir_all(path)?;
@@ -240,7 +241,7 @@ pub async fn initialize_project(
     // the backend and ReactShell creates the frontend under project_path.
     for shell in &shells {
         if let Err(error) = shell
-            .init(project_path, slug, template_root, log, mysql_password)
+            .init(project_path, slug, template_root, log, mysql_password, is_mariadb)
             .await
         {
             return Err(error);
@@ -346,6 +347,7 @@ pub trait Shell: Send + Sync {
         template_root: &Path,
         log: &ProgressLog,
         _mysql_password: &str,
+        _is_mariadb: bool,
     ) -> LlmResult<()>;
     async fn start(&self, project_path: &str) -> LlmResult<()>;
 }

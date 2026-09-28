@@ -913,6 +913,7 @@ pub struct MysqlSummary {
     pub port: u16,
     pub user: String,
     pub pass_set: bool,
+    pub is_mariadb: bool,
 }
 
 /// The state returned to the frontend on startup and settings: whether setup is finished,
@@ -943,6 +944,7 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
                 port: config.mysql.port,
                 user: config.mysql.user,
                 pass_set,
+                is_mariadb: config.mysql.is_mariadb,
             };
             SetupState {
                 setup_completed: config.setup_completed,
@@ -962,6 +964,7 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
                 port: default_mysql.port,
                 user: default_mysql.user,
                 pass_set,
+                is_mariadb: default_mysql.is_mariadb,
             };
             SetupState {
                 setup_completed: false,
@@ -1448,12 +1451,19 @@ async fn create_project(
     // read by different windows, and this one's channels are the shells.
     let log = ProgressLog::new(app.clone(), "project-log", "project");
 
-    let mysql_password = config::ConfigService::load_default(&app)
-        .map(|config| config.mysql.pass)
+    let (mysql_password, is_mariadb) = config::ConfigService::load_default(&app)
+        .map(|config| (config.mysql.pass, config.mysql.is_mariadb))
         .unwrap_or_default();
-    ProjectsRepository::create(pool.inner(), project, &template_root, &log, &mysql_password)
-        .await
-        .map_err(|error| error.to_string())
+    ProjectsRepository::create(
+        pool.inner(),
+        project,
+        &template_root,
+        &log,
+        &mysql_password,
+        is_mariadb,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

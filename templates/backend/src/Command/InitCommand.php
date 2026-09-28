@@ -5,6 +5,7 @@ namespace App\Command;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputArgument;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\Process\Process;
@@ -25,7 +26,9 @@ class InitCommand extends Command
             ->setDescription('Initializes the project by creating database, user, and running migrations.')
             ->addArgument('database', InputArgument::REQUIRED, 'The database name')
             ->addArgument('username', InputArgument::REQUIRED, 'The database username')
-            ->addArgument('mysql-password', InputArgument::OPTIONAL, 'The MySQL root password', '');
+            ->addArgument('mysql-password', InputArgument::OPTIONAL, 'The MySQL root password', '')
+            ->addOption('mariadb', null, InputOption::VALUE_NONE, 'Whether the database server is MariaDB')
+            ->addOption('server-version', null, InputOption::VALUE_OPTIONAL, 'Explicit server version for Doctrine DBAL');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -34,6 +37,8 @@ class InitCommand extends Command
         $this->databaseName = (string) $input->getArgument('database');
         $this->databaseUser = (string) $input->getArgument('username');
         $this->mysqlPassword = (string) $input->getArgument('mysql-password');
+        $this->isMariaDb = (bool) $input->getOption('mariadb');
+        $this->explicitServerVersion = (string) ($input->getOption('server-version') ?? '');
 
         $io->title('Initializing Project');
 
@@ -122,6 +127,8 @@ class InitCommand extends Command
     private string $databaseName = '';
     private string $databaseUser = '';
     private string $serverVersion = '';
+    private bool $isMariaDb = false;
+    private string $explicitServerVersion = '';
 
     private function getDatabasePassword(): string { return $this->mysqlPassword; }
 
@@ -156,6 +163,10 @@ class InitCommand extends Command
 
     private function resolveServerVersion(): string
     {
+        if (!empty($this->explicitServerVersion)) {
+            return $this->explicitServerVersion;
+        }
+
         $dsn = sprintf('mysql:host=%s;port=%s', self::DB_HOST, self::DB_PORT);
 
         try {
@@ -164,23 +175,30 @@ class InitCommand extends Command
 
             return $this->detectServerVersion($pdo);
         } catch (\Throwable) {
-            return 'mariadb-10.11.2';
+            return $this->isMariaDb ? 'mariadb-10.11.2' : '8.0.32';
         }
     }
 
     private function detectServerVersion(\PDO $pdo): string
     {
+        if (!empty($this->explicitServerVersion)) {
+            return $this->explicitServerVersion;
+        }
+
         try {
             $rawVersion = (string) $pdo->query('SELECT VERSION()')->fetchColumn();
+            $isMaria = $this->isMariaDb || stripos($rawVersion, 'mariadb') !== false;
+
             $normalized = preg_replace('/^5\.5\.5-/', '', $rawVersion);
 
             if (preg_match('/(\d+\.\d+(?:\.\d+)?)/', $normalized, $matches)) {
-                return 'mariadb-' . $matches[1];
+                $versionNumber = $matches[1];
+                return $isMaria ? ('mariadb-' . $versionNumber) : $versionNumber;
             }
         } catch (\Throwable) {
         }
 
-        return 'mariadb-10.11.2';
+        return $this->isMariaDb ? 'mariadb-10.11.2' : '8.0.32';
     }
 
     private function runMigrations(SymfonyStyle $io): void

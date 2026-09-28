@@ -58,6 +58,7 @@ impl ProjectsRepository {
         template_root: &Path,
         log: &ProgressLog,
         mysql_password: &str,
+        is_mariadb: bool,
     ) -> Result<Project, Box<dyn std::error::Error + Send + Sync>> {
         let NewProject { title, slug, path } = project;
         let title = title.trim().to_string();
@@ -67,7 +68,7 @@ impl ProjectsRepository {
             None => Self::next_slug(pool, &title).await?,
         };
 
-        llm::initialize_project(&path, &slug, template_root, log, mysql_password).await?;
+        llm::initialize_project(&path, &slug, template_root, log, mysql_password, is_mariadb).await?;
 
         let id = sqlx::query("INSERT INTO projects (title, slug, path) VALUES (?, ?, ?)")
             .bind(&title)

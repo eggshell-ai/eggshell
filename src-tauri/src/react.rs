@@ -97,6 +97,7 @@ impl Shell for ReactShell {
         template_root: &Path,
         log: &ProgressLog,
         _mysql_password: &str,
+        _is_mariadb: bool,
     ) -> LlmResult<()> {
         let log = log.for_channel(CHANNEL);
         let template_path = Self::template_path(template_root);

@@ -104,6 +104,8 @@ pub struct MysqlConfig {
     pub user: String,
     #[serde(default)]
     pub pass: String,
+    #[serde(default)]
+    pub is_mariadb: bool,
 }
 fn default_mysql_type() -> String {
     "managed".to_string()
@@ -128,11 +130,12 @@ pub fn save_mysql_config(app: tauri::AppHandle, password: String) -> Result<(), 
         port: 3306,
         user: "root".to_string(),
         pass: password,
+        is_mariadb: config.mysql.is_mariadb,
     };
     ConfigService::save_default(&app, &config).map_err(|error| error.to_string())
 }
 
-/// Updates and saves the full MySQL configuration (kind, port, user, pass).
+/// Updates and saves the full MySQL configuration (kind, port, user, pass, is_mariadb).
 /// If `pass` is None, the existing saved password is kept.
 #[tauri::command]
 pub fn save_mysql_settings(
@@ -141,6 +144,7 @@ pub fn save_mysql_settings(
     port: u16,
     user: String,
     pass: Option<String>,
+    is_mariadb: Option<bool>,
 ) -> Result<(), String> {
     let mut config = ConfigService::load_default(&app).unwrap_or_default();
     let effective_pass = match pass {
@@ -152,6 +156,7 @@ pub fn save_mysql_settings(
         port,
         user,
         pass: effective_pass,
+        is_mariadb: is_mariadb.unwrap_or(config.mysql.is_mariadb),
     };
     ConfigService::save_default(&app, &config).map_err(|error| error.to_string())
 }
