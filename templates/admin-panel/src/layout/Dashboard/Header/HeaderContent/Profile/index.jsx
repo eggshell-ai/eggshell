@@ -1,7 +1,8 @@
 'use client';
 
 import PropTypes from 'prop-types';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 // material-ui
 import { useTheme } from '@mui/material/styles';
@@ -24,12 +25,13 @@ import Avatar from 'components/@extended/Avatar';
 import MainCard from 'components/MainCard';
 import Transitions from 'components/@extended/Transitions';
 import IconButton from 'components/@extended/IconButton';
+import authService from 'services/authService';
+import profileService from 'api/profileService';
 
 // assets
 import LogoutOutlined from '@ant-design/icons/LogoutOutlined';
 import SettingOutlined from '@ant-design/icons/SettingOutlined';
 import UserOutlined from '@ant-design/icons/UserOutlined';
-const avatar1 = '/assets/images/users/avatar-1.png';
 
 // tab panel wrapper
 function TabPanel({ children, value, index, ...other }) {
@@ -51,9 +53,34 @@ function a11yProps(index) {
 
 export default function Profile() {
   const theme = useTheme();
+  const router = useRouter();
 
   const anchorRef = useRef(null);
   const [open, setOpen] = useState(false);
+  const [user, setUser] = useState(null);
+  const [avatarUrl, setAvatarUrl] = useState(null);
+
+  useEffect(() => {
+    const currentUser = authService.getUser();
+    setUser(currentUser);
+
+    // Fetch user profile to check for avatar
+    profileService
+      .getMyProfile()
+      .then((profile) => {
+        if (profile?.avatar) {
+          const baseUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/api\/?$/, '') || 'http://localhost:8000';
+          const fullAvatarUrl = profile.avatar.startsWith('http')
+            ? profile.avatar
+            : `${baseUrl}/${profile.avatar.replace(/^\//, '')}`;
+          setAvatarUrl(fullAvatarUrl);
+        }
+      })
+      .catch(() => {
+        // Silently catch if not yet authenticated or profile endpoint unavailable
+      });
+  }, []);
+
   const handleToggle = () => {
     setOpen((prevOpen) => !prevOpen);
   };
@@ -65,11 +92,24 @@ export default function Profile() {
     setOpen(false);
   };
 
+  const handleLogout = () => {
+    authService.logout();
+    router.push('/login');
+  };
+
   const [value, setValue] = useState(0);
 
   const handleChange = (event, newValue) => {
     setValue(newValue);
   };
+
+  const displayName = user
+    ? (user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : (typeof user === 'string' ? user : user.email || 'User'))
+    : 'User';
+
+  const userInitial = (displayName || 'U').charAt(0).toUpperCase();
+
+  const userRole = (user?.role || 'User').replace(/^ROLE_/, '');
 
   return (
     <Box sx={{ flexShrink: 0, ml: 'auto' }}>
@@ -86,7 +126,13 @@ export default function Profile() {
           aria-haspopup="true"
           onClick={handleToggle}
         >
-          <Avatar alt="profile user" src={avatar1} size="sm" sx={{ '&:hover': { outline: '1px solid', outlineColor: 'primary.main' } }} />
+          {avatarUrl ? (
+            <Avatar alt={displayName} src={avatarUrl} size="sm" sx={{ '&:hover': { outline: '1px solid', outlineColor: 'primary.main' } }} />
+          ) : (
+            <Avatar size="sm" color="primary" sx={{ '&:hover': { outline: '1px solid', outlineColor: 'primary.main' }, fontWeight: 600 }}>
+              {userInitial}
+            </Avatar>
+          )}
         </ButtonBase>
       </Tooltip>
       <Popper
@@ -109,22 +155,28 @@ export default function Profile() {
       >
         {({ TransitionProps }) => (
           <Transitions type="grow" position="top-right" in={open} {...TransitionProps}>
-            <Paper sx={(theme) => ({ boxShadow: theme.vars.customShadows.z1, width: 290, minWidth: 240, maxWidth: { xs: 250, md: 290 } })}>
+            <Paper sx={(theme) => ({ boxShadow: theme.vars?.customShadows?.z1 || theme.shadows[2], width: 290, minWidth: 240, maxWidth: { xs: 250, md: 290 } })}>
               <ClickAwayListener onClickAway={handleClose}>
                 <MainCard elevation={0} border={false} content={false}>
                   <CardContent sx={{ px: 2.5, pt: 3 }}>
                     <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center' }}>
                       <Stack direction="row" sx={{ gap: 1.25, alignItems: 'center' }}>
-                        <Avatar alt="profile user" src={avatar1} sx={{ width: 32, height: 32 }} />
+                        {avatarUrl ? (
+                          <Avatar alt={displayName} src={avatarUrl} sx={{ width: 32, height: 32 }} />
+                        ) : (
+                          <Avatar sx={{ width: 32, height: 32, fontWeight: 600 }} color="primary">
+                            {userInitial}
+                          </Avatar>
+                        )}
                         <Stack>
-                          <Typography variant="h6">John Doe</Typography>
+                          <Typography variant="h6">{displayName}</Typography>
                           <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                            UI/UX Designer
+                            {userRole}
                           </Typography>
                         </Stack>
                       </Stack>
                       <Tooltip title="Logout">
-                        <IconButton size="large" sx={{ color: 'text.primary' }}>
+                        <IconButton size="large" sx={{ color: 'text.primary' }} onClick={handleLogout}>
                           <LogoutOutlined />
                         </IconButton>
                       </Tooltip>
@@ -166,7 +218,7 @@ export default function Profile() {
                     </Tabs>
                   </Box>
                   <TabPanel value={value} index={0} dir={theme.direction}>
-                    <ProfileTab />
+                    <ProfileTab handleLogout={handleLogout} onClose={() => setOpen(false)} />
                   </TabPanel>
                   <TabPanel value={value} index={1} dir={theme.direction}>
                     <SettingTab />

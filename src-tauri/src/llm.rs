@@ -42,6 +42,10 @@ pub use customization_branding::CustomizationBrandingSkill;
 mod notification_creation;
 pub use notification_creation::NotificationCreationSkill;
 
+#[path = "profile_management.rs"]
+mod profile_management;
+pub use profile_management::ProfileManagementSkill;
+
 #[path = "mock_llm.rs"]
 mod mock_llm;
 pub use mock_llm::MockLlmService;
@@ -362,6 +366,7 @@ pub fn default_skills() -> Vec<Box<dyn Skill>> {
         Box::new(AnalyticsAndReportingSkill::default()),
         Box::new(CustomizationBrandingSkill::default()),
         Box::new(NotificationCreationSkill::default()),
+        Box::new(ProfileManagementSkill::default()),
     ]
 }
 
