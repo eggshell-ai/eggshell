@@ -2,6 +2,8 @@
 
 namespace App\Resource;
 
+use Doctrine\Common\Collections\ArrayCollection;
+use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
@@ -608,7 +610,15 @@ abstract class ResourceController extends AbstractController
 
             $childEntities = $childRepo->findBy([$foreignKeyField => $entity->id]);
             if (property_exists($entity, $propName)) {
-                $entity->$propName = $childEntities;
+                $reflectionProp = new \ReflectionProperty($entity, $propName);
+                $type = $reflectionProp->getType();
+                $isCollectionType = $type instanceof \ReflectionNamedType && is_a($type->getName(), Collection::class, true);
+
+                if ($isCollectionType || (isset($entity->$propName) && $entity->$propName instanceof Collection)) {
+                    $entity->$propName = new ArrayCollection($childEntities);
+                } else {
+                    $entity->$propName = $childEntities;
+                }
             }
         }
     }

@@ -114,6 +114,7 @@ impl Shell for SymfonyShell {
         template_root: &Path,
         log: &ProgressLog,
         mysql_password: &str,
+        is_mariadb: bool,
     ) -> LlmResult<()> {
         let log = log.for_channel(CHANNEL);
         let template_path = Self::template_path(template_root);
@@ -143,8 +144,13 @@ impl Shell for SymfonyShell {
         .await?;
         log.line("info", "JWT keypair generated");
 
+        let mut init_args = vec!["bin/console", "app:init", slug, slug, mysql_password];
+        if is_mariadb {
+            init_args.push("--mariadb");
+        }
+
         Self::run_php_command(
-            &["bin/console", "app:init", slug, slug, mysql_password],
+            &init_args,
             &target_path,
             &log,
         )

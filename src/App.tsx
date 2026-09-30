@@ -13,7 +13,10 @@ import ReportMenu from "./ReportMenu";
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
 type Session = { id: number; title: string; conversation_history: string };
-type SetupState = { setup_completed: boolean; providers: { key: string; name: string; models: string[] }[] };
+type SetupState = {
+  setup_completed: boolean;
+  providers: { id?: string; key: string; name: string; models: string[]; api_key_set?: boolean }[];
+};
 const emptyProject: ProjectForm = { title: "", slug: "", path: "" };
 
 function App() {
@@ -22,7 +25,7 @@ function App() {
   const [isSetupComplete, setIsSetupComplete] = useState<boolean | null>(null);
   // Which provider and model currently answer; the first model of the first
   // configured provider is the backend's default, so preselect that.
-  const [activeProvider, setActiveProvider] = useState("ollama");
+  const [activeProvider, setActiveProvider] = useState("");
   const [activeModel, setActiveModel] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
   const [isAdding, setIsAdding] = useState(false);
@@ -33,38 +36,95 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [draft, setDraft] = useState("");
+  const [pendingPrompt, setPendingPrompt] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [mode, setMode] = useState<"implement" | "plan">("implement");
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
 
+  async function syncSetupState() {
+    try {
+      const { setup_completed, providers } = await invoke<SetupState>("load_setup_state");
+      setIsSetupComplete(setup_completed);
+      const configured = providers.find((p) => p.models.length > 0 && (p.api_key_set ?? true))
+        || providers.find((p) => p.models.length > 0)
+        || providers.find((p) => p.api_key_set);
+      if (configured) {
+        setActiveProvider((current) => current && providers.some((p) => (p.id || p.key) === current) ? current : (configured.id || configured.key));
+        setActiveModel((current) => current || configured.models[0] || "");
+      }
+    } catch (reason: unknown) {
+      console.error("[App] load_setup_state rejected", { reason });
+      setIsSetupComplete(false);
+    }
+  }
+
   useEffect(() => { void loadProjects(); }, []);
   useEffect(() => {
-    void invoke<SetupState>("load_setup_state")
-      .then(({ setup_completed, providers }) => {
-        setIsSetupComplete(setup_completed);
-        const configured = providers.find(({ models }) => models.length > 0);
-        if (configured) {
-          setActiveProvider(configured.key);
-          setActiveModel((current) => current || configured.models[0]);
-        }
-      })
-      .catch((reason: unknown) => {
-        console.error("[App] load_setup_state rejected", { reason });
-        setIsSetupComplete(false);
-      });
+    void syncSetupState();
   }, []);
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
     void listen<{ projectId: number; event: { type: string; data: unknown } }>("agent-event", ({ payload }) => {
       if (payload.projectId !== activeProject?.id || payload.event.type === "complete") return;
+      const { type, data } = payload.event;
+      if (type === "thought_delta") {
+        const delta = (data as { delta?: string })?.delta ?? "";
+        setStreamedMessages((current) => {
+          const last = current[current.length - 1];
+          if (last && last.role === "thought") {
+            const updated = [...current];
+            updated[updated.length - 1] = {
+              ...last,
+              content: last.content + delta,
+            };
+            return updated;
+          }
+          return [...current, { role: "thought", content: delta, data }];
+        });
+        return;
+      }
+      if (type === "content_delta") {
+        const delta = (data as { delta?: string })?.delta ?? "";
+        setStreamedMessages((current) => {
+          const last = current[current.length - 1];
+          if (last && last.role === "assistant") {
+            const updated = [...current];
+            updated[updated.length - 1] = {
+              ...last,
+              content: last.content + delta,
+            };
+            return updated;
+          }
+          return [...current, { role: "assistant", content: delta, data }];
+        });
+        return;
+      }
+      if (type === "thought") {
+        const content = (data as { content?: string })?.content ?? "";
+        setStreamedMessages((current) => {
+          const last = current[current.length - 1];
+          if (last && last.role === "thought") {
+            const updated = [...current];
+            updated[updated.length - 1] = {
+              ...last,
+              content,
+              data,
+            };
+            return updated;
+          }
+          return [...current, { role: "thought", content, data }];
+        });
+        return;
+      }
       setStreamedMessages((current) => [...current, {
-        role: payload.event.type as ChatMessage["role"],
-        content: eventContent(payload.event.type, payload.event.data),
-        data: payload.event.data,
+        role: type as ChatMessage["role"],
+        content: eventContent(type, data),
+        data,
       }]);
     }).then((stop) => { unlisten = stop; });
     return () => unlisten?.();
@@ -116,8 +176,14 @@ function App() {
   }
 
   async function openProject(project: Project) {
-    setError(""); setActiveProject(project); setActiveSession(null); setDraft(""); setIsStarting(false);
-    try { setSessions(await invoke<Session[]>("list_sessions", { projectId: project.id })); }
+    setError(""); setActiveProject(project); setActiveSession(null); setDraft(""); setIsStarting(false); setMode("implement");
+    try {
+      const loadedSessions = await invoke<Session[]>("list_sessions", { projectId: project.id });
+      setSessions(loadedSessions);
+      if (loadedSessions.length > 0) {
+        setActiveSession(loadedSessions[0]);
+      }
+    }
     catch (reason) { setError(String(reason)); }
   }
   async function removeSession(session: Session) {
@@ -128,7 +194,7 @@ function App() {
       if (activeSession?.id === session.id) setActiveSession(null);
     } catch (reason) { setError(String(reason)); }
   }
-  function startNewSession() { setActiveSession(null); setDraft(""); }
+  function startNewSession() { setActiveSession(null); setDraft(""); setMode("implement"); }
   async function startProject() {
     if (!activeProject || isStarting) return;
     setError(""); setIsStarting(true);
@@ -142,16 +208,54 @@ function App() {
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!activeProject || !draft.trim() || isSending) return;
+    const promptToSend = draft;
+    setDraft("");
+    setPendingPrompt(promptToSend);
     setError(""); setIsSending(true); setStreamedMessages([]);
     try {
-      const session = await invoke<Session>("send_message", { projectId: activeProject.id, sessionId: activeSession?.id ?? null, message: draft, artifacts: attachments });
+      const session = await invoke<Session>("send_message", {
+        projectId: activeProject.id,
+        sessionId: activeSession?.id ?? null,
+        message: promptToSend,
+        artifacts: attachments,
+        mode,
+      });
+      setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setAttachments([]);
+    } catch (reason) { setError(String(reason)); }
+    finally { setIsSending(false); setPendingPrompt(""); }
+  }
+
+  async function proceedToImplement() {
+    if (!activeProject || isSending) return;
+    setMode("implement");
+    setError(""); setIsSending(true); setStreamedMessages([]);
+    const proceedMessage = "Proceed with implementation of the approved plan.";
+    setPendingPrompt(proceedMessage);
+    try {
+      const session = await invoke<Session>("send_message", {
+        projectId: activeProject.id,
+        sessionId: activeSession?.id ?? null,
+        message: proceedMessage,
+        artifacts: attachments,
+        mode: "implement",
+      });
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setDraft(""); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); }
+    finally { setIsSending(false); setPendingPrompt(""); }
   }
+
+  async function stopChat() {
+    if (!activeProject) return;
+    try {
+      await invoke("stop_chat", { projectId: activeProject.id });
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
   const persistedMessages: ChatMessage[] = activeSession ? JSON.parse(activeSession.conversation_history) : [];
   const messages: ChatMessage[] = isSending
-    ? [...persistedMessages, { role: "user", content: draft }, ...streamedMessages]
+    ? [...persistedMessages, { role: "user", content: pendingPrompt || "Proceed with implementation of the approved plan." }, ...streamedMessages]
     : persistedMessages;
   const lastAssistantIndex = messages.map(({ role }) => role).lastIndexOf("assistant");
   const lastThoughtIndex = messages.map(({ role }) => role).lastIndexOf("thought");
@@ -170,19 +274,19 @@ function App() {
   });
   // The log replaces the form while the shells run, and stays put afterwards when
   // they failed — the dialog is the only thing that can set an error while it is
-  async function selectModel(provider: string, model: string) {
+  async function selectModel(provider: string, model: string, reasoning?: string) {
     // Optimistic: the backend confirms by reordering its defaults, and a failure
     // only costs the user the switch they just made.
     setActiveProvider(provider); setActiveModel(model); setError("");
-    try { await invoke("select_model", { provider, model }); }
+    try { await invoke("select_model", { provider, model, reasoning: reasoning ?? null }); }
     catch (reason) { setError(String(reason)); }
   }
 
   // open, so the lines and the reason belong together.
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
-  if (!isSetupComplete) return <SetupPage onComplete={() => setIsSetupComplete(true)} />;
-  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model) => { void selectModel(provider, model); }} />;
+  if (!isSetupComplete) return <SetupPage onComplete={() => { setIsSetupComplete(true); void syncSetupState(); }} />;
+  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} />;
 
   return (
     <main className="home">
@@ -215,7 +319,7 @@ function App() {
         {!projects.length && <div className="empty-state">No projects yet. Add one to get started.</div>}
       </section>
       <ReportMenu screenName="Home" />
-      <SettingsPopup isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsPopup isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); void syncSetupState(); }} />
     </main>
   );
 }

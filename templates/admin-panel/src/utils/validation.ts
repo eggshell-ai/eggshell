@@ -9,6 +9,16 @@ import { runValidationHooks } from './resourceValidationHooks';
  * (to facilitate cross-validation later).
  */
 
+const coerceNumeric = (val: any) => {
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (trimmed === '') return undefined;
+    const num = Number(trimmed);
+    if (!Number.isNaN(num)) return num;
+  }
+  return val;
+};
+
 /**
  * Map field type to a base zod schema
  */
@@ -17,14 +27,23 @@ const buildBaseSchema = (field: FieldConfig): z.ZodTypeAny => {
 
   switch (field.type) {
     case 'number':
-    case 'decimal':
-      return isRequired ? z.number({ invalid_type_error: ' ' }) : z.number().optional();
+    case 'decimal': {
+      const baseNum = isRequired ? z.number({ invalid_type_error: ' ' }) : z.number().optional();
+      return z.preprocess(coerceNumeric, baseNum);
+    }
     case 'boolean':
       return isRequired ? z.boolean() : z.boolean().optional();
     case 'date':
-      return isRequired ? z.any() : z.any().optional();
     case 'time':
       return isRequired ? z.any() : z.any().optional();
+    case 'select':
+      return isRequired
+        ? z.union([z.string(), z.number()])
+        : z.union([z.string(), z.number()]).optional();
+    case 'tags':
+      return isRequired
+        ? z.array(z.union([z.string(), z.number()]))
+        : z.array(z.union([z.string(), z.number()])).optional();
     default:
       return isRequired ? z.string({ invalid_type_error: ' ' }) : z.string().optional();
   }
@@ -81,7 +100,15 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
     if (!validations.required) {
       numSchema = numSchema.optional() as any;
     }
-    schema = numSchema;
+    let coercedSchema = z.preprocess(coerceNumeric, numSchema);
+    if (validations.required) {
+      coercedSchema = (coercedSchema as any).refine((val: any) => {
+        if (val === undefined || val === null) return false;
+        if (typeof val === 'string') return val.trim().length > 0;
+        return true;
+      }, { message: messages.required || `Please enter ${field.label || field.name}` });
+    }
+    schema = coercedSchema;
   }
 
   // Built-in type rules
@@ -118,8 +145,8 @@ export const buildFieldSchema = (field: FieldConfig): z.ZodTypeAny => {
   // Static select validation — value must be one of the configured options (or empty if not required)
   if (field.options && Object.keys(field.options).length > 0) {
     const allowedValues = Object.keys(field.options);
-    let optionsSchema = z.string().refine(
-      (val) => allowedValues.includes(val),
+    let optionsSchema = z.union([z.string(), z.number()]).refine(
+      (val) => allowedValues.includes(String(val)),
       { message: messages.options || `${field.label || field.name} must be one of: ${allowedValues.map((v) => field.options![v]).join(', ')}` }
     );
     if (!validations.required) {

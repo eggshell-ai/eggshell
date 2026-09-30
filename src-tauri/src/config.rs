@@ -43,11 +43,19 @@ impl Default for AppConfig {
     }
 }
 
-/// One provider entry in config.yaml. `name` identifies the provider in the
-/// registry (`crate::providers`); the rest is the provider's own business.
+/// One provider entry in config.yaml. `id` uniquely identifies the provider instance.
+/// `name` or `provider_type` identifies the provider backend in the registry (`crate::providers`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderConfig {
+    #[serde(default)]
+    pub id: Option<String>,
     pub name: String,
+    #[serde(rename = "type", default)]
+    pub provider_type: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(rename = "baseUrl", default)]
+    pub base_url: Option<String>,
     #[serde(rename = "apiKey", default)]
     pub api_key: String,
     /// The models the user wants available for this provider: added by hand in
@@ -55,6 +63,35 @@ pub struct ProviderConfig {
     /// is configured but its models have not been fetched yet.
     #[serde(default)]
     pub models: Vec<String>,
+    /// Optional reasoning level ("off", "minimal", "low", "medium", "high", "xhigh")
+    #[serde(default)]
+    pub reasoning: Option<String>,
+}
+
+impl ProviderConfig {
+    pub fn id(&self) -> String {
+        self.id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or(&self.name)
+            .to_string()
+    }
+
+    pub fn provider_type(&self) -> String {
+        self.provider_type
+            .as_deref()
+            .filter(|kind| !kind.trim().is_empty())
+            .unwrap_or(&self.name)
+            .to_string()
+    }
+
+    pub fn title(&self) -> String {
+        self.title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or(&self.name)
+            .to_string()
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -67,6 +104,8 @@ pub struct MysqlConfig {
     pub user: String,
     #[serde(default)]
     pub pass: String,
+    #[serde(default)]
+    pub is_mariadb: bool,
 }
 fn default_mysql_type() -> String {
     "managed".to_string()
@@ -91,6 +130,33 @@ pub fn save_mysql_config(app: tauri::AppHandle, password: String) -> Result<(), 
         port: 3306,
         user: "root".to_string(),
         pass: password,
+        is_mariadb: config.mysql.is_mariadb,
+    };
+    ConfigService::save_default(&app, &config).map_err(|error| error.to_string())
+}
+
+/// Updates and saves the full MySQL configuration (kind, port, user, pass, is_mariadb).
+/// If `pass` is None, the existing saved password is kept.
+#[tauri::command]
+pub fn save_mysql_settings(
+    app: tauri::AppHandle,
+    kind: String,
+    port: u16,
+    user: String,
+    pass: Option<String>,
+    is_mariadb: Option<bool>,
+) -> Result<(), String> {
+    let mut config = ConfigService::load_default(&app).unwrap_or_default();
+    let effective_pass = match pass {
+        Some(p) if !p.trim().is_empty() => p,
+        _ => config.mysql.pass,
+    };
+    config.mysql = MysqlConfig {
+        kind,
+        port,
+        user,
+        pass: effective_pass,
+        is_mariadb: is_mariadb.unwrap_or(config.mysql.is_mariadb),
     };
     ConfigService::save_default(&app, &config).map_err(|error| error.to_string())
 }

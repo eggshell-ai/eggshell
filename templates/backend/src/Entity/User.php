@@ -69,6 +69,10 @@ class User extends ResourceEntity implements UserInterface, PasswordAuthenticate
     #[Assert\NotBlank(groups: ['store'])]
     public ?string $password = null;
 
+    #[ORM\OneToOne(mappedBy: 'user', targetEntity: Profile::class, cascade: ['persist', 'remove'])]
+    #[Groups(['user:read'])]
+    public ?Profile $profile = null;
+
     public function __construct()
     {
         $this->roles = new ArrayCollection();

@@ -5,6 +5,7 @@ namespace App\Command;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputArgument;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\Process\Process;
@@ -25,7 +26,9 @@ class InitCommand extends Command
             ->setDescription('Initializes the project by creating database, user, and running migrations.')
             ->addArgument('database', InputArgument::REQUIRED, 'The database name')
             ->addArgument('username', InputArgument::REQUIRED, 'The database username')
-            ->addArgument('mysql-password', InputArgument::OPTIONAL, 'The MySQL root password', '');
+            ->addArgument('mysql-password', InputArgument::OPTIONAL, 'The MySQL root password', '')
+            ->addOption('mariadb', null, InputOption::VALUE_NONE, 'Whether the database server is MariaDB')
+            ->addOption('server-version', null, InputOption::VALUE_OPTIONAL, 'Explicit server version for Doctrine DBAL');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -34,6 +37,8 @@ class InitCommand extends Command
         $this->databaseName = (string) $input->getArgument('database');
         $this->databaseUser = (string) $input->getArgument('username');
         $this->mysqlPassword = (string) $input->getArgument('mysql-password');
+        $this->isMariaDb = (bool) $input->getOption('mariadb');
+        $this->explicitServerVersion = (string) ($input->getOption('server-version') ?? '');
 
         $io->title('Initializing Project');
 
@@ -69,6 +74,8 @@ class InitCommand extends Command
         try {
             $pdo = new \PDO($dsn, self::DB_ROOT_USER, $this->getDatabasePassword());
             $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+
+            $this->serverVersion = $this->detectServerVersion($pdo);
 
             // Check if database exists
             $stmt = $pdo->prepare("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?");
@@ -119,6 +126,9 @@ class InitCommand extends Command
     private string $mysqlPassword = '';
     private string $databaseName = '';
     private string $databaseUser = '';
+    private string $serverVersion = '';
+    private bool $isMariaDb = false;
+    private string $explicitServerVersion = '';
 
     private function getDatabasePassword(): string { return $this->mysqlPassword; }
 
@@ -131,21 +141,64 @@ class InitCommand extends Command
         $envContent = preg_replace('/^DATABASE_URL=.*$/m', '', $envContent);
         $envContent = trim($envContent);
 
+        $serverVersion = $this->serverVersion ?: $this->resolveServerVersion();
+
         // Add new DATABASE_URL at the end
         $databaseUrl = sprintf(
-            'DATABASE_URL="pdo-mysql://%s:%s@%s:%s/%s?serverVersion=8.0.32&charset=utf8mb4"',
+            'DATABASE_URL="pdo-mysql://%s:%s@%s:%s/%s?serverVersion=%s&charset=utf8mb4"',
             $this->databaseUser,
             self::DB_PASSWORD,
             self::DB_HOST,
             self::DB_PORT,
-            $this->databaseName
+            $this->databaseName,
+            $serverVersion
         );
 
         $envContent .= "\n\n" . $databaseUrl . "\n";
 
         file_put_contents($envPath, $envContent);
 
-        $io->success('.env file updated with DATABASE_URL');
+        $io->success(sprintf('.env file updated with DATABASE_URL (serverVersion: %s)', $serverVersion));
+    }
+
+    private function resolveServerVersion(): string
+    {
+        if (!empty($this->explicitServerVersion)) {
+            return $this->explicitServerVersion;
+        }
+
+        $dsn = sprintf('mysql:host=%s;port=%s', self::DB_HOST, self::DB_PORT);
+
+        try {
+            $pdo = new \PDO($dsn, self::DB_ROOT_USER, $this->getDatabasePassword());
+            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+
+            return $this->detectServerVersion($pdo);
+        } catch (\Throwable) {
+            return $this->isMariaDb ? 'mariadb-10.11.2' : '8.0.32';
+        }
+    }
+
+    private function detectServerVersion(\PDO $pdo): string
+    {
+        if (!empty($this->explicitServerVersion)) {
+            return $this->explicitServerVersion;
+        }
+
+        try {
+            $rawVersion = (string) $pdo->query('SELECT VERSION()')->fetchColumn();
+            $isMaria = $this->isMariaDb || stripos($rawVersion, 'mariadb') !== false;
+
+            $normalized = preg_replace('/^5\.5\.5-/', '', $rawVersion);
+
+            if (preg_match('/(\d+\.\d+(?:\.\d+)?)/', $normalized, $matches)) {
+                $versionNumber = $matches[1];
+                return $isMaria ? ('mariadb-' . $versionNumber) : $versionNumber;
+            }
+        } catch (\Throwable) {
+        }
+
+        return $this->isMariaDb ? 'mariadb-10.11.2' : '8.0.32';
     }
 
     private function runMigrations(SymfonyStyle $io): void

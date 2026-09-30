@@ -58,6 +58,7 @@ impl ProjectsRepository {
         template_root: &Path,
         log: &ProgressLog,
         mysql_password: &str,
+        is_mariadb: bool,
     ) -> Result<Project, Box<dyn std::error::Error + Send + Sync>> {
         let NewProject { title, slug, path } = project;
         let title = title.trim().to_string();
@@ -67,7 +68,7 @@ impl ProjectsRepository {
             None => Self::next_slug(pool, &title).await?,
         };
 
-        llm::initialize_project(&path, &slug, template_root, log, mysql_password).await?;
+        llm::initialize_project(&path, &slug, template_root, log, mysql_password, is_mariadb).await?;
 
         let id = sqlx::query("INSERT INTO projects (title, slug, path) VALUES (?, ?, ?)")
             .bind(&title)
@@ -149,7 +150,11 @@ impl SessionsRepository {
         artifacts: Vec<AgentArtifact>,
         agent: &AgentService,
         event_sink: Arc<dyn Fn(Value) + Send + Sync>,
+        mode: Option<String>,
+        app_handle: Option<&AppHandle>,
+        cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
+        let is_plan_mode = mode.as_deref() == Some("plan");
         let existing_history = match session_id {
             Some(id) => {
                 sqlx::query_scalar::<_, String>(
@@ -167,7 +172,7 @@ impl SessionsRepository {
         messages.push(ChatMessage {
             role: "user".to_string(),
             content: user_message.clone(),
-            data: None,
+            data: mode.as_ref().map(|m| json!({ "mode": m })),
         });
         let id = match session_id {
             Some(id) => {
@@ -183,7 +188,14 @@ impl SessionsRepository {
             }
         };
 
-        let app = llm::AdminPanelApp;
+        let (system_prompt, tools) = if is_plan_mode {
+            let app = llm::PlanningApp;
+            (app.system_prompt(), app.tools())
+        } else {
+            let app = llm::AdminPanelApp;
+            (app.system_prompt(), app.tools())
+        };
+
         let project_path = sqlx::query_scalar::<_, String>("SELECT path FROM projects WHERE id = ?")
             .bind(project_id)
             .fetch_one(pool)
@@ -191,17 +203,22 @@ impl SessionsRepository {
         let streamed_messages = Arc::new(Mutex::new(Vec::new()));
         let callback_messages = Arc::clone(&streamed_messages);
         let callback_sink = Arc::clone(&event_sink);
+        let log_dir = app_handle
+            .and_then(|handle| handle.path().app_log_dir().ok().or_else(|| handle.path().app_data_dir().ok()))
+            .map(|path| path.join("agent-conversations").to_string_lossy().to_string());
+
         let result = agent
             .run_agent(
-                conversation_messages(&messages, &app.system_prompt()),
-                app.tools(),
+                conversation_messages(&messages, &system_prompt),
+                tools,
                 AgentOptions {
                     project_path: Some(project_path),
                     artifacts,
-                    on_event: Some(Box::new(move |event| {
+                    log_dir,
+                    on_event: Some(Arc::new(move |event| {
                         let event_type =
                             event.get("type").and_then(Value::as_str).unwrap_or("event");
-                        if event_type != "complete" {
+                        if event_type != "complete" && event_type != "thought_delta" && event_type != "content_delta" {
                             callback_messages
                                 .lock()
                                 .expect("agent event lock poisoned")
@@ -215,6 +232,7 @@ impl SessionsRepository {
                             json!({ "projectId": project_id, "sessionId": id, "event": event }),
                         );
                     })),
+                    cancellation_token: cancel_token,
                     ..Default::default()
                 },
             )
@@ -226,10 +244,32 @@ impl SessionsRepository {
                 .expect("agent event lock poisoned")
                 .clone(),
         );
+
+        let mut assistant_data: Option<Value> = None;
+        if is_plan_mode {
+            let plan_path_str = if let Some(handle) = app_handle {
+                if let Ok(data_dir) = handle.path().app_data_dir() {
+                    let plans_dir = data_dir.join("plans");
+                    let _ = std::fs::create_dir_all(&plans_dir);
+                    let plan_file = plans_dir.join(format!("project_{}_session_{}_plan.md", project_id, id));
+                    let _ = std::fs::write(&plan_file, &result.content);
+                    Some(plan_file.to_string_lossy().to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            assistant_data = Some(json!({
+                "isPlan": true,
+                "planPath": plan_path_str
+            }));
+        }
+
         messages.push(ChatMessage {
             role: "assistant".to_string(),
             content: result.content,
-            data: None,
+            data: assistant_data,
         });
         let history = serde_json::to_string(&messages)?;
         let title = messages
@@ -257,21 +297,108 @@ fn conversation_messages(history: &[ChatMessage], system_prompt: &str) -> Vec<LL
         tool_args: None,
         tool_calls: None,
     }];
-    messages.extend(history.iter().filter_map(|message| {
-        let role = match message.role.as_str() {
-            "user" => LLMMessageRole::User,
-            "assistant" => LLMMessageRole::Assistant,
-            _ => return None,
-        };
-        Some(LLMMessage {
-            role,
-            content: message.content.clone(),
-            tool_call_id: None,
-            tool_name: None,
-            tool_args: None,
-            tool_calls: None,
-        })
-    }));
+    let mut last_call_id = None;
+    for (index, message) in history.iter().enumerate() {
+        match message.role.as_str() {
+            "user" => {
+                messages.push(LLMMessage {
+                    role: LLMMessageRole::User,
+                    content: message.content.clone(),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_args: None,
+                    tool_calls: None,
+                });
+            }
+            "tool_call" => {
+                let (call_id, name, args) = if let Some(data) = &message.data {
+                    let id = data
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("call_{index}"));
+                    let name = data
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool")
+                        .to_string();
+                    let raw_args = data.get("arguments").cloned().unwrap_or(Value::Null);
+                    let args_str = match raw_args {
+                        Value::String(s) => s,
+                        Value::Null => "{}".to_string(),
+                        other => other.to_string(),
+                    };
+                    (id, name, args_str)
+                } else {
+                    (format!("call_{index}"), "tool".to_string(), "{}".to_string())
+                };
+                last_call_id = Some(call_id.clone());
+                messages.push(LLMMessage {
+                    role: LLMMessageRole::Assistant,
+                    content: String::new(),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_args: None,
+                    tool_calls: Some(vec![json!({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": args,
+                        }
+                    })]),
+                });
+            }
+            "tool_result" => {
+                let (call_id, name, content) = if let Some(data) = &message.data {
+                    let id = data
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(String::from)
+                        .or_else(|| last_call_id.take())
+                        .unwrap_or_else(|| format!("call_{index}"));
+                    let name = data
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool")
+                        .to_string();
+                    let result = data.get("result").cloned().unwrap_or(Value::Null);
+                    let content_str = if let Some(s) = result.as_str() {
+                        s.to_string()
+                    } else if !result.is_null() {
+                        result.to_string()
+                    } else {
+                        message.content.clone()
+                    };
+                    (id, name, content_str)
+                } else {
+                    let id = last_call_id.take().unwrap_or_else(|| format!("call_{index}"));
+                    (id, "tool".to_string(), message.content.clone())
+                };
+                messages.push(LLMMessage {
+                    role: LLMMessageRole::Tool,
+                    content,
+                    tool_call_id: Some(call_id),
+                    tool_name: Some(name),
+                    tool_args: None,
+                    tool_calls: None,
+                });
+            }
+            "assistant" => {
+                if !message.content.trim().is_empty() {
+                    messages.push(LLMMessage {
+                        role: LLMMessageRole::Assistant,
+                        content: message.content.clone(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        tool_calls: None,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
     messages
 }
 

@@ -12,11 +12,15 @@ use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository};
 use progress::ProgressLog;
 use serde::Serialize;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
+
+type ActiveGenerationMap = Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -902,10 +906,25 @@ const CONFIG_PLACEHOLDER: &str = "...";
 /// What the setup screen needs to know at launch: whether to appear at all, and
 /// which providers exist and how each is configured. The API key is deliberately
 /// not sent back to the frontend — only whether one is set.
+/// What the setup screen needs to know at launch: whether to appear at all,
+#[derive(Debug, Serialize)]
+pub struct MysqlSummary {
+    pub kind: String,
+    pub port: u16,
+    pub user: String,
+    pub pass_set: bool,
+    pub is_mariadb: bool,
+}
+
+/// The state returned to the frontend on startup and settings: whether setup is finished,
+/// which configured provider instances exist, and which provider types are available.
+/// The API key is deliberately not sent back to the frontend — only whether one is set.
 #[derive(Debug, Serialize)]
 struct SetupState {
     setup_completed: bool,
     providers: Vec<providers::ProviderSummary>,
+    available_types: Vec<providers::ProviderDescriptor>,
+    mysql: MysqlSummary,
 }
 
 #[tauri::command]
@@ -916,18 +935,42 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
         .map(|path| providers::ModelCache::load(&path))
         .unwrap_or_default();
     let now = providers::now_seconds();
+    let available_types = providers::registered_providers();
     match config::ConfigService::load_default(&app) {
-        Ok(config) => SetupState {
-            setup_completed: config.setup_completed,
-            providers: providers::provider_summaries(&config.providers, &cache, now),
-        },
+        Ok(config) => {
+            let pass_set = !config.mysql.pass.trim().is_empty();
+            let mysql = MysqlSummary {
+                kind: config.mysql.kind,
+                port: config.mysql.port,
+                user: config.mysql.user,
+                pass_set,
+                is_mariadb: config.mysql.is_mariadb,
+            };
+            SetupState {
+                setup_completed: config.setup_completed,
+                providers: providers::provider_summaries(&config.providers, &cache, now),
+                available_types,
+                mysql,
+            }
+        }
         // A first launch has no configuration to read yet, which is exactly when
         // setup has to run.
         Err(error) => {
             log.line("info", format!("{error}; treating setup as incomplete"));
+            let default_mysql = config::MysqlConfig::default();
+            let pass_set = !default_mysql.pass.trim().is_empty();
+            let mysql = MysqlSummary {
+                kind: default_mysql.kind,
+                port: default_mysql.port,
+                user: default_mysql.user,
+                pass_set,
+                is_mariadb: default_mysql.is_mariadb,
+            };
             SetupState {
                 setup_completed: false,
                 providers: providers::provider_summaries(&[], &cache, now),
+                available_types,
+                mysql,
             }
         }
     }
@@ -943,13 +986,6 @@ async fn fetch_models(
     log: tauri::State<'_, ProgressLog>,
     hub: tauri::State<'_, Arc<providers::ProviderHub>>,
 ) -> Result<Vec<String>, String> {
-    let known = providers::registered_providers()
-        .iter()
-        .any(|descriptor| descriptor.key == provider);
-    if !known {
-        return Err(format!("\"{provider}\" is not a supported provider yet."));
-    }
-
     let cache_path =
         config::ConfigService::model_cache_path(&app).map_err(|error| error.to_string())?;
     let now = providers::now_seconds();
@@ -998,7 +1034,7 @@ async fn fetch_models(
             if let Some(entry) = config
                 .providers
                 .iter_mut()
-                .find(|candidate| candidate.name == provider && candidate.models.is_empty())
+                .find(|candidate| (candidate.id() == provider || candidate.name == provider) && candidate.models.is_empty())
             {
                 entry.models = models.clone();
                 let provider_config = entry.clone();
@@ -1017,21 +1053,137 @@ async fn fetch_models(
     Ok(models)
 }
 
+/// Tests a provider configuration by attempting to fetch its models.
+/// Does not persist changes to disk.
 #[tauri::command]
-fn save_provider_config(
+async fn test_provider_config(
+    provider: Option<String>,
+    provider_id: Option<String>,
+    provider_type: Option<String>,
+    base_url: Option<String>,
+    api_key: String,
+    app: tauri::AppHandle,
+    log: tauri::State<'_, ProgressLog>,
+) -> Result<Vec<String>, String> {
+    let kind = provider_type
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| provider.as_deref().filter(|p| !p.trim().is_empty()))
+        .unwrap_or("");
+
+    let known = providers::registered_providers()
+        .iter()
+        .any(|descriptor| descriptor.key == kind);
+    if !known {
+        return Err(format!("\"{kind}\" is not a supported provider yet."));
+    }
+
+    let api_key = api_key.trim().to_string();
+    let config = config::ConfigService::load_default(&app).unwrap_or_default();
+
+    let target_id = provider_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .or_else(|| provider.as_deref().filter(|p| !p.trim().is_empty()));
+
+    let existing = target_id.and_then(|id| {
+        config
+            .providers
+            .iter()
+            .find(|candidate| candidate.id() == id || candidate.name == id)
+    });
+
+    let resolved_api_key = match (api_key.is_empty(), existing) {
+        (false, _) => api_key,
+        (true, Some(found)) => found.api_key.clone(),
+        (true, None) => {
+            if kind == "ollama" {
+                String::new()
+            } else {
+                return Err("An API key is required to test the connection.".to_string());
+            }
+        }
+    };
+
+    let final_base_url = base_url
+        .filter(|url| !url.trim().is_empty())
+        .or_else(|| existing.and_then(|p| p.base_url.clone()));
+
+    let provider_config = config::ProviderConfig {
+        id: provider_id.clone(),
+        name: kind.to_string(),
+        provider_type: Some(kind.to_string()),
+        title: None,
+        base_url: final_base_url,
+        api_key: resolved_api_key,
+        models: Vec::new(),
+        reasoning: None,
+    };
+
+    let service = providers::build_service(&provider_config).map_err(|error| error.to_string())?;
+    let mut models = match service.list_models().await {
+        Ok(models) => models,
+        Err(error) => {
+            let message = format!("Connection test failed: {error}");
+            log.line(
+                "warning",
+                format!("test_provider_config failed for {kind}: {error}"),
+            );
+            return Err(message);
+        }
+    };
+
+    models.sort();
+    models.dedup();
+
+    // Cache the verified models
+    if let Ok(cache_path) = config::ConfigService::model_cache_path(&app) {
+        let now = providers::now_seconds();
+        let mut cache = providers::ModelCache::load(&cache_path);
+        if let Some(id) = provider_id.as_deref().filter(|id| !id.trim().is_empty()) {
+            cache.store(id, models.clone(), now);
+        }
+        cache.store(kind, models.clone(), now);
+        let _ = cache.save(&cache_path);
+    }
+
+    log.line(
+        "info",
+        format!(
+            "test_provider_config succeeded for {kind}, fetched {} models",
+            models.len()
+        ),
+    );
+
+    Ok(models)
+}
+
+#[tauri::command]
+async fn save_provider_config(
     provider: String,
+    provider_id: Option<String>,
+    provider_type: Option<String>,
+    title: Option<String>,
+    base_url: Option<String>,
     models: Vec<String>,
     api_key: String,
     app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
     hub: tauri::State<'_, Arc<providers::ProviderHub>>,
 ) -> Result<(), String> {
+    // Resolve the provider backend type (e.g. "ollama", "openai")
+    let kind = provider_type
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or(&provider);
+
     let known = providers::registered_providers()
         .iter()
-        .any(|descriptor| descriptor.key == provider);
+        .any(|descriptor| descriptor.key == kind);
     if !known {
-        return Err(format!("\"{provider}\" is not a supported provider yet."));
+        return Err(format!("\"{kind}\" is not a supported provider yet."));
     }
+
     let models = models
         .into_iter()
         .map(|model| model.trim().to_string())
@@ -1039,35 +1191,120 @@ fn save_provider_config(
         .collect::<Vec<_>>();
     let api_key = api_key.trim().to_string();
 
-    // Setup writes every field the file holds, and a first launch has nothing to
-    // read, so an unreadable configuration is replaced rather than fatal.
     let mut config = config::ConfigService::load_default(&app).unwrap_or_else(|error| {
         log.line("info", format!("{error}; writing a fresh configuration"));
         config::AppConfig::default()
     });
 
-    // Replace only the provider being edited rather than the whole list, which
-    // would drop every other configured provider. A blank key means "keep the
-    // saved one": stored keys never reach the frontend, so renaming models must
-    // not force the key to be pasted again. Models may be empty on purpose;
-    // they are auto-fetched later.
+    // Check if updating an existing provider by provider_id or legacy provider key
+    let target_id = provider_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or(&provider);
+
     let existing = config
         .providers
         .iter()
-        .position(|candidate| candidate.name == provider);
-    let api_key = match (api_key.is_empty(), existing) {
+        .position(|candidate| candidate.id() == target_id || candidate.name == target_id);
+
+    let resolved_api_key = match (api_key.is_empty(), existing) {
         (false, _) => api_key,
         (true, Some(index)) => config.providers[index].api_key.clone(),
-        (true, None) => return Err("An API key is required.".to_string()),
+        (true, None) => {
+            if kind == "ollama" {
+                String::new()
+            } else {
+                return Err("An API key is required.".to_string());
+            }
+        }
     };
-    let provider_config = config::ProviderConfig {
-        name: provider.clone(),
-        api_key,
+
+    let reasoning = existing.and_then(|index| config.providers[index].reasoning.clone());
+
+    // Generate or preserve an ID
+    let final_id = match existing {
+        Some(index) => config.providers[index].id(),
+        None => {
+            if let Some(id) = provider_id.filter(|id| !id.trim().is_empty()) {
+                id
+            } else {
+                let now = providers::now_seconds();
+                format!("{}-{}", kind, now % 100_000)
+            }
+        }
+    };
+
+    let final_title = title
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| existing.and_then(|idx| config.providers[idx].title.clone()))
+        .or_else(|| {
+            providers::registered_providers()
+                .iter()
+                .find(|d| d.key == kind)
+                .map(|d| d.name.clone())
+        });
+
+    let final_base_url = base_url
+        .filter(|url| !url.trim().is_empty())
+        .or_else(|| existing.and_then(|idx| config.providers[idx].base_url.clone()));
+
+    let mut provider_config = config::ProviderConfig {
+        id: Some(final_id.clone()),
+        name: kind.to_string(),
+        provider_type: Some(kind.to_string()),
+        title: final_title,
+        base_url: final_base_url,
+        api_key: resolved_api_key,
         models,
+        reasoning,
     };
+
+    // Test the provider connection before saving
+    let service = providers::build_service(&provider_config).map_err(|error| error.to_string())?;
+    let mut fetched_models = match service.list_models().await {
+        Ok(models) => models,
+        Err(error) => {
+            let message = format!("Connection test failed: {error}");
+            log.line(
+                "warning",
+                format!("save_provider_config connection test failed for {kind}: {error}"),
+            );
+            return Err(message);
+        }
+    };
+    fetched_models.sort();
+    fetched_models.dedup();
+
+    // If the provider has no models configured, adopt the models fetched from connection test
+    if provider_config.models.is_empty() && !fetched_models.is_empty() {
+        provider_config.models = fetched_models.clone();
+    }
+
+    if !fetched_models.is_empty() {
+        if let Ok(cache_path) = config::ConfigService::model_cache_path(&app) {
+            let now = providers::now_seconds();
+            let mut cache = providers::ModelCache::load(&cache_path);
+            cache.store(&final_id, fetched_models.clone(), now);
+            cache.store(kind, fetched_models.clone(), now);
+            let _ = cache.save(&cache_path);
+        }
+    }
+
+    // If the config currently only has an unconfigured default Ollama provider,
+    // remove it so the newly configured provider becomes the primary provider.
+    if existing.is_none() && config.providers.len() == 1 {
+        let first = &config.providers[0];
+        if first.id() == "ollama" && first.api_key.trim().is_empty() && first.models.is_empty() {
+            config.providers.clear();
+        }
+    }
+
     match existing {
-        Some(index) => config.providers[index] = provider_config.clone(),
-        None => config.providers.push(provider_config.clone()),
+        Some(index) => {
+            config.providers.remove(index);
+            config.providers.insert(0, provider_config.clone());
+        }
+        None => config.providers.insert(0, provider_config.clone()),
     }
     config.setup_completed = true;
     config::ConfigService::save_default(&app, &config).map_err(|error| {
@@ -1076,21 +1313,20 @@ fn save_provider_config(
         message
     })?;
 
-    // The agent was built from the configuration read at start-up, so without
-    // this the credentials just entered would only take effect after a restart.
     hub.apply(&provider_config);
     log.line(
         "info",
         format!(
-            "saved {provider} with models {}",
+            "saved {} ({}) with models {}",
+            provider_config.title(),
+            final_id,
             provider_config.models.join(", ")
         ),
     );
     Ok(())
 }
 
-/// Removes a provider from configuration. It stays in the registry, so the
-/// settings screen shows it again as an unconfigured provider.
+/// Removes a provider from configuration by id.
 #[tauri::command]
 fn delete_provider(
     provider: String,
@@ -1099,7 +1335,7 @@ fn delete_provider(
 ) -> Result<(), String> {
     let mut config = config::ConfigService::load_default(&app).map_err(|error| error.to_string())?;
     let before = config.providers.len();
-    config.providers.retain(|candidate| candidate.name != provider);
+    config.providers.retain(|candidate| candidate.id() != provider && candidate.name != provider);
     if config.providers.len() == before {
         return Err(format!("{provider} has not been configured yet."));
     }
@@ -1108,30 +1344,22 @@ fn delete_provider(
     Ok(())
 }
 
-/// Switches the model the running agent uses. The provider itself stays fixed
-/// for the session; only which of its configured models answers changes.
+/// Switches the model the running agent uses.
 #[tauri::command]
 fn select_model(
     provider: String,
     model: String,
+    reasoning: Option<String>,
     app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
     hub: tauri::State<'_, Arc<providers::ProviderHub>>,
 ) -> Result<(), String> {
-    let known = providers::registered_providers()
-        .iter()
-        .any(|descriptor| descriptor.key == provider);
-    if !known {
-        return Err(format!("\"{provider}\" is not a supported provider yet."));
-    }
     let model = model.trim().to_string();
     if model.is_empty() {
         return Err("A model is required.".to_string());
     }
 
     let mut config = config::ConfigService::load_default(&app).map_err(|error| error.to_string())?;
-    // A model the provider reported automatically is selectable even before it
-    // has been written to config.yaml, so the cache counts as configured too.
     let cached = config::ConfigService::model_cache_path(&app)
         .ok()
         .map(|path| providers::ModelCache::load(&path))
@@ -1140,7 +1368,7 @@ fn select_model(
     let provider_config = config
         .providers
         .iter_mut()
-        .find(|candidate| candidate.name == provider)
+        .find(|candidate| candidate.id() == provider || candidate.name == provider)
         .ok_or_else(|| format!("{provider} has not been configured yet."))?;
     if !provider_config.models.iter().any(|candidate| candidate == &model)
         && !cached.iter().any(|candidate| candidate == &model)
@@ -1151,15 +1379,25 @@ fn select_model(
     if !provider_config.models.iter().any(|candidate| candidate == &model) {
         provider_config.models.push(model.clone());
     }
-    // Move the selection to the front, so it is also the default on the next
-    // launch.
+    // Move the selection to the front, so it is also the default on the next launch.
     provider_config.models.retain(|candidate| candidate != &model);
     provider_config.models.insert(0, model.clone());
+    if let Some(r) = reasoning {
+        provider_config.reasoning = Some(r);
+    }
+    let target_id = provider_config.id();
     let provider_config = provider_config.clone();
+
+    // Also move this provider to the front of config.providers so it remains default on launch
+    if let Some(pos) = config.providers.iter().position(|p| p.id() == target_id) {
+        let p = config.providers.remove(pos);
+        config.providers.insert(0, p);
+    }
+
     config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
 
     hub.apply(&provider_config);
-    log.line("info", format!("switched to {provider} model {model}"));
+    log.line("info", format!("switched to {} model {model} (reasoning: {:?})", provider_config.title(), provider_config.reasoning));
     Ok(())
 }
 
@@ -1213,12 +1451,19 @@ async fn create_project(
     // read by different windows, and this one's channels are the shells.
     let log = ProgressLog::new(app.clone(), "project-log", "project");
 
-    let mysql_password = config::ConfigService::load_default(&app)
-        .map(|config| config.mysql.pass)
+    let (mysql_password, is_mariadb) = config::ConfigService::load_default(&app)
+        .map(|config| (config.mysql.pass, config.mysql.is_mariadb))
         .unwrap_or_default();
-    ProjectsRepository::create(pool.inner(), project, &template_root, &log, &mysql_password)
-        .await
-        .map_err(|error| error.to_string())
+    ProjectsRepository::create(
+        pool.inner(),
+        project,
+        &template_root,
+        &log,
+        &mysql_password,
+        is_mariadb,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1262,9 +1507,11 @@ async fn send_message(
     session_id: Option<i64>,
     message: String,
     artifacts: Option<Vec<String>>,
+    mode: Option<String>,
     app: tauri::AppHandle,
     pool: tauri::State<'_, SqlitePool>,
     agent: tauri::State<'_, llm::AgentService>,
+    active_generations: tauri::State<'_, ActiveGenerationMap>,
 ) -> Result<Session, String> {
     let message = message.trim().to_string();
     if message.is_empty() {
@@ -1278,10 +1525,20 @@ async fn send_message(
         .filter(|name| !name.trim().is_empty())
         .map(|name| llm::AgentArtifact { name })
         .collect::<Vec<_>>();
-    let event_sink = Arc::new(move |payload| {
-        let _ = app.emit("agent-event", payload);
+    let event_sink = Arc::new({
+        let app = app.clone();
+        move |payload| {
+            let _ = app.emit("agent-event", payload);
+        }
     });
-    SessionsRepository::save_exchange(
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        map.insert(project_id, cancel_flag.clone());
+    }
+
+    let result = SessionsRepository::save_exchange(
         pool.inner(),
         project_id,
         session_id,
@@ -1289,9 +1546,30 @@ async fn send_message(
         artifacts,
         agent.inner(),
         event_sink,
+        mode,
+        Some(&app),
+        Some(cancel_flag),
     )
-    .await
-    .map_err(|error| error.to_string())
+    .await;
+
+    {
+        let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(&project_id);
+    }
+
+    result.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn stop_chat(
+    project_id: i64,
+    active_generations: tauri::State<'_, ActiveGenerationMap>,
+) -> Result<(), String> {
+    let map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(flag) = map.get(&project_id) {
+        flag.store(true, Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 /// The question a project asks of MySQL too, so it is the one worth asking here:
@@ -1487,13 +1765,15 @@ pub fn run() {
             // chat screen can switch models within it. The hub holds every
             // concrete provider service and forwards prompts to the active one,
             // so the setup screen can switch providers while Eggshell runs.
-            let hub = Arc::new(providers::ProviderHub::new(config.providers.first()));
+            let hub = Arc::new(providers::ProviderHub::from_configs(&config.providers));
             // The agent shares the central logger so its prompts and tool calls
             // land in the same log the report menu reads from.
             let agent =
                 llm::AgentService::new(hub.clone()).with_logger(log.logger().clone());
             app.manage(agent);
             app.manage(hub);
+            let active_generations: ActiveGenerationMap = Arc::new(Mutex::new(HashMap::new()));
+            app.manage(active_generations);
 
             // Probing the port and waiting for the daemon both block, and the
             // window should not wait on a database it does not use itself.
@@ -1509,7 +1789,9 @@ pub fn run() {
             read_logs,
             load_setup_state,
             config::save_mysql_config,
+            config::save_mysql_settings,
             save_provider_config,
+            test_provider_config,
             delete_provider,
             select_model,
             fetch_models,
@@ -1519,7 +1801,8 @@ pub fn run() {
             start_project,
             list_sessions,
             delete_session,
-            send_message
+            send_message,
+            stop_chat
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

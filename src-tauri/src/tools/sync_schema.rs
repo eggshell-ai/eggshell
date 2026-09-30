@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::llm::{LlmResult, Tool};
@@ -48,6 +48,7 @@ struct Field {
     compute_expression: Option<String>,
     sql_expression: Option<String>,
     display_rules: Option<Value>,
+    target_entity: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +150,7 @@ impl Tool for SyncSchemaTool {
             std::fs::write(&bp, backend_code(resource, &class))?;
             backend.push(bp);
         }
+        let schema_path = save_schemas(&project, args.get("resources"))?;
         let backend_dir = project.join("backend");
         for command in [
             vec!["bin/console", "make:migration"],
@@ -167,9 +169,73 @@ impl Tool for SyncSchemaTool {
             }
         }
         Ok(
-            json!({"success":true,"message":"Schema sync completed successfully.","details":{"resources":resources.iter().map(|r|r.name.clone()).collect::<Vec<_>>(),"frontendResourcePaths":frontend,"backendEntityPaths":backend,"timestamp":timestamp()}}),
+            json!({"success":true,"message":"Schema sync completed successfully.","details":{"resources":resources.iter().map(|r|r.name.clone()).collect::<Vec<_>>(),"frontendResourcePaths":frontend,"backendEntityPaths":backend,"schemaPath":schema_path,"timestamp":timestamp()}}),
         )
     }
+}
+
+pub fn schema_file_path(project: &Path) -> PathBuf {
+    let p1 = project.join("schemas.json");
+    if p1.exists() {
+        return p1;
+    }
+    let p2 = project.join("schema.json");
+    if p2.exists() {
+        return p2;
+    }
+    p1
+}
+
+pub fn save_schemas(
+    project: &Path,
+    resources_value: Option<&Value>,
+) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    std::fs::create_dir_all(project)?;
+    let schema_path = schema_file_path(project);
+
+    let new_resources: Vec<Value> = match resources_value {
+        Some(Value::Array(arr)) => arr.clone(),
+        Some(val @ Value::Object(_)) => vec![val.clone()],
+        _ => Vec::new(),
+    };
+
+    let mut existing_resources: Vec<Value> = Vec::new();
+    if schema_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&schema_path) {
+            if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                match val {
+                    Value::Array(arr) => existing_resources = arr,
+                    Value::Object(map) => {
+                        if let Some(Value::Array(arr)) = map.get("resources") {
+                            existing_resources = arr.clone();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    for new_res in new_resources {
+        let new_name = new_res.get("name").and_then(Value::as_str).unwrap_or("");
+        if let Some(pos) = existing_resources.iter().position(|r| {
+            r.get("name")
+                .and_then(Value::as_str)
+                .map(|n| n.eq_ignore_ascii_case(new_name))
+                .unwrap_or(false)
+        }) {
+            existing_resources[pos] = new_res;
+        } else {
+            existing_resources.push(new_res);
+        }
+    }
+
+    let schema_doc = json!({
+        "resources": existing_resources
+    });
+
+    std::fs::write(&schema_path, serde_json::to_string_pretty(&schema_doc)?)?;
+    Ok(schema_path)
 }
 
 fn js(s: &str) -> String {
@@ -182,7 +248,7 @@ fn frontend_code(r: &Resource, _class: &str) -> String {
         .map(field_js)
         .collect::<Vec<_>>()
         .join(",\n");
-    format!("import defineResource from '../utils/defineResource';\nimport field from '../utils/field';\nimport {}Service from '../api/{}Service';\n\nexport default defineResource({{\n  name: {},\n  endpoint: {},\n  fields: [\n{}\n  ],\n{}  titleExpression: {}\n}});\n", r.name, r.name, js(&r.name), js(&r.endpoint), fields, actions_js(r), js(r.title_expression.as_deref().unwrap_or("{id}")))
+    format!("import defineResource from '../utils/defineResource';\nimport field from '../utils/field';\n\nexport default defineResource({{\n  name: {},\n  endpoint: {},\n  fields: [\n{}\n  ],\n{}  titleExpression: {}\n}});\n", js(&r.name), js(&r.endpoint), fields, actions_js(r), js(r.title_expression.as_deref().unwrap_or("{id}")))
 }
 
 fn actions_js(r: &Resource) -> String {
@@ -304,7 +370,42 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
-    let imports = "use Doctrine\\ORM\\Mapping as ORM;\nuse Doctrine\\DBAL\\Types\\Types;\nuse App\\Resource\\ResourceEntity;\nuse App\\Resource\\Attribute\\Form;\nuse App\\Resource\\Attribute\\Phone as PhoneAttribute;\nuse App\\Validator\\Phone as PhoneConstraint;\nuse App\\Validator\\OneOf as OneOfConstraint;\nuse App\\Validator\\Time as TimeConstraint;\nuse App\\Validator\\Unique as UniqueConstraint;\nuse Symfony\\Component\\Validator\\Constraints as Assert;";
+    let mut import_lines = vec![
+        "use Doctrine\\ORM\\Mapping as ORM;".to_string(),
+        "use Doctrine\\DBAL\\Types\\Types;".to_string(),
+        "use App\\Resource\\ResourceEntity;".to_string(),
+        "use App\\Resource\\Attribute\\Form;".to_string(),
+        "use App\\Resource\\Attribute\\Phone as PhoneAttribute;".to_string(),
+        "use App\\Validator\\Phone as PhoneConstraint;".to_string(),
+        "use App\\Validator\\OneOf as OneOfConstraint;".to_string(),
+        "use App\\Validator\\Time as TimeConstraint;".to_string(),
+        "use App\\Validator\\Unique as UniqueConstraint;".to_string(),
+        "use Symfony\\Component\\Validator\\Constraints as Assert;".to_string(),
+    ];
+
+    let has_table_relations = r.fields.iter().any(|f| f.field_type == "table" && f.target_entity.is_some());
+    if has_table_relations {
+        import_lines.push("use Doctrine\\Common\\Collections\\ArrayCollection;".to_string());
+        import_lines.push("use Doctrine\\Common\\Collections\\Collection;".to_string());
+        import_lines.push("use App\\Resource\\MapField;".to_string());
+    }
+
+    let mut imported_entities = std::collections::BTreeSet::new();
+    for f in &r.fields {
+        if f.field_type == "table" {
+            if let Some(target) = &f.target_entity {
+                let target_class = pascal(target);
+                if target_class != class && !imported_entities.contains(&target_class) {
+                    import_lines.push(format!("use App\\Entity\\{};", target_class));
+                    imported_entities.insert(target_class);
+                }
+            }
+        }
+    }
+
+    let imports = import_lines.join("\n");
+    let mut collection_inits = Vec::new();
+
     let props = r
         .fields
         .iter()
@@ -314,6 +415,17 @@ fn backend_code(r: &Resource, class: &str) -> String {
                     "    #[Form(type: '{}')]\n    public mixed ${} = null;",
                     f.field_type, f.name
                 );
+            }
+            if f.field_type == "table" {
+                if let Some(target) = &f.target_entity {
+                    let target_class = pascal(target);
+                    let mapped_by = f.map.as_deref().unwrap_or("orderId");
+                    collection_inits.push(format!("        $this->{} = new ArrayCollection();", f.name));
+                    return format!(
+                        "    #[MapField(field: '{}', targetEntity: {}::class)]\n    public Collection ${};",
+                        mapped_by, target_class, f.name
+                    );
+                }
             }
             let mut asserts = String::new();
             if f.required.unwrap_or(false) {
@@ -435,7 +547,17 @@ fn backend_code(r: &Resource, class: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    format!("<?php\n\nnamespace App\\Entity;\n\n{}\n\n#[ORM\\Entity()]\n#[ORM\\Table(name: '{}')]\nclass {} extends ResourceEntity\n{{\n    #[ORM\\Id]\n    #[ORM\\GeneratedValue]\n    #[ORM\\Column]\n    public ?int $id = null;\n\n{}\n\n    public function getTitle(): string\n    {{\n        return (string) $this->id;\n    }}\n}}\n",imports,r.name,class,props)
+
+    let constructor = if collection_inits.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n    public function __construct()\n    {{\n{}\n    }}",
+            collection_inits.join("\n")
+        )
+    };
+
+    format!("<?php\n\nnamespace App\\Entity;\n\n{}\n\n#[ORM\\Entity()]\n#[ORM\\Table(name: '{}')]\nclass {} extends ResourceEntity\n{{\n    #[ORM\\Id]\n    #[ORM\\GeneratedValue]\n    #[ORM\\Column]\n    public ?int $id = null;\n\n{}{}\n\n    public function getTitle(): string\n    {{\n        return (string) $this->id;\n    }}\n}}\n",imports,r.name,class,props,constructor)
 }
 fn php_type(t: &str) -> &str {
     match t {
@@ -453,7 +575,7 @@ fn pascal(s: &str) -> String {
         .map(|x| {
             let mut c = x.chars();
             match c.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
                 None => String::new(),
             }
         })

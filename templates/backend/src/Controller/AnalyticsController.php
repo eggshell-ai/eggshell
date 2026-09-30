@@ -29,7 +29,7 @@ final class AnalyticsController extends AbstractController
     }
 
     #[Route('/{category}/{metric}', name: 'get_metric', methods: ['GET'])]
-    public function getMetric(string $category, string $metric): JsonResponse
+    public function getMetric(string $category, string $metric, \Symfony\Component\HttpFoundation\Request $request): JsonResponse
     {
         $name = sprintf('%s/%s', $category, $metric);
 
@@ -40,10 +40,19 @@ final class AnalyticsController extends AbstractController
         }
 
         $aggregator = $this->aggregators[$name];
-        $count = $aggregator->getValue();
+        
+        // Pass request or filters if aggregator supports it
+        $value = method_exists($aggregator, 'getValueWithRequest')
+            ? $aggregator->getValueWithRequest($request)
+            : $aggregator->getValue();
+
+        // If returned value is already an array or structured object, return directly
+        if (is_array($value)) {
+            return new JsonResponse($value);
+        }
 
         return new JsonResponse([
-            'count' => $count
+            'count' => $value
         ]);
     }
 }

@@ -5,6 +5,7 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -87,15 +88,50 @@ impl AgentService {
         let mut all_tool_calls = Vec::new();
         let mut log = Vec::new();
         let mut final_content = String::new();
+        let cancel_token = options.cancellation_token.clone();
 
         while turn < max_turns {
+            if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                self.logger.info("agent run interrupted by user".to_string(), false);
+                break;
+            }
             turn += 1;
-            let response = self
+
+            let stream_cb: Option<crate::llm::StreamCallback> = options.on_event.as_ref().map(|on_event| {
+                let on_event = Arc::clone(on_event);
+                Arc::new(move |chunk: crate::llm::StreamChunk| {
+                    match chunk {
+                        crate::llm::StreamChunk::ThoughtDelta(delta) => {
+                            on_event(json!({ "type": "thought_delta", "data": { "delta": delta, "turn": turn } }));
+                        }
+                        crate::llm::StreamChunk::ContentDelta(delta) => {
+                            on_event(json!({ "type": "content_delta", "data": { "delta": delta, "turn": turn } }));
+                        }
+                    }
+                }) as crate::llm::StreamCallback
+            });
+
+            let response = match self
                 .llm_service
-                .execute_prompt_with_tools(&messages, &tools, Some(&context))
-                .await?;
+                .execute_prompt_with_tools_cancellable(&messages, &tools, Some(&context), cancel_token.clone(), stream_cb)
+                .await
+            {
+                Ok(resp) => resp,
+                Err(err) => {
+                    if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                        self.logger.info("agent LLM call interrupted by user".to_string(), false);
+                        break;
+                    }
+                    return Err(err);
+                }
+            };
             let content = response
                 .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let thought = response
+                .get("thought")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
@@ -106,13 +142,23 @@ impl AgentService {
                 .unwrap_or_default();
 
             final_content = content.clone();
-            self.logger.info(format!("agent turn {turn} thought: {content}"), true);
-            emit(
-                &options,
-                "thought",
-                json!({ "content": content, "turn": turn }),
-            );
-            log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "thought", "content": content }));
+            if !thought.is_empty() {
+                self.logger.info(format!("agent turn {turn} reasoning: {thought}"), true);
+                emit(
+                    &options,
+                    "thought",
+                    json!({ "content": thought, "turn": turn }),
+                );
+                log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "thought", "content": thought }));
+            } else if !tool_calls.is_empty() && !content.is_empty() {
+                self.logger.info(format!("agent turn {turn} thought: {content}"), true);
+                emit(
+                    &options,
+                    "thought",
+                    json!({ "content": content, "turn": turn }),
+                );
+                log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "thought", "content": content }));
+            }
             messages.push(LLMMessage {
                 role: LLMMessageRole::Assistant,
                 content,
@@ -127,7 +173,12 @@ impl AgentService {
             }
             all_tool_calls.extend(tool_calls.clone());
 
+            let mut cancelled_during_tools = false;
             for tool_call in tool_calls {
+                if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    cancelled_during_tools = true;
+                    break;
+                }
                 let (name, args) = tool_call_parts(&tool_call);
                 let Some(tool) = tools.iter().find(|tool| tool.name() == name) else {
                     log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_error", "toolName": name, "error": "Tool not found" }));
@@ -138,6 +189,10 @@ impl AgentService {
                 // schemas expose projectPath for compatibility, but relying on
                 // the model to supply it allows filesystem writes to fall back
                 // to a path relative to the app's current working directory.
+                let call_id = tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 let tool_args = with_project_path(args.clone(), options.project_path.as_deref());
                 self.logger.info(
                     format!("agent turn {turn} tool call {name}: {tool_args}"),
@@ -146,13 +201,9 @@ impl AgentService {
                 emit(
                     &options,
                     "tool_call",
-                    json!({ "name": name, "arguments": tool_args }),
+                    json!({ "id": call_id, "name": name, "arguments": tool_args }),
                 );
                 log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_call", "toolName": name, "toolArgs": tool_args }));
-                let call_id = tool_call
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
                 match tool.execute(tool_args.clone()).await {
                     Ok(result) => {
                         self.logger.info(
@@ -162,7 +213,7 @@ impl AgentService {
                         emit(
                             &options,
                             "tool_result",
-                            json!({ "name": name, "result": result }),
+                            json!({ "id": call_id, "name": name, "result": result }),
                         );
                         log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_result", "toolName": name, "toolResult": result }));
                         messages.push(tool_message(call_id, name, tool_args, result));
@@ -175,12 +226,24 @@ impl AgentService {
                         emit(
                             &options,
                             "tool_result",
-                            json!({ "name": name, "result": result }),
+                            json!({ "id": call_id, "name": name, "result": result }),
                         );
                         log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_error", "toolName": name, "error": result["error"] }));
                         messages.push(tool_message(call_id, name, tool_args, result));
                     }
                 }
+            }
+            if cancelled_during_tools {
+                self.logger.info("agent tool loop interrupted by user".to_string(), false);
+                break;
+            }
+        }
+
+        if final_content.trim().is_empty() {
+            if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                final_content = "Response stopped by user.".to_string();
+            } else if !all_tool_calls.is_empty() {
+                final_content = "Completed requested actions.".to_string();
             }
         }
 
@@ -194,7 +257,7 @@ impl AgentService {
             json!({ "content": result.content, "tool_calls": result.tool_calls }),
         );
         if options.log_conversation {
-            self.write_conversation_log(
+            if let Err(error) = self.write_conversation_log(
                 &conversation_id,
                 &log,
                 &messages,
@@ -203,7 +266,12 @@ impl AgentService {
                 max_turns,
                 &result,
                 options.log_dir.as_deref(),
-            )?;
+            ) {
+                self.logger.error(
+                    format!("Failed to write agent conversation log: {error}"),
+                    false,
+                );
+            }
         }
         Ok(result)
     }

@@ -229,10 +229,13 @@ The behavioral defaults are important. Do not assume that omission means `false`
 | `accept` | unset | No field-specific file accept restriction |
 | `minSize` | unset | No minimum-size rule |
 | `maxSize` | unset | No maximum-size rule |
-| `resource` | unset | No remote/dynamic select resource |
+| `resource` | unset | Remote/dynamic select resource name, or child item resource name for `type: "table"` |
 | `options` | unset | No static select options |
 | `visibleWhen` | unset | Field is not conditionally hidden |
-| `columns` | unset | No child table columns |
+| `columns` | unset | Child table columns for `type: "table"` |
+| `map` | unset | Foreign key property name connecting child items to parent (e.g. `"orderId"`) |
+| `targetEntity` | unset | Target child entity class name (e.g. `"OrderItem"`) |
+| `lookup` | unset | Auto-lookup configuration to snapshot values from a related resource (e.g. `{ resource: "products", matchField: "id", matchValue: "data.productId", targetField: "price" }`) |
 | `min` | unset | Numeric minimum value constraint (e.g. `min: 0`) |
 | `max` | unset | Numeric maximum value constraint |
 | `scale` | `2` (for `decimal`) | Number of decimal places |
@@ -523,6 +526,73 @@ When the condition evaluates to `true` for a record, the table automatically dis
 
 ---
 
+### 2.12 Auto-Lookup System (`lookup`)
+
+Use `lookup` when selecting a record in a form or table line item should automatically fetch and snapshot data from another resource (e.g. capturing a product's current selling price into an order item at creation time, ensuring future product price changes do not modify historical order values).
+
+Example:
+
+```javascript
+{
+  name: "unitPrice",
+  type: "decimal",
+  label: "Price at Sale",
+  scale: 2,
+  required: true,
+  lookup: {
+    resource: "products",         // Name or endpoint of the resource
+    matchField: "id",              // Match field on the remote resource (default: "id")
+    matchValue: "data.productId",  // Property expression on the current form or child table row
+    targetField: "price",          // Field to copy from the retrieved record
+    on: "change",                  // Triggered when matchValue changes
+    overwrite: false               // If false, preserves manual user overrides if already entered
+  }
+}
+```
+
+Behavior:
+- When the user selects a product in the row, `lookup` executes automatically.
+- It fetches the target entity and fills `unitPrice` with the current product price.
+- Because `unitPrice` is a stored field (not virtual), it persists permanently on the child item.
+
+---
+
+### 2.13 One-to-Many Child Line Items (`type: "table"`)
+
+Use `type: "table"` paired with `resource`, `columns`, `map`, and `targetEntity` to model master-detail relationships (such as order line items, invoice lines, or task sub-items).
+
+**Important:** Always pass the name of the child item resource to `resource` (e.g. `resource: "order_items"`). This allows `ResourcePage` and form components to load the child resource definition, resolve field types, labels, and auto-lookup/calculated column properties.
+
+Example:
+
+```javascript
+{
+  name: "items",
+  type: "table",
+  label: "Order Items",
+  resource: "order_items",
+  map: "orderId",
+  targetEntity: "OrderItem",
+  columns: [
+    { name: "productId", label: "Product" },
+    { name: "quantity", label: "Quantity" },
+    { name: "unitPrice", label: "Unit Price" },
+    { name: "subtotal", label: "Subtotal", isCalculated: true }
+  ]
+}
+```
+
+Behavior:
+- In forms, `ResourcePage` renders an interactive line-item editor with **Add Item** and delete row buttons.
+- `resource: "<child_resource_name>"` connects the table to the child resource definition so columns inherit the child field configurations.
+- On the backend, `sync_schema` generates a `#[MapField]` property on the parent entity typed as `Collection` (with `ArrayCollection` initialization in `__construct`). There is no automated ORM navigation association; parent-to-child or child-to-parent DQL joins must be performed explicitly using `Join::WITH` on the foreign key field (e.g. `->innerJoin(OrderItem::class, 'i', Join::WITH, 'i.orderId = o.id')`).
+- On the backend, `ResourceController` automatically handles transactional persistence:
+  - Existing child lines are updated.
+  - New child lines are created with the parent's primary key assigned to `map` (`orderId`).
+  - Removed lines are deleted from the database.
+- In grids, child items are summarized (e.g. `2x Widget A (@$10.00), 1x Widget B`).
+
+
 ## 3. Requirement → Feature Mapping
 
 Before writing code, translate the prompt into resource-system features.
@@ -566,6 +636,9 @@ Use this mapping as the default interpretation.
 | "Whole number" | `integer: true` |
 | "Calculated / computed value (not stored in DB)" | `computed: true, computeExpression: "...", form: false` |
 | "Highlight or badge based on row state (e.g. Out of Stock)" | `displayRules: [{ condition: "...", badge: { text: "...", variant: "..." } }]` |
+| "Line items / child records in parent form" | `type: "table", resource: "child_resource_name", map: "foreignKey", targetEntity: "ChildClass", columns: [...]` |
+| "Auto-fill price or snapshot related field on selection" | `lookup: { resource: "...", matchValue: "data.fieldId", targetField: "..." }` |
+| "Server-side subquery / virtual calculation" | `sqlExpression: "(SELECT ... FROM ... WHERE ...)"` |
 
 ### Important filter rule
 
@@ -744,12 +817,13 @@ If custom routes are required, add them to this same controller file.
 
 ### Step 5 — Create frontend page
 
-Use `write_page` and `ResourcePage`.
+Use `write_file` (at `app/(dashboard)/<route>/page.tsx` as documented in the system prompt) and `ResourcePage`.
 
 ```javascript
-write_page({
-  route: "/products",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/products/page.tsx",
+  content: `'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import productsResource from '@/resources/products';
@@ -765,12 +839,23 @@ Do not build a separate CRUD table/form implementation.
 
 ### Step 6 — Add menu entry
 
+Add the menu entry to `menu-items/menu.json` using `patch_file`:
+
 ```javascript
-write_menu({
-  name: "Inventory.Products",
-  route: "/products",
-  icon: "ShoppingOutlined",
-  after: "Dashboard"
+patch_file({
+  shell: "frontend",
+  patch: `*** Begin Patch
+*** Update File: menu-items/menu.json
+@@ -15,4 +15,10 @@
+     "permission": "roles.index"
+   }
++  {
++    "name": "Inventory.Products",
++    "route": "/products",
++    "icon": "ShoppingOutlined"
++  }
+ ]
+*** End Patch`
 })
 ```
 
@@ -1616,14 +1701,15 @@ Keep standard CRUD behavior inherited from `ResourceController`.
 
 ### 8.2 Frontend page
 
-Use `write_page`.
+Use `write_file` (at `app/(dashboard)/<route>/page.tsx` as documented in the system prompt).
 
 Example:
 
 ```javascript
-write_page({
-  route: "/customers",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/customers/page.tsx",
+  content: `'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import customersResource from '@/resources/customers';
@@ -1650,16 +1736,25 @@ when `ResourcePage` already supplies them.
 
 ### 8.3 Menu
 
-Use `write_menu`.
+Use `patch_file` on `menu-items/menu.json`.
 
 Example:
 
 ```javascript
-write_menu({
-  name: "CRM.Customers",
-  route: "/customers",
-  icon: "TeamOutlined",
-  after: "Dashboard"
+patch_file({
+  shell: "frontend",
+  patch: `*** Begin Patch
+*** Update File: menu-items/menu.json
+@@ -15,4 +15,10 @@
+     "permission": "roles.index"
+   }
++  {
++    "name": "CRM.Customers",
++    "route": "/customers",
++    "icon": "TeamOutlined"
++  }
+ ]
+*** End Patch`
 })
 ```
 
@@ -2078,9 +2173,10 @@ This is consistent.
 ### Step 6 — Create frontend page
 
 ```javascript
-write_page({
-  route: "/leads",
-  code: `'use client';
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/leads/page.tsx",
+  content: `'use client';
 
 import ResourcePage from '@/components/resources/ResourcePage';
 import leadsResource from '@/resources/leads';
@@ -2108,16 +2204,421 @@ The resource plus `ResourcePage` already provide those behaviors.
 ### Step 7 — Add menu item
 
 ```javascript
-write_menu({
-  name: "CRM.Leads",
-  route: "/leads",
-  icon: "TeamOutlined",
-  after: "Dashboard"
+patch_file({
+  shell: "frontend",
+  patch: `*** Begin Patch
+*** Update File: menu-items/menu.json
+@@ -15,4 +15,10 @@
+     "permission": "roles.index"
+   }
++  {
++    "name": "CRM.Leads",
++    "route": "/leads",
++    "icon": "TeamOutlined"
++  }
+ ]
+*** End Patch`
 })
 ```
 
 ---
 
+## 10. Complete Worked Example: Multi-Entity Order & Inventory Management
+
+This example demonstrates how to model and build a multi-entity master-detail system with:
+- Multiple interconnected resources (`products`, `customers`, `orders`, `order_items`);
+- Auto-lookup for capturing unit prices at order creation time;
+- Computed order totals (`computed`, `computeExpression`, `sqlExpression`);
+- Stock quantity tracking with out-of-stock badges (`displayRules`);
+- State transitions (`draft` -> `confirmed` -> `shipped` / `cancelled`);
+- Multi-entity transactional inventory deduction and validation upon order confirmation.
+
+### Step 1 — Call `sync_schema` for all resources
+
+```javascript
+sync_schema({
+  resources: [
+    {
+      name: "products",
+      endpoint: "/products",
+      fields: [
+        { name: "name", type: "text", label: "Product Name", required: true, searchable: true, sortable: true },
+        { name: "sku", type: "text", label: "SKU", required: true, unique: true, searchable: true, transforms: [{ type: "trim" }, { type: "uppercase" }] },
+        { name: "price", type: "decimal", label: "Price", scale: 2, min: 0, required: true, sortable: true },
+        {
+          name: "stockQuantity",
+          type: "number",
+          label: "Stock Quantity",
+          integer: true,
+          min: 0,
+          required: true,
+          default: 0,
+          displayRules: [
+            { condition: "Number(data.stockQuantity || 0) === 0", badge: { text: "Out of Stock", variant: "error" } },
+            { condition: "Number(data.stockQuantity || 0) > 0 && Number(data.stockQuantity || 0) <= 5", badge: { text: "Low Stock", variant: "warning" } }
+          ]
+        }
+      ]
+    },
+    {
+      name: "customers",
+      endpoint: "/customers",
+      fields: [
+        { name: "name", type: "text", label: "Customer Name", required: true, searchable: true, sortable: true },
+        { name: "email", type: "email", label: "Email", searchable: true },
+        { name: "phone", type: "phone", label: "Phone", searchable: true },
+        { name: "address", type: "textarea", label: "Address" }
+      ]
+    },
+    {
+      name: "order_items",
+      endpoint: "/order-items",
+      fields: [
+        { name: "orderId", type: "foreign", label: "Order ID", required: true },
+        { name: "productId", type: "select", label: "Product", required: true, resource: productsResource },
+        { name: "quantity", type: "number", label: "Quantity", integer: true, min: 1, required: true, default: 1 },
+        {
+          name: "unitPrice",
+          type: "decimal",
+          label: "Unit Price",
+          scale: 2,
+          min: 0,
+          required: true,
+          lookup: {
+            resource: "products",
+            matchField: "id",
+            matchValue: "data.productId",
+            targetField: "price",
+            on: "change",
+            overwrite: false
+          }
+        },
+        {
+          name: "subtotal",
+          type: "decimal",
+          label: "Subtotal",
+          scale: 2,
+          computed: true,
+          computeExpression: "(Number(data.quantity || 0) * Number(data.unitPrice || 0)).toFixed(2)",
+          sqlExpression: "e.quantity * e.unitPrice",
+          form: false,
+          table: true
+        }
+      ]
+    },
+    {
+      name: "orders",
+      endpoint: "/orders",
+      fields: [
+        { name: "orderNumber", type: "text", label: "Order #", required: true, unique: true, searchable: true },
+        { name: "customerId", type: "select", label: "Customer", required: true, filterable: true, searchable: true, resource: customersResource },
+        { name: "orderDate", type: "date", label: "Order Date", required: true, default: "today", filterable: true, sortable: true },
+        {
+          name: "status",
+          type: "select",
+          label: "Status",
+          options: {
+            draft: "Draft",
+            confirmed: "Confirmed",
+            shipped: "Shipped",
+            cancelled: "Cancelled"
+          },
+          default: "draft",
+          required: true,
+          filterable: true,
+          sortable: true
+        },
+        {
+          name: "items",
+          type: "table",
+          label: "Order Items",
+          map: "orderId",
+          targetEntity: "OrderItem",
+          columns: [
+            { name: "productId", label: "Product" },
+            { name: "quantity", label: "Quantity" },
+            { name: "unitPrice", label: "Unit Price" },
+            { name: "subtotal", label: "Subtotal", isCalculated: true }
+          ]
+        },
+        {
+          name: "totalAmount",
+          type: "decimal",
+          label: "Total Amount",
+          scale: 2,
+          computed: true,
+          computeExpression: "Array.isArray(data.items) ? data.items.reduce((sum, item) => sum + (Number(item.quantity || 0) * Number(item.unitPrice || 0)), 0).toFixed(2) : '0.00'",
+          sqlExpression: "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\OrderItem i WHERE i.orderId = e.id)",
+          form: false,
+          table: true,
+          sortable: true
+        }
+      ],
+      actions: [
+        {
+          permission: "orders.edit",
+          actionExpression: "data.status === 'draft' ? '/confirm' : null",
+          labelExpression: "data.status === 'draft' ? 'Confirm Order' : null",
+          confirm: true
+        },
+        {
+          permission: "orders.edit",
+          actionExpression: "data.status === 'confirmed' ? '/ship' : null",
+          labelExpression: "data.status === 'confirmed' ? 'Ship Order' : null",
+          confirm: true
+        },
+        {
+          permission: "orders.edit",
+          actionExpression: "['draft', 'confirmed'].includes(data.status) ? '/cancel' : null",
+          labelExpression: "['draft', 'confirmed'].includes(data.status) ? 'Cancel Order' : null",
+          confirm: true
+        }
+      ]
+    }
+  ]
+});
+```
+
+### Step 2 — Create Order Controller with State Transitions and Inventory Deduction
+
+Create `Controller/OrderController.php`:
+
+```javascript
+write_file({
+  shell: "backend",
+  path: "Controller/OrderController.php",
+  content: `<?php
+
+namespace App\Controller;
+
+use App\Entity\Order;
+use App\Entity\OrderItem;
+use App\Entity\Product;
+use App\Resource\ResourceController;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\Routing\Attribute\Route;
+
+#[Route('/api/orders', name: 'orders.')]
+final class OrderController extends ResourceController
+{
+    protected function getEntityClass(): string
+    {
+        return Order::class;
+    }
+
+    protected function getResourceName(): string
+    {
+        return 'orders';
+    }
+
+    #[Route('/{id}/confirm', name: 'confirm', requirements: ['id' => '\\d+'], methods: ['POST'])]
+    public function confirm(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted('orders.edit');
+
+        /** @var Order|null $order */
+        $order = $this->entityManager->getRepository(Order::class)->find($id);
+        if (!$order) {
+            throw new NotFoundHttpException('Order not found.');
+        }
+
+        if ($order->status !== 'draft') {
+            throw new BadRequestHttpException('Only draft orders can be confirmed.');
+        }
+
+        // Load order items
+        $items = $this->entityManager->getRepository(OrderItem::class)->findBy(['orderId' => $order->id]);
+        if (empty($items)) {
+            throw new BadRequestHttpException('Cannot confirm an empty order without products.');
+        }
+
+        // Validate inventory for all items before applying any changes
+        $productRepo = $this->entityManager->getRepository(Product::class);
+        $productsToUpdate = [];
+
+        foreach ($items as $item) {
+            /** @var Product|null $product */
+            $product = $productRepo->find($item->productId);
+            if (!$product) {
+                throw new BadRequestHttpException(sprintf('Product #%d not found.', $item->productId));
+            }
+
+            $currentStock = (int) ($product->stockQuantity ?? 0);
+            $requestedQty = (int) ($item->quantity ?? 1);
+
+            if ($currentStock < $requestedQty) {
+                throw new BadRequestHttpException(sprintf(
+                    'Not enough stock for product "%s". Available: %d, Requested: %d.',
+                    $product->name,
+                    $currentStock,
+                    $requestedQty
+                ));
+            }
+
+            $productsToUpdate[] = [
+                'product' => $product,
+                'deduct' => $requestedQty
+            ];
+        }
+
+        // Atomically deduct inventory
+        foreach ($productsToUpdate as $update) {
+            $update['product']->stockQuantity -= $update['deduct'];
+        }
+
+        $order->status = 'confirmed';
+        $this->entityManager->flush();
+
+        $this->loadChildRelations($order);
+        $this->loadRelationTitles($order);
+
+        return $this->json($order);
+    }
+
+    #[Route('/{id}/ship', name: 'ship', requirements: ['id' => '\\d+'], methods: ['POST'])]
+    public function ship(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted('orders.edit');
+
+        /** @var Order|null $order */
+        $order = $this->entityManager->getRepository(Order::class)->find($id);
+        if (!$order) {
+            throw new NotFoundHttpException('Order not found.');
+        }
+
+        if ($order->status !== 'confirmed') {
+            throw new BadRequestHttpException('Only confirmed orders can be shipped.');
+        }
+
+        $order->status = 'shipped';
+        $this->entityManager->flush();
+
+        return $this->json($order);
+    }
+
+    #[Route('/{id}/cancel', name: 'cancel', requirements: ['id' => '\\d+'], methods: ['POST'])]
+    public function cancel(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted('orders.edit');
+
+        /** @var Order|null $order */
+        $order = $this->entityManager->getRepository(Order::class)->find($id);
+        if (!$order) {
+            throw new NotFoundHttpException('Order not found.');
+        }
+
+        if (!in_array($order->status, ['draft', 'confirmed'], true)) {
+            throw new BadRequestHttpException('Only draft or confirmed orders can be cancelled.');
+        }
+
+        // If previously confirmed, restore deducted stock quantities back to products
+        if ($order->status === 'confirmed') {
+            $items = $this->entityManager->getRepository(OrderItem::class)->findBy(['orderId' => $order->id]);
+            $productRepo = $this->entityManager->getRepository(Product::class);
+            foreach ($items as $item) {
+                $product = $productRepo->find($item->productId);
+                if ($product) {
+                    $product->stockQuantity += (int) ($item->quantity ?? 1);
+                }
+            }
+        }
+
+        $order->status = 'cancelled';
+        $this->entityManager->flush();
+
+        return $this->json($order);
+    }
+}
+`
+})
+```
+
+### Step 3 — Create Frontend Pages with `ResourcePage`
+
+Orders page:
+```javascript
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/orders/page.tsx",
+  content: `'use client';
+
+import ResourcePage from '@/components/resources/ResourcePage';
+import ordersResource from '@/resources/orders';
+
+export default function OrdersPage() {
+  return <ResourcePage resource={ordersResource} />;
+}
+`
+})
+```
+
+Products page:
+```javascript
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/products/page.tsx",
+  content: `'use client';
+
+import ResourcePage from '@/components/resources/ResourcePage';
+import productsResource from '@/resources/products';
+
+export default function ProductsPage() {
+  return <ResourcePage resource={productsResource} />;
+}
+`
+})
+```
+
+Customers page:
+```javascript
+write_file({
+  shell: "frontend",
+  path: "app/(dashboard)/customers/page.tsx",
+  content: `'use client';
+
+import ResourcePage from '@/components/resources/ResourcePage';
+import customersResource from '@/resources/customers';
+
+export default function CustomersPage() {
+  return <ResourcePage resource={customersResource} />;
+}
+`
+})
+```
+
+### Step 4 — Add Menu Items
+
+```javascript
+patch_file({
+  shell: "frontend",
+  patch: `*** Begin Patch
+*** Update File: menu-items/menu.json
+@@ -15,4 +15,18 @@
+     "permission": "roles.index"
+   }
++  {
++    "name": "Sales.Orders",
++    "route": "/orders",
++    "icon": "ShoppingOutlined"
++  },
++  {
++    "name": "Inventory.Products",
++    "route": "/products",
++    "icon": "AppstoreOutlined"
++  },
++  {
++    "name": "CRM.Customers",
++    "route": "/customers",
++    "icon": "TeamOutlined"
++  }
+ ]
+*** End Patch`
+})
+```
+
+---
 
 ## Operating Principles
 

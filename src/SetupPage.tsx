@@ -9,7 +9,11 @@ type DependencyKey = keyof DependencyStatus;
 type Dependency = { key: DependencyKey; name: string; version?: string };
 type InstallOutcome = { installed: boolean; already_present: boolean; command: string; restart_required: boolean };
 type InstallState = "idle" | "installing" | "failed";
-type SetupState = { setup_completed: boolean; providers: RegisteredProvider[] };
+type SetupState = {
+  setup_completed: boolean;
+  providers: RegisteredProvider[];
+  available_types?: { key: string; name: string; detail: string }[];
+};
 type SetupStep = "dependencies" | "provider";
 // Mirrors `providers::ProviderSummary`: what the registry knows plus what the
 // user has configured. The API key itself never crosses back to the frontend.
@@ -118,8 +122,24 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
   // provider registry itself comes from the same call.
   useEffect(() => {
     void invoke<SetupState>("load_setup_state")
-      .then(({ providers }) => {
-        setRegisteredProviders(providers);
+      .then(({ providers, available_types }) => {
+        // In setup, we display the available provider types to pick from
+        if (available_types && available_types.length > 0) {
+          const typeOptions = available_types.map((type) => {
+            const existing = providers.find((p) => p.key === type.key);
+            return {
+              key: type.key,
+              name: type.name,
+              detail: type.detail,
+              api_key_set: Boolean(existing?.api_key_set),
+              models: existing?.models || [],
+            };
+          });
+          setRegisteredProviders(typeOptions);
+        } else {
+          setRegisteredProviders(providers);
+        }
+
         // Prefill with whatever an existing configuration already holds.
         const configured = providers.find(({ models }) => models.length > 0);
         if (configured) {

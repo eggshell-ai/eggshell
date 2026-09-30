@@ -76,8 +76,12 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       setDeleteModalOpen(false);
       setSelectedRecord(null);
       message.success('Record deleted successfully');
-    } catch (error) {
-      message.error('Failed to delete record');
+    } catch (error: any) {
+      const errorMsg =
+        error?.response?.data?.detail ||
+        error?.response?.data?.message ||
+        'Failed to delete record';
+      message.error(errorMsg);
       console.error('Error deleting record:', error);
     } finally {
       setDeleteLoading(false);
@@ -187,7 +191,11 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       if (applyBackendValidationErrors(form, error)) {
         return;
       }
-      message.error('Failed to update record');
+      message.error(
+        error?.response?.data?.detail ||
+        error?.response?.data?.message ||
+        'Failed to update record'
+      );
       console.error('Error updating record:', error);
     }
   };
@@ -214,7 +222,11 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
       if (applyBackendValidationErrors(addForm, error)) {
         return;
       }
-      message.error('Failed to create record');
+      message.error(
+        error?.response?.data?.detail ||
+        error?.response?.data?.message ||
+        'Failed to create record'
+      );
       console.error('Error creating record:', error);
     }
   };

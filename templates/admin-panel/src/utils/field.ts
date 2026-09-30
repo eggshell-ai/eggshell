@@ -218,6 +218,11 @@ class FieldBuilder implements Field {
     this._config.displayRules = rules;
     return this;
   }
+
+  lookup(config: any): Field {
+    this._config.lookup = config;
+    return this;
+  }
 }
 
 /**
