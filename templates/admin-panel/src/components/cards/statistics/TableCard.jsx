@@ -110,6 +110,25 @@ export default function TableCard({
 
   const rows = maxRows && Array.isArray(data) ? data.slice(0, maxRows) : (Array.isArray(data) ? data : []);
 
+  const formatHeader = (key) => {
+    // Split camelCase or snake_case, capitalize words
+    const result = key
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/[_-]+/g, ' ')
+      .trim();
+    return result.charAt(0).toUpperCase() + result.slice(1);
+  };
+
+  const resolvedColumns =
+    columns && columns.length > 0
+      ? columns
+      : rows.length > 0
+      ? Object.keys(rows[0]).map((key) => ({
+          header: formatHeader(key),
+          dataIndex: key
+        }))
+      : [];
+
   const renderCellContent = (row, col) => {
     const rawVal = row[col.dataIndex || col.field || col.key];
     let content = col.render ? col.render(rawVal, row) : rawVal !== undefined && rawVal !== null ? String(rawVal) : '-';
@@ -146,7 +165,7 @@ export default function TableCard({
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  {columns.map((col, idx) => (
+                  {resolvedColumns.map((col, idx) => (
                     <TableCell key={col.dataIndex || col.key || idx} align={col.align || 'left'} sx={{ fontWeight: 600 }}>
                       {col.title || col.label || col.header}
                     </TableCell>
@@ -156,7 +175,7 @@ export default function TableCard({
               <TableBody>
                 {rows.map((row, rowIdx) => (
                   <TableRow key={row.id ?? rowIdx} hover>
-                    {columns.map((col, colIdx) => (
+                    {resolvedColumns.map((col, colIdx) => (
                       <TableCell key={col.dataIndex || col.key || colIdx} align={col.align || 'left'}>
                         {renderCellContent(row, col)}
                       </TableCell>
@@ -185,7 +204,7 @@ export default function TableCard({
 TableCard.propTypes = {
   title: PropTypes.string.isRequired,
   endpoint: PropTypes.string.isRequired,
-  columns: PropTypes.array.isRequired,
+  columns: PropTypes.array,
   refreshTrigger: PropTypes.any,
   onCacheUpdate: PropTypes.func,
   cacheTTL: PropTypes.number,

@@ -197,13 +197,52 @@ Or:
 ```
 
 #### Format 3: Tabular Reports (`TableCard`)
-Expects an array of row objects (or `{ "data": [...] }`):
+Expects an array of row objects (or `{ "data": [...] }` or `{ "items": [...] }`):
 
 ```json
 [
   { "id": 1, "name": "Widget A", "sku": "WID-A", "totalSold": 150, "totalRevenue": 2999.50 },
   { "id": 2, "name": "Gadget B", "sku": "GAD-B", "totalSold": 95, "totalRevenue": 1425.00 }
 ]
+```
+
+##### `TableCard` `columns` Configuration
+`TableCard` supports customized column configurations passed via the `columns` array prop. If omitted or empty, `TableCard` automatically infers columns from the keys of the first data row (converting camelCase/snake_case keys to capitalized headers).
+
+Each column definition object in `columns` supports:
+- **Field Key**: `dataIndex`, `field`, or `key` &mdash; The property key in the row data object to read.
+- **Header Label**: `title`, `label`, or `header` &mdash; The display label for the column header.
+- **Alignment**: `align` &mdash; Header and cell alignment: `'left'` (default), `'center'`, or `'right'`.
+- **Custom Render**: `render(value, row)` &mdash; Optional custom rendering function returning string or JSX.
+- **Link Template**: `link` &mdash; Optional URL template string with `{fieldName}` placeholders (e.g. `"/products/{id}"`). The cell content will be wrapped in a Next.js `Link`.
+
+**Example `TableCard` usage on a dashboard:**
+```jsx
+<TableCard
+  title="Top Selling Products"
+  endpoint="/analytics/products/topSelling"
+  maxRows={5}
+  size={{ xs: 12, lg: 6 }}
+  columns={[
+    {
+      title: 'Product',
+      dataIndex: 'name',
+      link: '/products/{id}',
+      align: 'left'
+    },
+    {
+      title: 'Units Sold',
+      dataIndex: 'totalSold',
+      align: 'right'
+    },
+    {
+      title: 'Revenue',
+      dataIndex: 'totalRevenue',
+      align: 'right',
+      render: (val) => `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+    }
+  ]}
+/>
 ```
 
 
