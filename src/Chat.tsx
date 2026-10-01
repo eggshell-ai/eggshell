@@ -4,6 +4,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ReportMenu from "./ReportMenu";
 import SettingsPopup from "./SettingsPopup";
+import FeedbackPopup from "./FeedbackPopup";
 
 export type ChatMessage = {
   role: "user" | "assistant" | "thought" | "tool_call" | "tool_result";
@@ -168,6 +169,10 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [feedbackState, setFeedbackState] = useState<
+    Record<number, { rating?: "thumbs_up" | "thumbs_down"; thankYou?: boolean }>
+  >({});
+  const [feedbackPopupTarget, setFeedbackPopupTarget] = useState<number | null>(null);
 
   // Automatically adjust textarea height based on content
   useEffect(() => {
@@ -259,6 +264,115 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     }
   }, [activeProvider, activeModel, selectableProviders]);
 
+  async function handleThumbsUp(index: number) {
+    try {
+      await invoke("submit_feedback", {
+        payload: {
+          rating: "thumbs_up",
+          reason: null,
+          notes: null,
+          attachPromptHistory: false,
+          promptHistory: null,
+          provider: activeProvider || null,
+          model: activeModel || null,
+        },
+      });
+    } catch (err) {
+      console.error("[Chat] Failed to submit thumbs_up feedback", err);
+    }
+    setFeedbackState((prev) => ({
+      ...prev,
+      [index]: { rating: "thumbs_up", thankYou: true },
+    }));
+    setTimeout(() => {
+      setFeedbackState((prev) => ({
+        ...prev,
+        [index]: { ...prev[index], thankYou: false },
+      }));
+    }, 4000);
+  }
+
+  function handleThumbsDown(index: number) {
+    setFeedbackPopupTarget(index);
+  }
+
+  function handleFeedbackSubmitted(index: number) {
+    setFeedbackState((prev) => ({
+      ...prev,
+      [index]: { rating: "thumbs_down", thankYou: true },
+    }));
+    setTimeout(() => {
+      setFeedbackState((prev) => ({
+        ...prev,
+        [index]: { ...prev[index], thankYou: false },
+      }));
+    }, 4000);
+  }
+
+  function renderFeedbackRow(index: number) {
+    const isLastMessage = index === messages.length - 1;
+    if (isSending && isLastMessage) return null;
+
+    const status = feedbackState[index];
+
+    return (
+      <div className="message-feedback-row">
+        {status?.thankYou ? (
+          <span className="feedback-thank-you">Thank you for your feedback</span>
+        ) : (
+          <div className="feedback-actions">
+            <button
+              type="button"
+              className={`feedback-btn thumbs-up ${status?.rating === "thumbs_up" ? "active" : ""}`}
+              aria-label="Thumbs up"
+              title="Thumbs up"
+              onClick={() => void handleThumbsUp(index)}
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill={status?.rating === "thumbs_up" ? "currentColor" : "none"}
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M7 10v12" />
+                <path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h3" />
+                <path d="M7 10V4.5a2.5 2.5 0 0 1 5 0V10" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={`feedback-btn thumbs-down ${status?.rating === "thumbs_down" ? "active" : ""}`}
+              aria-label="Thumbs down"
+              title="Thumbs down"
+              onClick={() => handleThumbsDown(index)}
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill={status?.rating === "thumbs_down" ? "currentColor" : "none"}
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M17 14V2" />
+                <path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3" />
+                <path d="M17 14v5.5a2.5 2.5 0 0 1-5 0V14" />
+              </svg>
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -319,6 +433,17 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
               <span aria-hidden="true">⚡</span> Proceed to Implement
             </button>
           </div>
+          {renderFeedbackRow(index)}
+        </article>
+      );
+      continue;
+    }
+    if (message.role === "assistant") {
+      renderedMessages.push(
+        <article className="message assistant" key={`assistant-${index}`}>
+          <span>Eggshell</span>
+          <MessageContent content={message.content} />
+          {renderFeedbackRow(index)}
         </article>
       );
       continue;
@@ -479,5 +604,20 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     </section>
     <ReportMenu screenName="Project" />
     <SettingsPopup isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); void refreshModels(); }} />
+    {feedbackPopupTarget !== null && (
+      <FeedbackPopup
+        isOpen={true}
+        onClose={() => setFeedbackPopupTarget(null)}
+        activeProvider={activeProvider}
+        activeModel={activeModel}
+        messages={messages}
+        targetMessageIndex={feedbackPopupTarget}
+        onSubmitted={() => {
+          if (feedbackPopupTarget !== null) {
+            handleFeedbackSubmitted(feedbackPopupTarget);
+          }
+        }}
+      />
+    )}
   </main>;
 }

@@ -1604,6 +1604,57 @@ async fn stop_chat(
     Ok(())
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct SubmitFeedbackPayload {
+    pub rating: String,
+    pub reason: Option<String>,
+    pub notes: Option<String>,
+    #[serde(rename = "attachPromptHistory", default)]
+    pub attach_prompt_history: bool,
+    #[serde(rename = "promptHistory")]
+    pub prompt_history: Option<Vec<telemetry::FeedbackMessagePayload>>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+}
+
+#[tauri::command]
+async fn submit_feedback(
+    app: tauri::AppHandle,
+    log: tauri::State<'_, ProgressLog>,
+    payload: SubmitFeedbackPayload,
+) -> Result<(), String> {
+    let config = config::ConfigService::load_default(&app).unwrap_or_default();
+    let installation_id = config.installation_id.unwrap_or_default();
+    let app_version = app.package_info().version.to_string();
+
+    let (prompt_history, diagnostic_logs) = if payload.attach_prompt_history {
+        let logs = progress::read_logs(log.logger(), true);
+        (payload.prompt_history, Some(logs))
+    } else {
+        (None, None)
+    };
+
+    telemetry::record_feedback_event(
+        &installation_id,
+        &app_version,
+        &payload.rating,
+        payload.reason.as_deref(),
+        payload.notes.as_deref(),
+        payload.provider.as_deref(),
+        payload.model.as_deref(),
+        prompt_history.as_deref(),
+        diagnostic_logs.as_deref(),
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+
 /// The question a project asks of MySQL too, so it is the one worth asking here:
 /// can anything accept a connection on the configured port? A registered service,
 /// a server the user started by hand and a daemon left over from an earlier launch
@@ -1861,7 +1912,9 @@ pub fn run() {
             list_sessions,
             delete_session,
             send_message,
-            stop_chat
+            stop_chat,
+            submit_feedback,
+            get_app_version
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -51,3 +51,68 @@ pub fn record_startup_event(installation_id: &str) {
         },
     );
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FeedbackMessagePayload {
+    pub role: String,
+    pub content: String,
+}
+
+/// Dispatches a user feedback event to Sentry with associated metadata.
+pub fn record_feedback_event(
+    installation_id: &str,
+    app_version: &str,
+    rating: &str,
+    reason: Option<&str>,
+    notes: Option<&str>,
+    provider: Option<&str>,
+    model: Option<&str>,
+    prompt_history: Option<&[FeedbackMessagePayload]>,
+    diagnostic_logs: Option<&[crate::logger::LogEntry]>,
+) {
+    sentry::with_scope(
+        |scope| {
+            let mut user = sentry::User::default();
+            user.id = Some(installation_id.to_string());
+            scope.set_user(Some(user));
+            scope.set_tag("installation_id", installation_id);
+            scope.set_tag("type", "feedback");
+            scope.set_tag("feedback_rating", rating);
+            scope.set_tag("app_version", app_version);
+            if let Some(p) = provider {
+                scope.set_tag("provider", p);
+            }
+            if let Some(m) = model {
+                scope.set_tag("model", m);
+            }
+            if let Some(r) = reason {
+                scope.set_tag("feedback_reason", r);
+            }
+            if let Some(n) = notes {
+                if !n.trim().is_empty() {
+                    scope.set_extra("feedback_notes", serde_json::Value::String(n.to_string()));
+                }
+            }
+            if let Some(history) = prompt_history {
+                if let Ok(val) = serde_json::to_value(history) {
+                    scope.set_extra("prompt_history", val);
+                }
+            }
+            if let Some(logs) = diagnostic_logs {
+                if let Ok(val) = serde_json::to_value(logs) {
+                    scope.set_extra("diagnostic_logs", val);
+                }
+            }
+        },
+        || {
+            let msg = match (rating, reason) {
+                ("thumbs_up", _) => "Feedback: Thumbs Up".to_string(),
+                ("thumbs_down", Some(r)) => format!("Feedback: Thumbs Down - {r}"),
+                ("thumbs_down", None) => "Feedback: Thumbs Down".to_string(),
+                _ => format!("Feedback: {rating}"),
+            };
+            sentry::capture_message(&msg, sentry::Level::Info);
+        },
+    );
+}
+

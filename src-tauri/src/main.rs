@@ -6,7 +6,9 @@ fn main() {
     options.release = sentry::release_name!();
     options.send_default_pii = true;
     options.before_send = Some(std::sync::Arc::new(|event| {
-        if eggshell_lib::telemetry::is_telemetry_enabled() {
+        let is_feedback = event.tags.get("type").map(|v| v.as_str()) == Some("feedback")
+            || event.tags.contains_key("feedback_rating");
+        if is_feedback || eggshell_lib::telemetry::is_telemetry_enabled() {
             Some(event)
         } else {
             None
