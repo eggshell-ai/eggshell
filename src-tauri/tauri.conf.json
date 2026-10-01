@@ -38,7 +38,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyM0FDN0Q4QjZBRjZFRjcKUldUM2JxKzIyTWM2SXBQUmYrdWhjYXk5NWpwVWZYa3NhR0Ztc3VXYkMxd21Obmx0M3ZscTRlOU8K",
       "endpoints": [
-        "https://github.com/eggshell-ai/eggshell/releases/download/v1.0.3/latest.json"
+        "https://github.com/eggshell-ai/eggshell/releases/download/v1.0.5/latest.json"
       ],
       "windows": {
         "installMode": "passive"
