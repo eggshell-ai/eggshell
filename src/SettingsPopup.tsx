@@ -539,7 +539,7 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                   We never capture your prompts or sensitive data
                 </span>
                 <span className="settings-field-hint">
-                  When enabled, anonymous crash reports, runtime errors, and application start events are shared with Sentry to help us diagnose issues and improve application stability.
+                  When enabled, anonymous crash reports, runtime errors, application start, and conversation start events are shared with Sentry to help us diagnose issues and improve application stability.
                 </span>
 
                 {installationId ? (

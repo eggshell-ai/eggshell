@@ -52,6 +52,31 @@ pub fn record_startup_event(installation_id: &str) {
     );
 }
 
+/// Emits the conversation started breadcrumb and event with the installation ID if collection is enabled.
+pub fn record_conversation_started_event(installation_id: &str) {
+    if !is_telemetry_enabled() || installation_id.trim().is_empty() {
+        return;
+    }
+    configure_scope(installation_id);
+
+    sentry::with_scope(
+        |scope| {
+            let mut user = sentry::User::default();
+            user.id = Some(installation_id.to_string());
+            scope.set_user(Some(user));
+            scope.set_tag("installation_id", installation_id);
+        },
+        || {
+            sentry::add_breadcrumb(sentry::Breadcrumb {
+                ty: "info".into(),
+                message: Some("Conversation started".into()),
+                ..Default::default()
+            });
+            sentry::capture_message("Conversation started", sentry::Level::Info);
+        },
+    );
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FeedbackMessagePayload {
     pub role: String,
@@ -114,5 +139,42 @@ pub fn record_feedback_event(
             sentry::capture_message(&msg, sentry::Level::Info);
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_telemetry_toggle() {
+        set_telemetry_enabled(false);
+        assert!(!is_telemetry_enabled());
+        set_telemetry_enabled(true);
+        assert!(is_telemetry_enabled());
+        set_telemetry_enabled(false);
+    }
+
+    #[test]
+    fn test_record_conversation_started_when_disabled() {
+        set_telemetry_enabled(false);
+        // Should not panic or perform operations when disabled
+        record_conversation_started_event("test-install-id");
+    }
+
+    #[test]
+    fn test_record_conversation_started_empty_id() {
+        set_telemetry_enabled(true);
+        // Should not panic or set scope with empty ID
+        record_conversation_started_event("");
+        record_conversation_started_event("   ");
+        set_telemetry_enabled(false);
+    }
+
+    #[test]
+    fn test_record_conversation_started_when_enabled() {
+        set_telemetry_enabled(true);
+        record_conversation_started_event("test-install-id");
+        set_telemetry_enabled(false);
+    }
 }
 

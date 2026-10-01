@@ -1549,6 +1549,15 @@ async fn send_message(
     if message.is_empty() {
         return Err("A message is required.".to_string());
     }
+
+    if session_id.is_none() && telemetry::is_telemetry_enabled() {
+        let config = config::ConfigService::load_default(&app).unwrap_or_default();
+        let installation_id = config.installation_id.unwrap_or_default();
+        if !installation_id.is_empty() {
+            telemetry::record_conversation_started_event(&installation_id);
+        }
+    }
+
     // Only the names cross the boundary here: the files themselves are never
     // uploaded to the upstream provider, the agent just learns what was attached.
     let artifacts = artifacts
