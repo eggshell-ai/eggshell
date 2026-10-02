@@ -30,6 +30,12 @@ pub struct AppConfig {
     /// configuration files predate the flag, hence the default.
     #[serde(rename = "setupCompleted", default)]
     pub setup_completed: bool,
+    /// Unique installation identifier for telemetry and crash reporting.
+    #[serde(rename = "installationId", default)]
+    pub installation_id: Option<String>,
+    /// Whether the user has opted in to anonymous telemetry and error reporting.
+    #[serde(rename = "telemetryEnabled", default)]
+    pub telemetry_enabled: bool,
 }
 
 impl Default for AppConfig {
@@ -39,6 +45,8 @@ impl Default for AppConfig {
             providers: Vec::new(),
             mysql: MysqlConfig::default(),
             setup_completed: false,
+            installation_id: None,
+            telemetry_enabled: false,
         }
     }
 }

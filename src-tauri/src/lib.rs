@@ -6,6 +6,7 @@ pub mod logger;
 pub mod migrations;
 pub mod progress;
 mod setup;
+pub mod telemetry;
 mod tools;
 
 use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository};
@@ -925,6 +926,8 @@ struct SetupState {
     providers: Vec<providers::ProviderSummary>,
     available_types: Vec<providers::ProviderDescriptor>,
     mysql: MysqlSummary,
+    telemetry_enabled: bool,
+    installation_id: String,
 }
 
 #[tauri::command]
@@ -951,6 +954,8 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
                 providers: providers::provider_summaries(&config.providers, &cache, now),
                 available_types,
                 mysql,
+                telemetry_enabled: config.telemetry_enabled,
+                installation_id: config.installation_id.unwrap_or_default(),
             }
         }
         // A first launch has no configuration to read yet, which is exactly when
@@ -971,9 +976,36 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
                 providers: providers::provider_summaries(&[], &cache, now),
                 available_types,
                 mysql,
+                telemetry_enabled: false,
+                installation_id: String::new(),
             }
         }
     }
+}
+
+/// Updates the user's telemetry and error tracking preference in config.yaml
+/// and updates the runtime Sentry gate and user scope.
+#[tauri::command]
+fn save_privacy_settings(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mut config = config::ConfigService::load_default(&app).unwrap_or_default();
+    config.telemetry_enabled = enabled;
+    let installation_id = match &config.installation_id {
+        Some(id) if !id.trim().is_empty() => id.clone(),
+        _ => {
+            let new_id = uuid::Uuid::new_v4().to_string();
+            config.installation_id = Some(new_id.clone());
+            new_id
+        }
+    };
+    config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
+
+    telemetry::set_telemetry_enabled(enabled);
+    if enabled {
+        telemetry::record_startup_event(&installation_id);
+    } else {
+        telemetry::clear_scope();
+    }
+    Ok(())
 }
 
 /// Fetches the models a provider currently offers, using the credentials from
@@ -1517,6 +1549,15 @@ async fn send_message(
     if message.is_empty() {
         return Err("A message is required.".to_string());
     }
+
+    if session_id.is_none() && telemetry::is_telemetry_enabled() {
+        let config = config::ConfigService::load_default(&app).unwrap_or_default();
+        let installation_id = config.installation_id.unwrap_or_default();
+        if !installation_id.is_empty() {
+            telemetry::record_conversation_started_event(&installation_id);
+        }
+    }
+
     // Only the names cross the boundary here: the files themselves are never
     // uploaded to the upstream provider, the agent just learns what was attached.
     let artifacts = artifacts
@@ -1571,6 +1612,57 @@ async fn stop_chat(
     }
     Ok(())
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SubmitFeedbackPayload {
+    pub rating: String,
+    pub reason: Option<String>,
+    pub notes: Option<String>,
+    #[serde(rename = "attachPromptHistory", default)]
+    pub attach_prompt_history: bool,
+    #[serde(rename = "promptHistory")]
+    pub prompt_history: Option<Vec<telemetry::FeedbackMessagePayload>>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+}
+
+#[tauri::command]
+async fn submit_feedback(
+    app: tauri::AppHandle,
+    log: tauri::State<'_, ProgressLog>,
+    payload: SubmitFeedbackPayload,
+) -> Result<(), String> {
+    let config = config::ConfigService::load_default(&app).unwrap_or_default();
+    let installation_id = config.installation_id.unwrap_or_default();
+    let app_version = app.package_info().version.to_string();
+
+    let (prompt_history, diagnostic_logs) = if payload.attach_prompt_history {
+        let logs = progress::read_logs(log.logger(), true);
+        (payload.prompt_history, Some(logs))
+    } else {
+        (None, None)
+    };
+
+    telemetry::record_feedback_event(
+        &installation_id,
+        &app_version,
+        &payload.rating,
+        payload.reason.as_deref(),
+        payload.notes.as_deref(),
+        payload.provider.as_deref(),
+        payload.model.as_deref(),
+        prompt_history.as_deref(),
+        diagnostic_logs.as_deref(),
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 
 /// The question a project asks of MySQL too, so it is the one worth asking here:
 /// can anything accept a connection on the configured port? A registered service,
@@ -1754,13 +1846,39 @@ pub fn run() {
             }
 
             // A missing or unconfigured file is what a first launch looks like.
-            let config = config::ConfigService::load_default(app).unwrap_or_else(|error| {
+            let mut config = config::ConfigService::load_default(app).unwrap_or_else(|error| {
                 log.line(
                     "info",
                     format!("{error}; starting with empty provider settings"),
                 );
                 config::AppConfig::default()
             });
+
+            // Ensure an installation ID is generated and persisted in config.yaml
+            let mut config_dirty = false;
+            let installation_id = match &config.installation_id {
+                Some(id) if !id.trim().is_empty() => id.clone(),
+                _ => {
+                    let new_id = uuid::Uuid::new_v4().to_string();
+                    config.installation_id = Some(new_id.clone());
+                    config_dirty = true;
+                    new_id
+                }
+            };
+            if config_dirty {
+                if let Err(e) = config::ConfigService::save_default(app, &config) {
+                    log.line("error", format!("failed to persist installation ID: {e}"));
+                }
+            }
+
+            // If user opted in to telemetry, initialize runtime gate and record startup event
+            if config.telemetry_enabled {
+                telemetry::set_telemetry_enabled(true);
+                telemetry::record_startup_event(&installation_id);
+            } else {
+                telemetry::set_telemetry_enabled(false);
+            }
+
             // The first configured provider is the one the agent talks to; the
             // chat screen can switch models within it. The hub holds every
             // concrete provider service and forwards prompts to the active one,
@@ -1788,6 +1906,7 @@ pub fn run() {
             setup_log_history,
             read_logs,
             load_setup_state,
+            save_privacy_settings,
             config::save_mysql_config,
             config::save_mysql_settings,
             save_provider_config,
@@ -1802,7 +1921,9 @@ pub fn run() {
             list_sessions,
             delete_session,
             send_message,
-            stop_chat
+            stop_chat,
+            submit_feedback,
+            get_app_version
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -28,16 +28,19 @@ type SetupState = {
   providers: RegisteredProvider[];
   available_types?: ProviderTypeDescriptor[];
   mysql?: MysqlSummary;
+  telemetry_enabled?: boolean;
+  installation_id?: string;
 };
 
 type SettingsPopupProps = { isOpen: boolean; onClose: () => void };
 
 // Add an entry here (and a matching panel in the body) to give the settings
 // sidebar another section.
-type SettingsSectionKey = "providers" | "mysql";
+type SettingsSectionKey = "providers" | "mysql" | "privacy";
 const settingsSections: { key: SettingsSectionKey; label: string; detail: string }[] = [
   { key: "providers", label: "Providers", detail: "Models and API keys" },
   { key: "mysql", label: "MySQL", detail: "Database connection & mode" },
+  { key: "privacy", label: "Data & Privacy", detail: "Telemetry and crash reporting" },
 ];
 
 function describeModels(models: string[]) {
@@ -75,6 +78,13 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   const [mysqlError, setMysqlError] = useState<string>("");
   const [mysqlSuccess, setMysqlSuccess] = useState<string>("");
   const [isSavingMysql, setIsSavingMysql] = useState<boolean>(false);
+
+  // Privacy & telemetry state
+  const [telemetryEnabled, setTelemetryEnabled] = useState<boolean>(false);
+  const [installationId, setInstallationId] = useState<string>("");
+  const [privacyError, setPrivacyError] = useState<string>("");
+  const [privacySuccess, setPrivacySuccess] = useState<string>("");
+  const [isSavingPrivacy, setIsSavingPrivacy] = useState<boolean>(false);
 
   const selected = providers.find((p) => p.id === selectedId || p.key === selectedId) ?? null;
   const isNew = selectedId === null;
@@ -127,9 +137,11 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     setMysqlPass("");
     setMysqlError("");
     setMysqlSuccess("");
+    setPrivacyError("");
+    setPrivacySuccess("");
     setLoading(true);
     void invoke<SetupState>("load_setup_state")
-      .then(({ providers: loaded, available_types: types, mysql }) => {
+      .then(({ providers: loaded, available_types: types, mysql, telemetry_enabled, installation_id }) => {
         setProviders(loaded);
         if (types && types.length > 0) {
           setAvailableTypes(types);
@@ -145,6 +157,12 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
           setMysqlUser(mysql.user || "root");
           setMysqlPassSet(Boolean(mysql.pass_set));
           setMysqlIsMariadb(Boolean(mysql.is_mariadb));
+        }
+        if (telemetry_enabled !== undefined) {
+          setTelemetryEnabled(Boolean(telemetry_enabled));
+        }
+        if (installation_id) {
+          setInstallationId(installation_id);
         }
       })
       .catch((reason: unknown) => console.error("[SettingsPopup] load_setup_state rejected", { reason }))
@@ -358,6 +376,21 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     }
   }
 
+  async function savePrivacySettings() {
+    setIsSavingPrivacy(true);
+    setPrivacyError("");
+    setPrivacySuccess("");
+    try {
+      await invoke("save_privacy_settings", { enabled: telemetryEnabled });
+      setPrivacySuccess("Privacy settings saved successfully.");
+    } catch (reason) {
+      console.error("[SettingsPopup] save_privacy_settings rejected", { reason });
+      setPrivacyError(String(reason));
+    } finally {
+      setIsSavingPrivacy(false);
+    }
+  }
+
   if (!isOpen) return null;
 
   const activeSection = settingsSections.find(({ key }) => key === section) ?? settingsSections[0];
@@ -484,6 +517,56 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                       disabled={isSavingMysql}
                     >
                       {isSavingMysql ? "Saving…" : "Save MySQL settings"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : section === "privacy" ? (
+              <div className="settings-form-pane">
+                <label className="settings-checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={telemetryEnabled}
+                    onChange={(e) => {
+                      setTelemetryEnabled(e.target.checked);
+                      setPrivacyError("");
+                      setPrivacySuccess("");
+                    }}
+                  />
+                  <span>Enable telemetry & crash reporting</span>
+                </label>
+                <span className="settings-field-hint" style={{ fontWeight: 600, color: "#6246ea" }}>
+                  We never capture your prompts or sensitive data
+                </span>
+                <span className="settings-field-hint">
+                  When enabled, anonymous crash reports, runtime errors, application start, and conversation start events are shared with Sentry to help us diagnose issues and improve application stability.
+                </span>
+
+                {installationId ? (
+                  <label style={{ marginTop: "16px" }}>
+                    Installation ID <span>Anonymous identifier associated with telemetry events</span>
+                    <input
+                      type="text"
+                      readOnly
+                      value={installationId}
+                      style={{ background: "#fbfaff", cursor: "default" }}
+                    />
+                  </label>
+                ) : null}
+
+                {privacySuccess && <p className="dialog-success" role="status">{privacySuccess}</p>}
+                {privacyError && <p className="dialog-error" role="alert">{privacyError}</p>}
+
+                <div className="provider-editor-actions">
+                  <span />
+                  <div className="provider-editor-buttons">
+                    <button
+                      className="add-button"
+                      type="button"
+                      onClick={() => void savePrivacySettings()}
+                      disabled={isSavingPrivacy}
+                    >
+                      {isSavingPrivacy ? "Saving…" : "Save privacy settings"}
                     </button>
                   </div>
                 </div>

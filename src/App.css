@@ -2007,3 +2007,227 @@ input {
     overflow-x: auto;
   }
 }
+
+/* Feedback UI in Chat */
+.message-feedback-row {
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+  min-height: 24px;
+}
+
+.feedback-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #858291;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+
+.feedback-btn:hover {
+  background: #f0eef6;
+  color: #6246ea;
+}
+
+.feedback-btn.active {
+  background: #ede9fe;
+  color: #6246ea;
+  border-color: #ddd6fe;
+}
+
+.feedback-thank-you {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #5548d9;
+  background: #f2efff;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid #e0d9fc;
+  animation: feedbackFadeIn 0.2s ease-in-out;
+}
+
+@keyframes feedbackFadeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Feedback Dialog */
+.feedback-dialog {
+  width: min(100%, 480px);
+}
+
+.feedback-options-group {
+  border: 0;
+  padding: 0;
+  margin: 0 0 16px 0;
+}
+
+.feedback-options-legend {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #2b283a;
+  margin-bottom: 10px;
+}
+
+.feedback-radio-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feedback-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f8f7fc;
+  border: 1px solid #ebe8f4;
+  cursor: pointer;
+  font-size: 0.88rem;
+  color: #3b3749;
+  transition: all 0.12s ease;
+}
+
+.feedback-radio-label:hover {
+  background: #f2efff;
+  border-color: #d8d0fc;
+}
+
+.feedback-radio-label input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #6246ea;
+  margin: 0;
+}
+
+.feedback-notes-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.feedback-notes-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #2b283a;
+}
+
+.feedback-notes-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #d8d5e0;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  font-family: inherit;
+  color: #2b283a;
+  resize: vertical;
+  background: #fff;
+}
+
+.feedback-notes-input:focus {
+  outline: none;
+  border-color: #6246ea;
+  box-shadow: 0 0 0 3px #6246ea20;
+}
+
+.feedback-history-check {
+  margin-top: 8px;
+  margin-bottom: 18px;
+}
+
+.feedback-review-intro {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #2b283a;
+  margin-bottom: 14px;
+}
+
+.feedback-manifest-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #f8f7fc;
+  border: 1px solid #ebe8f4;
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.manifest-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.manifest-item.included .manifest-marker {
+  color: #22c55e;
+  font-weight: 800;
+}
+
+.manifest-item.excluded .manifest-marker {
+  color: #9ca3af;
+  font-weight: 700;
+}
+
+.manifest-item.included .manifest-label {
+  color: #2b283a;
+}
+
+.manifest-item.excluded .manifest-label {
+  color: #9ca3af;
+}
+
+.manifest-sub {
+  font-size: 0.8rem;
+  color: #737383;
+}
+
+.manifest-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: #e5e7eb;
+  color: #6b7280;
+}
+
+.feedback-summary-box {
+  background: #fff;
+  border: 1px solid #e2dfec;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 0.84rem;
+  color: #4b4859;
+}
+
+.feedback-summary-box p {
+  margin: 3px 0;
+  padding: 0;
+  background: none;
+}
+
