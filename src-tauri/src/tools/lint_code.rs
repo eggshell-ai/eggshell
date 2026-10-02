@@ -121,19 +121,17 @@ impl Tool for LintCodeTool {
 
         let mut issues: Vec<Value> = Vec::new();
         let mut total_errors: usize = 0;
-        let mut total_warnings: usize = 0;
+        let total_warnings: usize = 0;
 
         if shell == "backend" || shell == "all" {
             let backend_dir = project_path.join("backend");
             if backend_dir.is_dir() {
                 let php_issues = lint_php_shell(&backend_dir, relative_path)?;
                 for issue in php_issues {
-                    if issue.get("severity").and_then(Value::as_str) == Some("warning") {
-                        total_warnings += 1;
-                    } else {
+                    if issue.get("severity").and_then(Value::as_str) == Some("error") {
                         total_errors += 1;
+                        issues.push(issue);
                     }
-                    issues.push(issue);
                 }
             } else if shell == "backend" {
                 return Ok(json!({
@@ -166,12 +164,10 @@ impl Tool for LintCodeTool {
             if frontend_dir.is_dir() {
                 let js_issues = lint_frontend_shell(&frontend_dir, relative_path)?;
                 for issue in js_issues {
-                    if issue.get("severity").and_then(Value::as_str) == Some("warning") {
-                        total_warnings += 1;
-                    } else {
+                    if issue.get("severity").and_then(Value::as_str) == Some("error") {
                         total_errors += 1;
+                        issues.push(issue);
                     }
-                    issues.push(issue);
                 }
             } else if shell == "frontend" {
                 return Ok(json!({
