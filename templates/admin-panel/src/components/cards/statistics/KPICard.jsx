@@ -12,10 +12,13 @@ import AnalyticEcommerce from 'components/cards/statistics/AnalyticEcommerce';
 import apiService from 'api/apiService';
 import { useDashboardContext } from 'components/dashboard/DashboardContext';
 import { parseGridSize } from 'components/dashboard/DashboardWidget';
+import { formatCurrency } from 'services/currencyService';
 
 export default function KPICard({
   title,
   endpoint,
+  currency,
+  compact,
   refreshTrigger: propRefreshTrigger,
   onCacheUpdate: propOnCacheUpdate,
   cacheTTL = 300000,
@@ -101,13 +104,24 @@ export default function KPICard({
     };
   }, [endpoint, refreshTrigger, cacheTTL, cacheKey]);
 
+  const isCompact = compact !== undefined ? Boolean(compact) : Boolean(currency);
+
+  let formattedCount = '—';
+  if (data !== null) {
+    if (currency) {
+      formattedCount = formatCurrency(data, currency, { compact: isCompact });
+    } else {
+      formattedCount = String(data);
+    }
+  }
+
   let content;
   if (loading) {
     content = <AnalyticEcommerce title={title} count={<CircularProgress size={20} />} icon={icon} color={color} sx={{ height: '100%' }} {...props} />;
   } else if (error) {
     content = <AnalyticEcommerce title={title} count="—" extra={error} icon={icon} color={color} sx={{ height: '100%' }} {...props} />;
   } else {
-    content = <AnalyticEcommerce title={title} count={data !== null ? String(data) : '—'} icon={icon} color={color} sx={{ height: '100%' }} {...props} />;
+    content = <AnalyticEcommerce title={title} count={formattedCount} icon={icon} color={color} sx={{ height: '100%' }} {...props} />;
   }
 
   if (size) {
@@ -122,6 +136,8 @@ KPICard.dashboardKind = 'kpi';
 KPICard.propTypes = {
   title: PropTypes.string.isRequired,
   endpoint: PropTypes.string.isRequired,
+  currency: PropTypes.string,
+  compact: PropTypes.bool,
   refreshTrigger: PropTypes.any,
   onCacheUpdate: PropTypes.func,
   cacheTTL: PropTypes.number,

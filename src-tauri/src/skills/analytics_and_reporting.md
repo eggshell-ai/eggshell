@@ -117,6 +117,12 @@ Update `views/dashboard/default.jsx` using `write_file` to add the new `KPICard`
 
 The `<Dashboard>` container automatically handles title headers, refresh actions, automated cache registration/invalidation, and **automatic row layout formation**. **Do not provide `size` props** — the framework forms rows automatically by kind (KPI cards, charts, tables) and ensures equal height across each row.
 
+#### KPICard Props: Currency and Compaction
+- `currency`: Currency symbol or code (e.g., `"$"` or `"USD"`). When provided, values are automatically formatted with the currency symbol and two decimal places.
+- `compact`: Optional boolean flag controlling number compaction.
+  - When `currency` is passed and `compact` is omitted, compaction **defaults to `true`**, formatting large figures with abbreviated suffixes (e.g. `$14.82m` instead of `$14,820,000.00`).
+  - Pass `compact={false}` if you want the full uncompacted value with thousand separators (e.g. `$14,820,000.00`).
+
 **Tool call example:**
 ```javascript
 write_file({
@@ -136,6 +142,11 @@ export default function DashboardDefault() {
       <KPICard
         title="Customers"
         endpoint="/analytics/customers/count"
+      />
+      <KPICard
+        title="Total Revenue"
+        endpoint="/analytics/revenue/total"
+        currency="$"
       />
     </Dashboard>
   );
