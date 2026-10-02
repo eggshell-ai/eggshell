@@ -40,7 +40,7 @@ class Role extends ResourceEntity
     #[Form(label: "Permissions", type: "tags", required: false, options: ["source" => "/permissions"])]
     public Collection $permissions;
 
-    #[ORM\OneToMany(targetEntity: User::class, mappedBy: 'role')]
+    #[ORM\ManyToMany(targetEntity: User::class, mappedBy: 'roles')]
     #[Ignore]
     public Collection $users;
 
