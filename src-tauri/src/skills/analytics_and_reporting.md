@@ -221,12 +221,20 @@ Expects an array of row objects (or `{ "data": [...] }` or `{ "items": [...] }`)
 
 Each column definition object in `columns` supports:
 - **Field Key**: `dataIndex`, `field`, or `key` &mdash; The property key in the row data object to read.
-- **Header Label**: `title`, `label`, or `header` &mdash; The display label for the column header.
-- **Alignment**: `align` &mdash; Header and cell alignment: `'left'` (default), `'center'`, or `'right'`.
-- **Custom Render**: `render(value, row)` &mdash; Optional custom rendering function returning string or JSX.
+- **Header Label**: `header`, `title`, or `label` &mdash; The display label for the column header (`header` is supported and takes precedence).
+- **Alignment**: `align` &mdash; Header and cell alignment: `'left'`, `'center'`, or `'right'`. Defaults to `'right'` for currency and numbers, and `'left'` otherwise.
+- **Currency Formatting**:
+  - `currency`: Currency symbol or code string (e.g. `'$'`, `'USD'`, `'€'`). Formats the numeric value with the currency symbol and 2 decimal places by default.
+  - `compact`: Optional boolean flag (`true` / `false`). When `true`, compacts large values (e.g. `$14.82m` or `$15k`). Defaults to `false` in tables so exact numbers remain visible.
+  - `decimals`: Optional integer specifying custom decimal precision (e.g. `0` for whole dollar amounts, `2` for cents).
+- **Number Formatting**:
+  - `format`: `'number'` | `'currency'` &mdash; When set to `'number'`, formats values with thousand separators (e.g. `1,420`).
+  - `compact`: Optional boolean flag (`true` / `false`). When `true`, compacts large numbers (e.g. `14.82m` or `15k`).
+  - `decimals`: Optional integer specifying custom decimal precision.
+- **Custom Render**: `render(value, row)` &mdash; Optional custom rendering function returning a string or JSX. Takes precedence over `currency`/`format`.
 - **Link Template**: `link` &mdash; Optional URL template string with `{fieldName}` placeholders (e.g. `"/products/{id}"`). The cell content will be wrapped in a Next.js `Link`.
 
-**Example `TableCard` usage on a dashboard:**
+**Example `TableCard` usage on a dashboard (declarative formatting without custom render callbacks):**
 ```jsx
 <TableCard
   title="Top Selling Products"
@@ -234,21 +242,19 @@ Each column definition object in `columns` supports:
   maxRows={5}
   columns={[
     {
-      title: 'Product',
+      header: 'Product',
       dataIndex: 'name',
       link: '/products/{id}',
-      align: 'left'
     },
     {
-      title: 'Units Sold',
+      header: 'Units Sold',
       dataIndex: 'totalSold',
-      align: 'right'
+      format: 'number',
     },
     {
-      title: 'Revenue',
+      header: 'Revenue',
       dataIndex: 'totalRevenue',
-      align: 'right',
-      render: (val) => `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+      currency: '$',
     }
   ]}
 />

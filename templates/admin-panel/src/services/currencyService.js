@@ -1,9 +1,11 @@
-import currencyUtil, { formatCurrency } from 'utils/currency';
+import currencyUtil, { formatCurrency, formatNumber } from 'utils/currency';
 
 const currencyService = {
   formatCurrency,
+  formatNumber,
   ...currencyUtil
 };
 
-export { formatCurrency };
+export { formatCurrency, formatNumber };
 export default currencyService;
+

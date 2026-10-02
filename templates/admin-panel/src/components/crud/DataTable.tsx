@@ -5,6 +5,7 @@ import { Table, Card, Button, Input, Space, DatePicker, Select, Tag } from 'antd
 import { SearchOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import apiService from '../../api/apiService';
+import { formatCurrency, formatNumber } from '../../services/currencyService';
 
 interface DataTableFilter {
   name: string;
@@ -156,6 +157,42 @@ export default function DataTable({
     setSearchTerm('');
   };
 
+  const resolvedColumns = (columns || []).map((col: any) => {
+    const title = col.header || col.title || col.label;
+    const isNumeric = Boolean(
+      col.currency ||
+      col.format === 'currency' ||
+      col.format === 'number' ||
+      col.type === 'number' ||
+      col.type === 'currency'
+    );
+
+    let render = col.render;
+    if (!render) {
+      if (col.currency || col.format === 'currency' || col.type === 'currency') {
+        const symbol = typeof col.currency === 'string' ? col.currency : '$';
+        render = (val: any) =>
+          formatCurrency(val, symbol, {
+            compact: Boolean(col.compact),
+            decimals: col.decimals
+          });
+      } else if (col.format === 'number' || col.type === 'number') {
+        render = (val: any) =>
+          formatNumber(val, {
+            compact: Boolean(col.compact),
+            decimals: col.decimals
+          });
+      }
+    }
+
+    return {
+      ...col,
+      title,
+      align: col.align || (isNumeric ? 'right' : 'left'),
+      ...(render ? { render } : {})
+    };
+  });
+
   return (
     <Card
       title={title}
@@ -224,7 +261,7 @@ export default function DataTable({
       )}
 
       <Table
-        columns={columns}
+        columns={resolvedColumns}
         dataSource={data}
         rowKey={rowKey}
         loading={loading}
