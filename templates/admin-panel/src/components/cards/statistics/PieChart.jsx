@@ -26,7 +26,8 @@ export default function PieChartCard({
   cacheTTL = 300000,
   size,
   innerRadius = 0,
-  height = 300,
+  height = 280,
+  sx,
   ...props
 }) {
   const dashboard = useDashboardContext();
@@ -132,8 +133,8 @@ export default function PieChartCard({
     : [];
 
   const content = (
-    <MainCard content={false} {...props}>
-      <Box sx={{ p: 2 }}>
+    <MainCard content={false} sx={{ height: '100%', display: 'flex', flexDirection: 'column', ...(typeof sx === 'function' ? sx : sx || {}) }} {...props}>
+      <Box sx={{ p: 2, flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
         <Typography variant="h5" sx={{ mb: 2 }}>
           {title}
         </Typography>
@@ -173,6 +174,8 @@ export default function PieChartCard({
 
   return content;
 }
+
+PieChartCard.dashboardKind = 'chart';
 
 PieChartCard.propTypes = {
   title: PropTypes.string.isRequired,

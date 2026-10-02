@@ -103,11 +103,11 @@ export default function KPICard({
 
   let content;
   if (loading) {
-    content = <AnalyticEcommerce title={title} count={<CircularProgress size={20} />} icon={icon} color={color} {...props} />;
+    content = <AnalyticEcommerce title={title} count={<CircularProgress size={20} />} icon={icon} color={color} sx={{ height: '100%' }} {...props} />;
   } else if (error) {
-    content = <AnalyticEcommerce title={title} count="—" extra={error} icon={icon} color={color} {...props} />;
+    content = <AnalyticEcommerce title={title} count="—" extra={error} icon={icon} color={color} sx={{ height: '100%' }} {...props} />;
   } else {
-    content = <AnalyticEcommerce title={title} count={data !== null ? String(data) : '—'} icon={icon} color={color} {...props} />;
+    content = <AnalyticEcommerce title={title} count={data !== null ? String(data) : '—'} icon={icon} color={color} sx={{ height: '100%' }} {...props} />;
   }
 
   if (size) {
@@ -116,6 +116,8 @@ export default function KPICard({
 
   return content;
 }
+
+KPICard.dashboardKind = 'kpi';
 
 KPICard.propTypes = {
   title: PropTypes.string.isRequired,

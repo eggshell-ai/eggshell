@@ -28,7 +28,8 @@ export default function LineChartCard({
   xAxisKey = 'x',
   yAxisKey = 'y',
   seriesLabel = 'Value',
-  height = 300,
+  height = 280,
+  sx,
   ...props
 }) {
   const dashboard = useDashboardContext();
@@ -117,8 +118,8 @@ export default function LineChartCard({
   } : null;
 
   const content = (
-    <MainCard content={false} {...props}>
-      <Box sx={{ p: 2 }}>
+    <MainCard content={false} sx={{ height: '100%', display: 'flex', flexDirection: 'column', ...(typeof sx === 'function' ? sx : sx || {}) }} {...props}>
+      <Box sx={{ p: 2, flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
         <Typography variant="h5" sx={{ mb: 2 }}>
           {title}
         </Typography>
@@ -153,6 +154,8 @@ export default function LineChartCard({
 
   return content;
 }
+
+LineChartCard.dashboardKind = 'chart';
 
 LineChartCard.propTypes = {
   title: PropTypes.string.isRequired,

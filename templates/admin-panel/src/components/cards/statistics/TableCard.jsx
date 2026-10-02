@@ -31,6 +31,7 @@ export default function TableCard({
   cacheTTL = 300000,
   size,
   maxRows,
+  sx,
   ...props
 }) {
   const dashboard = useDashboardContext();
@@ -147,22 +148,22 @@ export default function TableCard({
   };
 
   const content = (
-    <MainCard content={false} {...props}>
-      <Box sx={{ p: 2 }}>
+    <MainCard content={false} sx={{ height: '100%', display: 'flex', flexDirection: 'column', ...(typeof sx === 'function' ? sx : sx || {}) }} {...props}>
+      <Box sx={{ p: 2, flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
         <Typography variant="h5" sx={{ mb: 2 }}>
           {title}
         </Typography>
         {loading ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200, flexGrow: 1 }}>
             <CircularProgress />
           </Box>
         ) : error ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200, flexGrow: 1 }}>
             <Typography color="error">{error}</Typography>
           </Box>
         ) : rows.length > 0 ? (
-          <TableContainer>
-            <Table size="small">
+          <TableContainer sx={{ maxHeight: 340, overflowY: 'auto' }}>
+            <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>
                   {resolvedColumns.map((col, idx) => (
@@ -186,7 +187,7 @@ export default function TableCard({
             </Table>
           </TableContainer>
         ) : (
-          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 150 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 150, flexGrow: 1 }}>
             <Typography color="textSecondary">No records found</Typography>
           </Box>
         )}
@@ -200,6 +201,8 @@ export default function TableCard({
 
   return content;
 }
+
+TableCard.dashboardKind = 'table';
 
 TableCard.propTypes = {
   title: PropTypes.string.isRequired,

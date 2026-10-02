@@ -115,7 +115,7 @@ read_file({
 
 Update `views/dashboard/default.jsx` using `write_file` to add the new `KPICard` widget inside `<Dashboard>`.
 
-The `<Dashboard>` container automatically handles title headers, refresh actions, and automated cache registration/invalidation. Widgets declare their grid size via the `size` prop (using a 12-column grid system, e.g. `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
+The `<Dashboard>` container automatically handles title headers, refresh actions, automated cache registration/invalidation, and **automatic row layout formation**. **Do not provide `size` props** — the framework forms rows automatically by kind (KPI cards, charts, tables) and ensures equal height across each row.
 
 **Tool call example:**
 ```javascript
@@ -136,7 +136,6 @@ export default function DashboardDefault() {
       <KPICard
         title="Customers"
         endpoint="/analytics/customers/count"
-        size={{ xs: 12, sm: 6, lg: 3 }}
       />
     </Dashboard>
   );
@@ -222,7 +221,6 @@ Each column definition object in `columns` supports:
   title="Top Selling Products"
   endpoint="/analytics/products/topSelling"
   maxRows={5}
-  size={{ xs: 12, lg: 6 }}
   columns={[
     {
       title: 'Product',
@@ -349,12 +347,10 @@ export default function DashboardDefault() {
       <KPICard
         title="Customers"
         endpoint="/analytics/customers/count"
-        size={{ xs: 12, sm: 6, lg: 3 }}
       />
       <LineChartCard
         title="Monthly Sales"
         endpoint="/analytics/sales/monthly"
-        size={{ xs: 12, lg: 6 }}
       />
     </Dashboard>
   );
@@ -591,7 +587,13 @@ patch_file({
 3. **Never create custom Symfony controllers for reports**: Never create an `AbstractController` or `#[Route('/api/analytics/...')]` class. The framework automatically dispatches `/api/analytics/{category}/{metric}` to any service implementing `AnalyticsAggregatorInterface` under `App\Service\Analytics\`. Use `getValueWithRequest(Request $request)` to read filter or search params.
 4. **Never include `/api` in frontend endpoints**: Frontend requests go through `apiService` which already prefixes `/api`. Using `"/api/analytics/..."` will result in `"/api/api/analytics/..."` and fail with a 404. Always use `"/analytics/..."`.
 5. **Chart data format**: All chart widgets use the documented JSON data formats (Cartesian, Distribution, or Tabular).
-6. **Grid Sizing**: Widgets can declare their own 12-column layout sizing directly via the `size` prop (e.g., `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
+6. **Framework-Driven Layout (No `size` prop needed)**: The agent declares content widgets inside `<Dashboard>`, and the framework builds rows automatically:
+   - **KPI cards**: One row, equal columns (up to 4 per row, 3 per row beyond that).
+   - **Charts** (`LineChartCard`, `BarChartCard`, `PieChartCard`): 2 per row; an odd last chart spans the full width. Chart bodies have a fixed 280px height.
+   - **Tables** (`TableCard`): 2 per row; an odd last table spans the full width. Table bodies have a max height and scroll internally.
+   - The layout order is always KPIs, then charts, then tables.
+   - Every row uses CSS grid with `align-items: stretch` and `height: 100%`, guaranteeing cards in a row match in height.
+   - **Do not calculate or pass `size` props** from the agent.
 7. **Optimized DB queries & QueryBuilder filtering**:
    - Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
    - **Always use `andWhere()` (or `orWhere()`) instead of chaining multiple `where()` calls**: In Doctrine QueryBuilder, calling `->where(...)` multiple times overwrites prior conditions. Use `->where(...)` for the initial condition and subsequent `->andWhere(...)` for additional filters.

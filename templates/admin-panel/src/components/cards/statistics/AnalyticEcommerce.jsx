@@ -14,9 +14,9 @@ import FallOutlined from '@ant-design/icons/FallOutlined';
 
 const iconSX = { fontSize: '0.75rem', color: 'inherit', marginLeft: 0, marginRight: 0 };
 
-export default function AnalyticEcommerce({ color = 'primary', title, count, percentage, isLoss, extra, icon }) {
+export default function AnalyticEcommerce({ color = 'primary', title, count, percentage, isLoss, extra, icon, sx, ...props }) {
   return (
-    <MainCard contentSX={{ p: 2.25 }}>
+    <MainCard contentSX={{ p: 2.25 }} sx={{ height: '100%', ...(typeof sx === 'function' ? sx : sx || {}) }} {...props}>
       <Stack sx={{ gap: 0.5 }}>
         <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between' }}>
           <Typography variant="h6" sx={{ color: 'text.secondary' }}>
