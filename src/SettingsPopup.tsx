@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 type ProviderTypeDescriptor = { key: string; name: string; detail: string };
 
@@ -36,11 +38,12 @@ type SettingsPopupProps = { isOpen: boolean; onClose: () => void };
 
 // Add an entry here (and a matching panel in the body) to give the settings
 // sidebar another section.
-type SettingsSectionKey = "providers" | "mysql" | "privacy";
+type SettingsSectionKey = "providers" | "mysql" | "privacy" | "about";
 const settingsSections: { key: SettingsSectionKey; label: string; detail: string }[] = [
   { key: "providers", label: "Providers", detail: "Models and API keys" },
   { key: "mysql", label: "MySQL", detail: "Database connection & mode" },
   { key: "privacy", label: "Data & Privacy", detail: "Telemetry and crash reporting" },
+  { key: "about", label: "About", detail: "Version and links" },
 ];
 
 function describeModels(models: string[]) {
@@ -85,6 +88,9 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
   const [privacyError, setPrivacyError] = useState<string>("");
   const [privacySuccess, setPrivacySuccess] = useState<string>("");
   const [isSavingPrivacy, setIsSavingPrivacy] = useState<boolean>(false);
+
+  // About state
+  const [appVersion, setAppVersion] = useState<string>("");
 
   const selected = providers.find((p) => p.id === selectedId || p.key === selectedId) ?? null;
   const isNew = selectedId === null;
@@ -167,6 +173,7 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
       })
       .catch((reason: unknown) => console.error("[SettingsPopup] load_setup_state rejected", { reason }))
       .finally(() => setLoading(false));
+    void getVersion().then(setAppVersion).catch(() => setAppVersion("unknown"));
   }, [isOpen]);
 
   function editProvider(provider: RegisteredProvider) {
@@ -567,6 +574,40 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                       disabled={isSavingPrivacy}
                     >
                       {isSavingPrivacy ? "Saving…" : "Save privacy settings"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : section === "about" ? (
+              <div className="settings-form-pane">
+                <label>
+                  Version
+                  <input
+                    type="text"
+                    readOnly
+                    value={appVersion || "Loading…"}
+                    style={{ background: "#fbfaff", cursor: "default" }}
+                  />
+                </label>
+
+                <div style={{ marginTop: "8px" }}>
+                  <strong style={{ display: "block", marginBottom: "4px" }}>Links</strong>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      style={{ textAlign: "left" }}
+                      onClick={() => void openUrl("https://discord.gg/y68jFEVDVN")}
+                    >
+                      Discord &mdash; Join our community
+                    </button>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      style={{ textAlign: "left" }}
+                      onClick={() => void openUrl("https://github.com/eggshell-ai/eggshell")}
+                    >
+                      GitHub &mdash; Source code &amp; issues
                     </button>
                   </div>
                 </div>
