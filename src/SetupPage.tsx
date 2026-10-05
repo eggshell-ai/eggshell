@@ -94,6 +94,29 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     if (panel && isPinnedRef.current) panel.scrollTop = panel.scrollHeight;
   }, [logLines, isLogOpen]);
 
+  const [detectedKeys, setDetectedKeys] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let stopped = false;
+
+    void listen<{ key: string; present: boolean }>("dependency-detected", ({ payload }) => {
+      setDetectedKeys((prev) => new Set(prev).add(payload.key));
+      const index = dependencies.findIndex((dep) => dep.key === payload.key);
+      if (index !== -1) {
+        setChecked((current) => replaceAt(current, index, payload.present));
+      }
+    }).then((stop) => {
+      if (stopped) stop();
+      else unlisten = stop;
+    });
+
+    return () => {
+      stopped = true;
+      unlisten?.();
+    };
+  }, []);
+
   useEffect(() => {
     const startedAt = performance.now();
     console.info("[SetupPage] Dependency detection started", { startedAt: new Date().toISOString() });
@@ -102,6 +125,7 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
       .then((status) => {
         const nextChecked = dependencies.map(({ key }) => status[key]);
         setChecked(nextChecked);
+        setDetectedKeys(new Set(dependencies.map((d) => d.key)));
       })
       .catch((error: unknown) => {
         console.error("[SetupPage] detect_dependencies rejected", {
@@ -325,15 +349,26 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     <div className="setup-brand" aria-hidden="true">e</div><p className="eyebrow">Welcome to Eggshell</p>
     <h1 id="setup-title">Let’s get you set up</h1>
     <div className="dependency-list" aria-label="Required dependencies">
-      {dependencies.map((dependency, index) => <div className="dependency-row" key={dependency.key}>
-        <span>{dependency.name}{dependency.version && <small>{dependency.version}</small>}</span>
-        {installStates[index] === "installing"
-          ? <small className="dependency-status" role="status">Installing…</small>
-          : <span
-              className={checked[index] ? "dependency-check complete" : installStates[index] === "failed" ? "dependency-check failed" : "dependency-check"}
-              aria-label={checked[index] ? "Ready" : installStates[index] === "failed" ? "Installation failed" : "Not found"}
-            >{checked[index] ? "✓" : installStates[index] === "failed" ? "!" : ""}</span>}
-      </div>)}
+      {dependencies.map((dependency, index) => {
+        const isCheckingThis = isDetecting && !detectedKeys.has(dependency.key);
+        return (
+          <div className="dependency-row" key={dependency.key}>
+            <span>{dependency.name}{dependency.version && <small>{dependency.version}</small>}</span>
+            {installStates[index] === "installing" ? (
+              <small className="dependency-status" role="status">Installing…</small>
+            ) : isCheckingThis ? (
+              <span className="dependency-check checking" aria-label="Checking…" title="Checking…">
+                <span className="dependency-spinner" aria-hidden="true" />
+              </span>
+            ) : (
+              <span
+                className={checked[index] ? "dependency-check complete" : installStates[index] === "failed" ? "dependency-check failed" : "dependency-check"}
+                aria-label={checked[index] ? "Ready" : installStates[index] === "failed" ? "Installation failed" : "Not found"}
+              >{checked[index] ? "✓" : installStates[index] === "failed" ? "!" : ""}</span>
+            )}
+          </div>
+        );
+      })}
     </div>
     {failures.length > 0 && <div className="setup-error" role="alert">
       {failures.map((failure) => <p key={failure}>{failure}</p>)}

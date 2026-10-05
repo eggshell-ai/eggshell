@@ -1020,6 +1020,21 @@ body {
   background: #6246ea;
 }
 
+.dependency-check.checking {
+  border-color: #e5e3ed;
+  background: transparent;
+}
+
+.dependency-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid #ddd8f8;
+  border-top-color: #6246ea;
+  border-radius: 50%;
+  animation: tool-spin 0.75s linear infinite;
+  display: inline-block;
+}
+
 .dependency-check.failed {
   border-color: #e0a0ad;
   color: #9e2d42;

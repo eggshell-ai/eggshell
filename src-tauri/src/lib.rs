@@ -254,25 +254,21 @@ fn mysql_present() -> bool {
         || managed_mysqld().is_some()
 }
 
-#[tauri::command]
-fn detect_dependencies(log: tauri::State<'_, ProgressLog>) -> DependencyStatus {
-    let status = DependencyStatus {
-        node: setup::managed_node_present() || executable_in_path("node"),
-        php: executable_in_path("php"),
-        composer: managed_composer_present() || executable_in_path("composer"),
-        symfony: executable_in_path("symfony") || managed_symfony_present(),
-        mysql: mysql_present(),
-    };
+#[derive(Debug, Clone, Serialize)]
+struct DependencyDetectionEvent {
+    key: String,
+    present: bool,
+}
 
-    // One line per dependency rather than one per lookup: each check runs
-    // `where`/`which` several times over, and the answer is what matters.
-    for (name, present) in [
-        ("Node JS", status.node),
-        ("PHP", status.php),
-        ("Composer", status.composer),
-        ("Symfony CLI", status.symfony),
-        ("MySQL", status.mysql),
-    ] {
+fn detect_dependencies_blocking(app: &tauri::AppHandle, log: &ProgressLog) -> DependencyStatus {
+    let check_and_notify = |key: &'static str, name: &'static str, present: bool| {
+        let _ = app.emit(
+            "dependency-detected",
+            DependencyDetectionEvent {
+                key: key.to_string(),
+                present,
+            },
+        );
         log.line(
             "info",
             format!(
@@ -280,8 +276,45 @@ fn detect_dependencies(log: tauri::State<'_, ProgressLog>) -> DependencyStatus {
                 if present { "is ready" } else { "was not found" }
             ),
         );
+        present
+    };
+
+    let node = check_and_notify(
+        "node",
+        "Node JS",
+        setup::managed_node_present() || executable_in_path("node"),
+    );
+    let php = check_and_notify("php", "PHP", executable_in_path("php"));
+    let composer = check_and_notify(
+        "composer",
+        "Composer",
+        managed_composer_present() || executable_in_path("composer"),
+    );
+    let symfony = check_and_notify(
+        "symfony",
+        "Symfony CLI",
+        executable_in_path("symfony") || managed_symfony_present(),
+    );
+    let mysql = check_and_notify("mysql", "MySQL", mysql_present());
+
+    DependencyStatus {
+        node,
+        php,
+        composer,
+        symfony,
+        mysql,
     }
-    status
+}
+
+#[tauri::command]
+async fn detect_dependencies(
+    app: tauri::AppHandle,
+    log: tauri::State<'_, ProgressLog>,
+) -> Result<DependencyStatus, String> {
+    let log = log.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || detect_dependencies_blocking(&app, &log))
+        .await
+        .map_err(|error| format!("dependency detection failed: {error}"))
 }
 
 fn unsupported_dependency(dependency: &str) -> String {
