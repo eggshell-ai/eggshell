@@ -59,20 +59,8 @@ pub(crate) fn managed_mysql_dir() -> Option<std::path::PathBuf> {
 
 /// MySQL's Windows installer puts the server in a versioned directory under
 /// Program Files without adding its binaries to PATH.
-#[cfg(windows)]
 pub(crate) fn mysql_in_program_files() -> bool {
-    ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
-        .into_iter()
-        .filter_map(std::env::var_os)
-        .filter_map(|root| std::fs::read_dir(std::path::PathBuf::from(root).join("MySQL")).ok())
-        .flatten()
-        .filter_map(Result::ok)
-        .any(|entry| entry.path().join("bin").join("mysql.exe").is_file())
-}
-
-#[cfg(not(windows))]
-pub(crate) fn mysql_in_program_files() -> bool {
-    false
+    crate::dependencies::locate_mysql_in_program_files().is_some()
 }
 
 #[cfg(not(windows))]
