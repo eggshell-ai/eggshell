@@ -11,6 +11,9 @@ pub(crate) const MYSQL_DIRECTORY: &str = "mysql-8.0.46-winx64";
 
 pub(crate) const PHP_DIRECTORY: &str = "php";
 
+#[cfg(windows)]
+pub(crate) const PHP_VERSION: &str = "8.5";
+
 /// The Node archive contains this one top-level directory. Keeping that name
 /// means the fallback can extract directly into Eggshell's app-data directory.
 #[cfg(windows)]
@@ -95,10 +98,9 @@ port        = 3306
 
 #[cfg(windows)]
 pub(crate) fn php_fallback_command() -> Vec<String> {
-    let url = "https://downloads.php.net/~windows/releases/php-8.5.9-nts-Win32-vs17-x64.zip";
     let settings = "extension_dir = \"ext\"`r`nextension=curl`r`nextension=fileinfo`r`nextension=gd`r`nextension=intl`r`nextension=mbstring`r`nextension=openssl`r`nextension=pdo_mysql`r`nextension=pdo_pgsql`r`nextension=pdo_sqlite`r`nextension=sodium`r`nextension=sqlite3`r`nextension=xsl`r`nextension=zip";
     let script = format!(
-        r#"$ErrorActionPreference = 'Stop'; $root = Join-Path $env:APPDATA 'eggshell'; $base = Join-Path $root '{PHP_DIRECTORY}'; $archive = Join-Path $root 'php-8.5.9.zip'; New-Item -ItemType Directory -Force -Path $root | Out-Null; if (-not (Test-Path (Join-Path $base 'php.exe'))) {{ Invoke-WebRequest -Uri '{url}' -OutFile $archive -UseBasicParsing; New-Item -ItemType Directory -Force -Path $base | Out-Null; Expand-Archive -LiteralPath $archive -DestinationPath $base -Force; Remove-Item -LiteralPath $archive -Force }}; $ini = Join-Path $base 'php.ini'; Move-Item -LiteralPath (Join-Path $base 'php.ini-development') -Destination $ini -Force; Add-Content -LiteralPath $ini -Value "`r`n{settings}`r`n" -Encoding ascii"#
+        r#"$ErrorActionPreference = 'Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $root = Join-Path $env:APPDATA 'eggshell'; $base = Join-Path $root '{PHP_DIRECTORY}'; New-Item -ItemType Directory -Force -Path $root | Out-Null; if (-not (Test-Path (Join-Path $base 'php.exe'))) {{ $releases = Invoke-RestMethod -Uri 'https://downloads.php.net/~windows/releases/releases.json' -UseBasicParsing; $release = $releases.'{PHP_VERSION}'; if (-not $release) {{ throw 'PHP version {PHP_VERSION} not found in releases.json' }}; $build = $release.psobject.properties | Where-Object {{ $_.Name -like 'nts-*-x64' }} | Select-Object -First 1; if (-not $build) {{ throw 'PHP build nts-*-x64 not found for {PHP_VERSION}' }}; $zipPath = $build.Value.zip.path; if (-not $zipPath) {{ throw 'PHP zip path not found for {PHP_VERSION}' }}; $url = 'https://downloads.php.net/~windows/releases/' + $zipPath; $archive = Join-Path $root $zipPath; Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing; New-Item -ItemType Directory -Force -Path $base | Out-Null; Expand-Archive -LiteralPath $archive -DestinationPath $base -Force; Remove-Item -LiteralPath $archive -Force }}; $ini = Join-Path $base 'php.ini'; if (Test-Path (Join-Path $base 'php.ini-development')) {{ Move-Item -LiteralPath (Join-Path $base 'php.ini-development') -Destination $ini -Force; Add-Content -LiteralPath $ini -Value "`r`n{settings}`r`n" -Encoding ascii }}"#
     );
     vec![
         "powershell".into(),
@@ -164,4 +166,20 @@ pub(crate) fn php_fallback_command() -> Vec<String> {
 #[cfg(not(windows))]
 pub(crate) fn node_fallback_command() -> Vec<String> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn test_php_fallback_command() {
+        let command = php_fallback_command();
+        assert!(!command.is_empty());
+        let script = command.last().expect("PowerShell command script missing");
+        assert!(script.contains("https://downloads.php.net/~windows/releases/releases.json"));
+        assert!(script.contains(PHP_VERSION));
+        assert!(script.contains("nts-*-x64"));
+    }
 }
