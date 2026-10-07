@@ -1160,6 +1160,20 @@ body {
   width: min(100%, 620px);
 }
 
+.setup-card.provider-setup-step {
+  width: min(100%, 860px);
+  max-width: 860px;
+  text-align: left;
+}
+
+.setup-card.provider-setup-step .setup-brand {
+  margin: 0 0 20px 0;
+}
+
+.setup-card.provider-setup-step .eyebrow {
+  margin-bottom: 4px;
+}
+
 .log-toggle {
   display: block;
   margin: 15px auto 0;

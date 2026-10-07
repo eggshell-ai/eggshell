@@ -3,6 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { message } from "@tauri-apps/plugin-dialog";
 import ReportMenu from "./ReportMenu";
+import ProviderSettingsManager, {
+  ProviderTypeDescriptor,
+  RegisteredProvider,
+} from "./ProviderSettingsManager";
 
 type DependencyStatus = { node: boolean; php: boolean; composer: boolean; symfony: boolean; mysql: boolean };
 type DependencyKey = keyof DependencyStatus;
@@ -12,12 +16,9 @@ type InstallState = "idle" | "installing" | "failed";
 type SetupState = {
   setup_completed: boolean;
   providers: RegisteredProvider[];
-  available_types?: { key: string; name: string; detail: string }[];
+  available_types?: ProviderTypeDescriptor[];
 };
 type SetupStep = "dependencies" | "provider";
-// Mirrors `providers::ProviderSummary`: what the registry knows plus what the
-// user has configured. The API key itself never crosses back to the frontend.
-type RegisteredProvider = { key: string; name: string; detail: string; api_key_set: boolean; models: string[] };
 // Mirrors `setup::LogLine`: `stream` is what produced the line, and the panel colours by it.
 type LogLine = { seq: number; stream: "info" | "command" | "stdout" | "stderr" | "error"; text: string };
 // Mirrors `logger::LogEntry`: the central log the backend accumulates for reporting.
@@ -30,8 +31,6 @@ const dependencies: Dependency[] = [
   { key: "symfony", name: "Symfony CLI" },
   { key: "mysql", name: "MySQL" },
 ];
-// The provider tiles come from the backend registry, so a new provider shows
-// up here without touching this file.
 const noProviders: RegisteredProvider[] = [];
 type SetupPageProps = { onComplete: () => void };
 
@@ -47,14 +46,11 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
   const [installStates, setInstallStates] = useState<InstallState[]>(dependencies.map(() => "idle"));
   const [failures, setFailures] = useState<string[]>([]);
   const [needsRestart, setNeedsRestart] = useState(false);
-  const [provider, setProvider] = useState<string | null>(null);
-  const [models, setModels] = useState("");
-  const [registeredProviders, setRegisteredProviders] = useState<RegisteredProvider[]>(noProviders);
-  const [apiKey, setApiKey] = useState("");
+  const [providers, setProviders] = useState<RegisteredProvider[]>(noProviders);
+  const [availableTypes, setAvailableTypes] = useState<ProviderTypeDescriptor[]>([]);
   const [mysqlPassword, setMysqlPassword] = useState("");
   const [showMysqlPassword, setShowMysqlPassword] = useState(false);
   const [isSavingMysql, setIsSavingMysql] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [logLines, setLogLines] = useState<LogLine[]>([]);
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [accumulatedLogs, setAccumulatedLogs] = useState<LogEntry[]>([]);
@@ -142,33 +138,18 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
       });
   }, []);
 
-  // Whatever config.yaml already names is the best first suggestion, and the
-  // provider registry itself comes from the same call.
+  // Load existing provider configuration and registered provider types
   useEffect(() => {
     void invoke<SetupState>("load_setup_state")
-      .then(({ providers, available_types }) => {
-        // In setup, we display the available provider types to pick from
+      .then(({ providers: loaded, available_types }) => {
+        setProviders(loaded);
         if (available_types && available_types.length > 0) {
-          const typeOptions = available_types.map((type) => {
-            const existing = providers.find((p) => p.key === type.key);
-            return {
-              key: type.key,
-              name: type.name,
-              detail: type.detail,
-              api_key_set: Boolean(existing?.api_key_set),
-              models: existing?.models || [],
-            };
-          });
-          setRegisteredProviders(typeOptions);
+          setAvailableTypes(available_types);
         } else {
-          setRegisteredProviders(providers);
-        }
-
-        // Prefill with whatever an existing configuration already holds.
-        const configured = providers.find(({ models }) => models.length > 0);
-        if (configured) {
-          setProvider((current) => current ?? configured.key);
-          setModels((current) => current || configured.models.join(", "));
+          setAvailableTypes([
+            { key: "ollama", name: "Ollama", detail: "Cloud and local models from ollama.com" },
+            { key: "openai", name: "OpenAI compatible", detail: "Any OpenAI-compatible chat completions API" },
+          ]);
         }
       })
       .catch((error: unknown) => console.error("[SetupPage] load_setup_state rejected", { error }));
@@ -262,25 +243,6 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
     } finally { setIsSavingMysql(false); }
   }
 
-  async function saveProvider() {
-    if (!provider) return;
-    // The models arrive as one comma-separated field; blank entries are dropped
-    // by the backend, so trimming here is enough.
-    const modelList = models.split(",").map((model) => model.trim()).filter(Boolean);
-    if (modelList.length === 0 || !apiKey.trim()) return;
-    setIsSaving(true); setFailures([]);
-    console.info("[SetupPage] save_provider_config started", { provider, models: modelList });
-    try {
-      await invoke("save_provider_config", { provider, models: modelList, apiKey });
-      console.info("[SetupPage] save_provider_config resolved; calling onComplete");
-      onComplete();
-    } catch (reason) {
-      console.error("[SetupPage] save_provider_config rejected", { reason });
-      setFailures([`Your provider settings could not be saved. ${String(reason)}`]);
-      setIsSaving(false);
-    }
-  }
-
   const buttonLabel = isDetecting ? "Checking dependencies…"
     : isSettingUp ? "Installing…"
     : failures.length > 0 ? "Retry setup"
@@ -313,37 +275,30 @@ export default function SetupPage({ onComplete }: SetupPageProps) {
 
   const cardClass = isLogOpen ? "setup-card with-log" : "setup-card";
 
-  if (step === "provider") return <main className="setup-page"><section className={cardClass} aria-labelledby="provider-title">
-    <div className="setup-brand" aria-hidden="true">e</div><p className="eyebrow">Final step</p>
-    <h1 id="provider-title">Configure Your LLM Provider</h1>
-    <p className="setup-intro">Pick the provider Eggshell should send your prompts to.</p>
-    <div className="provider-list" aria-label="Providers">
-      {registeredProviders.map(({ key, name, detail }) => <button
-        className={provider === key ? "provider-tile selected" : "provider-tile"}
-        key={key} type="button" aria-pressed={provider === key} onClick={() => setProvider(key)}
-      >
-        <span className="provider-mark" aria-hidden="true">{name.slice(0, 1)}</span>
-        <span className="provider-copy"><strong>{name}</strong><small>{detail}</small></span>
-      </button>)}
-      {!registeredProviders.length && <p className="setup-note">No providers are registered.</p>}
-    </div>
-    {provider && <div className="provider-form">
-      <label>API key<input value={apiKey} type="password" autoComplete="off" spellCheck={false}
-        onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your API key" /></label>
-      <label>Models <span>Comma-separated</span><input value={models} autoComplete="off" spellCheck={false}
-        onChange={(event) => setModels(event.target.value)} placeholder="gemma4:31b-cloud, gemma4:9b" /></label>
-    </div>}
-    {failures.length > 0 && <div className="setup-error" role="alert">
-      {failures.map((failure) => <p key={failure}>{failure}</p>)}
-    </div>}
-    <button className="setup-button" type="button" onClick={() => void saveProvider()}
-      disabled={isSaving || !provider || !models.split(",").map((model) => model.trim()).filter(Boolean).length || !apiKey.trim()}>
-      {isSaving ? "Saving…" : "Next"}
-    </button>
-    {restartNote}
-    {logSection}
-    <ReportMenu screenName="provider" accumulatedLogs={accumulatedLogs} />
-  </section></main>;
+  if (step === "provider") {
+    return (
+      <main className="setup-page">
+        <section className={`${cardClass} provider-setup-step`} aria-labelledby="provider-title">
+          <div className="setup-brand" aria-hidden="true">e</div>
+          <p className="eyebrow">Final step</p>
+          <h1 id="provider-title">Configure Your LLM Provider</h1>
+          <p className="setup-intro">Pick the provider Eggshell should send your prompts to.</p>
+          <ProviderSettingsManager
+            providers={providers}
+            setProviders={setProviders}
+            availableTypes={availableTypes}
+            setAvailableTypes={setAvailableTypes}
+            mode="setup"
+            submitButtonLabel="Next"
+            onSaved={() => onComplete()}
+          />
+          {restartNote}
+          {logSection}
+          <ReportMenu screenName="provider" accumulatedLogs={accumulatedLogs} />
+        </section>
+      </main>
+    );
+  }
 
   return <main className="setup-page"><section className={cardClass} aria-labelledby="setup-title">
     <div className="setup-brand" aria-hidden="true">e</div><p className="eyebrow">Welcome to Eggshell</p>
