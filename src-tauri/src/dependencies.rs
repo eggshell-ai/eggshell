@@ -92,8 +92,10 @@ pub fn managed_composer_present() -> bool {
 
 #[cfg(windows)]
 pub fn managed_composer_path() -> Option<PathBuf> {
-    let path = managed_bin_dir()?.join("composer.bat");
-    path.is_file().then_some(path)
+    let base = managed_bin_dir()?;
+    let bat = base.join("composer.bat");
+    let phar = base.join("composer.phar");
+    (bat.is_file() && phar.is_file()).then_some(bat)
 }
 
 #[cfg(not(windows))]
@@ -538,15 +540,19 @@ fn composer_download_plan() -> Result<InstallPlan, String> {
     let quoted_directory = directory.display().to_string().replace('\'', "''");
     let script = format!(
         "$ErrorActionPreference = 'Stop'; \
+         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
          $directory = '{quoted_directory}'; \
          New-Item -ItemType Directory -Force -Path $directory | Out-Null; \
          Push-Location $directory; \
          try {{ \
-           & php -r \"copy('https://getcomposer.org/installer', 'composer-setup.php');\"; \
+           Invoke-WebRequest -Uri 'https://getcomposer.org/installer' -OutFile 'composer-setup.php' -UseBasicParsing; \
            & php composer-setup.php; \
-           & php -r \"unlink('composer-setup.php');\"; \
+           if (-not (Test-Path (Join-Path $directory 'composer.phar'))) {{ throw 'composer.phar was not created by installer' }}; \
            Set-Content -LiteralPath (Join-Path $directory 'composer.bat') -Value '@php \"%~dp0composer.phar\" %*' -Encoding ascii \
-         }} finally {{ Pop-Location }}"
+         }} finally {{ \
+           if (Test-Path 'composer-setup.php') {{ Remove-Item -LiteralPath 'composer-setup.php' -Force }}; \
+           Pop-Location \
+         }}"
     );
 
     Ok(InstallPlan {

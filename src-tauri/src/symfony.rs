@@ -221,6 +221,12 @@ fn configure_environment(command: &mut Command) {
         "COMPOSER_HOME",
         "USERPROFILE",
         "SystemRoot",
+        "SystemDrive",
+        "ComSpec",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "LOCALAPPDATA",
     ] {
         if let Some(value) = std::env::var_os(name) {
             let value: OsString = value;
@@ -235,10 +241,8 @@ fn configure_environment(command: &mut Command) {
     }
 
     #[cfg(windows)]
-    if crate::managed_composer_present() {
-        if let Some(directory) = crate::managed_bin_dir() {
-            prepend_to_path(command, &directory);
-        }
+    if let Some(directory) = crate::managed_bin_dir() {
+        prepend_to_path(command, &directory);
     }
 
     #[cfg(windows)]
