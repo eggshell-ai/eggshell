@@ -47,12 +47,30 @@ async fn detect_dependencies(
 #[tauri::command]
 async fn install_dependency(
     name: String,
+    app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
 ) -> Result<dependencies::InstallOutcome, String> {
     let log = log.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || dependencies::install_dependency_blocking(&name, &log))
+    let thread_log = log.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || dependencies::install_dependency_blocking(&name, &thread_log))
         .await
-        .map_err(|error| format!("installation task failed: {error}"))?
+        .map_err(|error| format!("installation task failed: {error}"))??;
+
+    if outcome.installed && !outcome.already_present && dependencies::managed_mysqld().is_some() {
+        let mut config = config::ConfigService::load_default(&app).unwrap_or_default();
+        config.mysql = config::MysqlConfig {
+            kind: "managed".to_string(),
+            port: 3306,
+            user: "root".to_string(),
+            pass: String::new(),
+            is_mariadb: false,
+        };
+        if let Err(error) = config::ConfigService::save_default(&app, &config) {
+            log.line("warning", format!("could not persist managed mysql configuration: {error}"));
+        }
+    }
+
+    Ok(outcome)
 }
 
 /// Whatever the log has collected so far, so opening the log window shows what

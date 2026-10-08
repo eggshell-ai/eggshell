@@ -47,6 +47,15 @@ pub(crate) fn managed_php_present() -> bool {
     managed_php_dir().is_some_and(|directory| directory.join("php.exe").is_file())
 }
 
+#[cfg(windows)]
+pub(crate) fn managed_php_openssl_conf() -> Option<std::path::PathBuf> {
+    let conf = managed_php_dir()?
+        .join("extras")
+        .join("ssl")
+        .join("openssl.cnf");
+    conf.is_file().then_some(conf)
+}
+
 /// Where the fallback route leaves the server: the base directory holding
 /// `bin/mysqld.exe`, `my.ini` and `data`. `None` on the platforms where setup
 /// installs MySQL through a package manager instead; those installations are
@@ -175,6 +184,11 @@ pub(crate) fn managed_node_present() -> bool {
 #[cfg(not(windows))]
 pub(crate) fn managed_php_present() -> bool {
     false
+}
+
+#[cfg(not(windows))]
+pub(crate) fn managed_php_openssl_conf() -> Option<std::path::PathBuf> {
+    None
 }
 
 #[cfg(not(windows))]
