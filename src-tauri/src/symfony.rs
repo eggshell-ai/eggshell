@@ -227,6 +227,7 @@ fn configure_environment(command: &mut Command) {
         "TEMP",
         "TMP",
         "LOCALAPPDATA",
+        "OPENSSL_CONF",
     ] {
         if let Some(value) = std::env::var_os(name) {
             let value: OsString = value;
@@ -248,6 +249,11 @@ fn configure_environment(command: &mut Command) {
     #[cfg(windows)]
     if let Some(directory) = crate::setup::managed_php_dir() {
         prepend_to_path(command, &directory);
+    }
+
+    #[cfg(windows)]
+    if let Some(openssl_conf) = crate::setup::managed_php_openssl_conf() {
+        command.env("OPENSSL_CONF", openssl_conf);
     }
 }
 
