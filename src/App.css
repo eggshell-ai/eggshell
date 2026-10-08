@@ -270,6 +270,27 @@
 .message-content h3 { font-size: 1.05rem; }
 .message-content ul, .message-content ol { margin: 0 0 10px; padding-left: 22px; }
 .message-content li { margin: 2px 0; }
+.message-content ul.contains-task-list,
+.message-content ul:has(li.task-list-item) {
+  list-style: none;
+  padding-left: 4px;
+}
+.message-content li.task-list-item {
+  list-style-type: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.message-content input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: #6246ea;
+  cursor: default;
+}
+.message.user .message-content input[type="checkbox"] {
+  accent-color: #fff;
+}
 .message-content code {
   padding: 1px 5px;
   border-radius: 5px;
