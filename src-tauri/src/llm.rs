@@ -14,7 +14,7 @@ use crate::tools::{
 };
 
 #[path = "symfony.rs"]
-mod symfony;
+pub(crate) mod symfony;
 
 #[path = "react.rs"]
 mod react;

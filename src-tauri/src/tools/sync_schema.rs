@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::llm::{LlmResult, Tool};
 
@@ -160,12 +159,41 @@ impl Tool for SyncSchemaTool {
                 "--no-interaction",
             ],
         ] {
-            let status = Command::new("php")
-                .args(&command)
+            let mut cmd = crate::llm::symfony::new_php_command();
+            cmd.args(&command)
                 .current_dir(&backend_dir)
-                .status()?;
-            if !status.success() {
-                return Err(format!("Migration command failed: php {}", command.join(" ")).into());
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+
+            let output = cmd.output().map_err(|e| {
+                format!(
+                    "Failed to execute PHP migration command 'php {}': {e}. Ensure PHP is installed and accessible.",
+                    command.join(" ")
+                )
+            })?;
+
+            if !output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let details = if !stderr.trim().is_empty() {
+                    stderr.trim()
+                } else {
+                    stdout.trim()
+                };
+                return Err(format!(
+                    "Migration command failed with {}: php {}\n{}",
+                    output.status,
+                    command.join(" "),
+                    details
+                )
+                .into());
             }
         }
         Ok(

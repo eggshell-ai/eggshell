@@ -48,6 +48,12 @@ pub(crate) fn managed_php_present() -> bool {
 }
 
 #[cfg(windows)]
+pub(crate) fn managed_php_path() -> Option<std::path::PathBuf> {
+    let path = managed_php_dir()?.join("php.exe");
+    path.is_file().then_some(path)
+}
+
+#[cfg(windows)]
 pub(crate) fn managed_php_openssl_conf() -> Option<std::path::PathBuf> {
     let conf = managed_php_dir()?
         .join("extras")
@@ -184,6 +190,11 @@ pub(crate) fn managed_node_present() -> bool {
 #[cfg(not(windows))]
 pub(crate) fn managed_php_present() -> bool {
     false
+}
+
+#[cfg(not(windows))]
+pub(crate) fn managed_php_path() -> Option<std::path::PathBuf> {
+    None
 }
 
 #[cfg(not(windows))]

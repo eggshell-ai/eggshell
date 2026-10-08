@@ -269,8 +269,7 @@ fn lint_php_shell(backend_dir: &Path, relative_filter: Option<&str>) -> LlmResul
             .to_string_lossy()
             .replace('\\', "/");
 
-        let mut cmd = Command::new("php");
-        configure_env_php(&mut cmd);
+        let mut cmd = crate::llm::symfony::new_php_command();
         cmd.arg("-l")
             .arg(&file_path)
             .current_dir(backend_dir)
@@ -347,8 +346,7 @@ fn lint_php_shell(backend_dir: &Path, relative_filter: Option<&str>) -> LlmResul
     let console_bin = backend_dir.join("bin").join("console");
     let vendor_dir = backend_dir.join("vendor");
     if console_bin.is_file() && vendor_dir.is_dir() {
-        let mut cmd = Command::new("php");
-        configure_env_php(&mut cmd);
+        let mut cmd = crate::llm::symfony::new_php_command();
         cmd.args(["bin/console", "doctrine:schema:validate", "--skip-sync", "--no-interaction"])
             .current_dir(backend_dir)
             .stdin(Stdio::null())
@@ -412,38 +410,6 @@ fn collect_php_files(dir: &Path, list: &mut Vec<PathBuf>) {
                 list.push(path);
             }
         }
-    }
-}
-
-fn configure_env_php(command: &mut Command) {
-    command.env_clear();
-    for name in [
-        "PATH",
-        "HOME",
-        "APPDATA",
-        "COMPOSER_HOME",
-        "USERPROFILE",
-        "SystemRoot",
-        "ComSpec",
-        "PATHEXT",
-        "TEMP",
-        "TMP",
-        "LOCALAPPDATA",
-        "OPENSSL_CONF",
-    ] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-
-    #[cfg(windows)]
-    if let Some(directory) = crate::setup::managed_php_dir() {
-        prepend_to_path(command, &directory);
-    }
-
-    #[cfg(windows)]
-    if let Some(openssl_conf) = crate::setup::managed_php_openssl_conf() {
-        command.env("OPENSSL_CONF", openssl_conf);
     }
 }
 
@@ -594,18 +560,9 @@ fn configure_env_node(command: &mut Command) {
     #[cfg(windows)]
     if let Some(directory) = crate::setup::managed_node_dir() {
         if directory.join("node.exe").is_file() {
-            prepend_to_path(command, &directory);
+            crate::llm::symfony::prepend_to_path(command, &directory);
         }
     }
-}
-
-fn prepend_to_path(command: &mut Command, directory: &Path) {
-    let mut value = directory.as_os_str().to_os_string();
-    if let Some(existing) = std::env::var_os("PATH").filter(|existing| !existing.is_empty()) {
-        value.push(if cfg!(windows) { ";" } else { ":" });
-        value.push(existing);
-    }
-    command.env("PATH", value);
 }
 
 #[cfg(test)]

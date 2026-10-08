@@ -54,7 +54,7 @@ impl SymfonyShell {
         let cwd = cwd.to_path_buf();
         let log = log.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            run_process_blocking("php", &args, &cwd, &log)
+            run_php_blocking(&args, &cwd, &log)
         })
         .await
         .map_err(|error| io::Error::other(format!("command task failed: {error}")))??;
@@ -212,7 +212,23 @@ fn copy_directory(source: &Path, destination: &Path, template_root: &Path) -> io
     Ok(())
 }
 
-fn configure_environment(command: &mut Command) {
+pub(crate) fn new_php_command() -> Command {
+    #[cfg(windows)]
+    let program = if let Some(path) = crate::setup::managed_php_path() {
+        path.into_os_string()
+    } else {
+        std::ffi::OsString::from("php")
+    };
+
+    #[cfg(not(windows))]
+    let program = std::ffi::OsString::from("php");
+
+    let mut command = Command::new(program);
+    configure_environment(&mut command);
+    command
+}
+
+pub(crate) fn configure_environment(command: &mut Command) {
     command.env_clear();
     for name in [
         "PATH",
@@ -274,7 +290,7 @@ fn symfony_install_dir() -> Option<PathBuf> {
     directory.join("symfony").is_file().then_some(directory)
 }
 
-fn prepend_to_path(command: &mut Command, directory: &Path) {
+pub(crate) fn prepend_to_path(command: &mut Command, directory: &Path) {
     let mut value = directory.as_os_str().to_os_string();
     if let Some(existing) = std::env::var_os("PATH").filter(|existing| !existing.is_empty()) {
         value.push(if cfg!(windows) { ";" } else { ":" });
@@ -421,23 +437,21 @@ fn run_command_blocking(command: &str, cwd: &Path, log: &ProgressLog) -> LlmResu
     Ok(())
 }
 
-fn run_process_blocking(
-    program: &str,
+fn run_php_blocking(
     args: &[String],
     cwd: &Path,
     log: &ProgressLog,
 ) -> LlmResult<()> {
-    let display_command = format!("{} {}", program, args.join(" "));
+    let display_command = format!("php {}", args.join(" "));
     log.line("command", format!("$ {display_command}"));
 
-    let mut process = Command::new(program);
+    let mut process = new_php_command();
     process
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    configure_environment(&mut process);
 
     #[cfg(windows)]
     {
