@@ -68,6 +68,9 @@ async fn install_dependency(
         if let Err(error) = config::ConfigService::save_default(&app, &config) {
             log.line("warning", format!("could not persist managed mysql configuration: {error}"));
         }
+        let mysql = config.mysql;
+        let start_log = log.clone();
+        tauri::async_runtime::spawn_blocking(move || start_managed_mysql(&mysql, &start_log));
     }
 
     Ok(outcome)
