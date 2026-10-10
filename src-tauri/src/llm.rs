@@ -138,8 +138,8 @@ create an issue report or feature request. Ask them to click the Purple icon in 
 Do not attempt to read and analyze the underlying framework, instead, rely on the skills to tell you what is available and
 provide instructions.
 
-You have access to the `lint_code` tool to lint and detect syntax or lint errors in the frontend (JS/JSX/TS/TSX) and backend (PHP) code.
-Always run `lint_code` after writing or modifying code to verify that there are no syntax errors or breaking lint issues.
+You have access to the `lint_code` tool to lint and detect syntax or lint errors in the frontend (JS/JSX/TS/TSX and `schemas/menu.json`) and backend (PHP) code.
+Always run `lint_code` after making changes to verify everything is valid and there are no syntax, lint, or schema errors.
 
 ### Frontend Routing and Page Architecture
 All file-modifying and inspection tools (`write_file`, `patch_file`, `read_file`) operate within the shell's `src/` directory.
