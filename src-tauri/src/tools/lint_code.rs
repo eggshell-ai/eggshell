@@ -162,8 +162,8 @@ impl Tool for LintCodeTool {
             };
 
             if frontend_dir.is_dir() {
-                // Lint schemas/menu.json if it exists to ensure it is valid JSON
-                let menu_schema_path = frontend_dir.join("schemas").join("menu.json");
+                // Lint src/menu-items/menu.json if it exists to ensure it is valid JSON
+                let menu_schema_path = frontend_dir.join("src").join("menu-items").join("menu.json");
                 if menu_schema_path.is_file() {
                     match fs::read_to_string(&menu_schema_path) {
                         Ok(content) => {
@@ -171,7 +171,7 @@ impl Tool for LintCodeTool {
                                 total_errors += 1;
                                 issues.push(json!({
                                     "shell": "frontend",
-                                    "file": "schemas/menu.json",
+                                    "file": "src/menu-items/menu.json",
                                     "line": err.line(),
                                     "column": err.column(),
                                     "message": format!("Invalid JSON: {err}"),
@@ -184,10 +184,10 @@ impl Tool for LintCodeTool {
                             total_errors += 1;
                             issues.push(json!({
                                 "shell": "frontend",
-                                "file": "schemas/menu.json",
+                                "file": "src/menu-items/menu.json",
                                 "line": 0,
                                 "column": null,
-                                "message": format!("Failed to read schemas/menu.json: {err}"),
+                                "message": format!("Failed to read src/menu-items/menu.json: {err}"),
                                 "severity": "error",
                                 "source": "json"
                             }));
@@ -663,10 +663,10 @@ mod tests {
     async fn test_frontend_lint_detects_invalid_menu_json() {
         let tool = LintCodeTool::new();
         let temp_dir = std::env::temp_dir().join("eggshell_lint_menu_json_test");
-        let frontend_schemas = temp_dir.join("frontend").join("schemas");
-        fs::create_dir_all(&frontend_schemas).unwrap();
+        let frontend_menu_dir = temp_dir.join("frontend").join("src").join("menu-items");
+        fs::create_dir_all(&frontend_menu_dir).unwrap();
 
-        let menu_file = frontend_schemas.join("menu.json");
+        let menu_file = frontend_menu_dir.join("menu.json");
         fs::write(&menu_file, "[\n  {\n    \"name\": \"Test\",\n    \"route\": \"/test\"\n  ,\n]").unwrap(); // trailing comma or invalid JSON
 
         let args = json!({
@@ -681,7 +681,7 @@ mod tests {
         let issues = res["issues"].as_array().unwrap();
         let menu_issue = issues
             .iter()
-            .find(|i| i["file"].as_str().unwrap().contains("schemas/menu.json"));
+            .find(|i| i["file"].as_str().unwrap().contains("src/menu-items/menu.json"));
         assert!(menu_issue.is_some());
         let issue = menu_issue.unwrap();
         assert_eq!(issue["severity"], "error");
