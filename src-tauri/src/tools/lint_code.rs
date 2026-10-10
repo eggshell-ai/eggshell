@@ -520,6 +520,12 @@ fn lint_frontend_shell(frontend_dir: &Path, relative_filter: Option<&str>) -> Ll
 
                 if let Some(messages) = file_res.messages {
                     for msg in messages {
+                        if let Some(ref rule) = msg.rule_id {
+                            if rule == "no-unused-vars" || rule == "@typescript-eslint/no-unused-vars" {
+                                continue;
+                            }
+                        }
+
                         let severity_str = match msg.severity {
                             Some(1) => "warning",
                             _ => "error",

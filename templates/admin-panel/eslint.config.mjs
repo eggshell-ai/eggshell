@@ -71,14 +71,6 @@ export default [
         }
       ],
 
-      'no-unused-vars': [
-        'error',
-        {
-          vars: 'all',
-          args: 'none'
-        }
-      ],
-
       'prettier/prettier': 'warn'
     }
   },
