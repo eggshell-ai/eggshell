@@ -122,6 +122,8 @@ type ProviderSummary = {
   api_key_set: boolean;
   models: string[];
   reasoning?: string | null;
+  context_limits?: Record<string, number>;
+  default_context_limit?: number;
 };
 
 export const REASONING_MODES = [
@@ -138,6 +140,7 @@ type ChatProps = {
   sessionTitle?: string;
   sessions: { id: number; title: string }[];
   activeSessionId?: number;
+  sessionTokenUsage?: number;
   messages: ChatMessage[];
   draft: string;
   isSending: boolean;
@@ -162,9 +165,10 @@ type ChatProps = {
   onModeChange: (mode: "implement" | "plan") => void;
   onProceedToImplement: () => void;
   onStop?: () => void;
+  onCompact?: () => void;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -247,6 +251,31 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
   useEffect(() => { void refreshModels(); }, []);
 
   const selectableProviders = providers.filter(({ models }) => models.length > 0);
+
+  // Determine active model context limit
+  const activeProviderObj = selectableProviders.find((p) => (p.id || p.key) === activeProvider);
+  const activeContextLimit = activeProviderObj?.context_limits?.[activeModel]
+    ?? activeProviderObj?.default_context_limit
+    ?? (activeProviderObj?.provider_type === "ollama" ? 32768 : 128000);
+
+  const contextPercent = Math.min(100, Math.round((sessionTokenUsage / activeContextLimit) * 100));
+  const isContextWarning = contextPercent >= 70 && contextPercent < 85;
+  const isContextCritical = contextPercent >= 85;
+
+  // Auto-compaction at 85% of context limit
+  const hasAutoCompactedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      isContextCritical &&
+      onCompact &&
+      !isSending &&
+      activeSessionId &&
+      hasAutoCompactedRef.current !== activeSessionId
+    ) {
+      hasAutoCompactedRef.current = activeSessionId;
+      onCompact();
+    }
+  }, [isContextCritical, onCompact, isSending, activeSessionId]);
 
   // Models only reach the picker once a fetch has populated them, which happens
   // after App.tsx reads its initial defaults. Ensure the active provider and model
@@ -459,6 +488,35 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
           <p>{sessionTitle ? "Dummy assistant" : "Start a conversation"}</p>
         </div>
         <div className="chat-header-actions">
+          <div
+            className={`context-pie-widget ${isContextCritical ? "critical" : isContextWarning ? "warning" : ""}`}
+            title={`Context usage: ${sessionTokenUsage.toLocaleString()} / ${activeContextLimit.toLocaleString()} tokens (${contextPercent}%)`}
+          >
+            <svg className="context-pie-svg" viewBox="0 0 36 36" aria-hidden="true">
+              <path
+                className="context-pie-bg"
+                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+              />
+              <path
+                className="context-pie-fill"
+                strokeDasharray={`${contextPercent}, 100`}
+                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+              />
+            </svg>
+            <span className="context-pie-percent">{contextPercent}%</span>
+          </div>
+          {onCompact && (
+            <button
+              className="compact-button"
+              type="button"
+              onClick={onCompact}
+              disabled={isSending || messages.length <= 1}
+              title="Compact conversation into a structured status and task checkpoint"
+            >
+              <span className="compact-icon" aria-hidden="true">🗜️</span>
+              <span>Compact</span>
+            </button>
+          )}
           <button className="icon-button settings-button" type="button" aria-label="Settings" onClick={() => setIsSettingsOpen(true)}>⚙</button>
         </div>
       </header>

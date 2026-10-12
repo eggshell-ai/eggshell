@@ -2281,3 +2281,149 @@ input {
   background: none;
 }
 
+/* Context Pie Chart & Compactor Styling */
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.context-pie-widget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f8f7fc;
+  border: 1px solid #e1deec;
+  padding: 5px 10px;
+  border-radius: 20px;
+  cursor: help;
+  transition: all 0.2s ease;
+}
+
+.context-pie-widget:hover {
+  border-color: #beb9d8;
+  background: #f1eff9;
+}
+
+.context-pie-widget.warning {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.context-pie-widget.warning .context-pie-fill {
+  stroke: #d97706;
+}
+
+.context-pie-widget.critical {
+  border-color: #ef4444;
+  background: #fef2f2;
+  animation: pulse-border 1.5s infinite;
+}
+
+.context-pie-widget.critical .context-pie-fill {
+  stroke: #dc2626;
+}
+
+@keyframes pulse-border {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.context-pie-svg {
+  width: 22px;
+  height: 22px;
+  transform: rotate(-90deg);
+}
+
+.context-pie-bg {
+  fill: none;
+  stroke: #e2e0ea;
+  stroke-width: 3.8;
+}
+
+.context-pie-fill {
+  fill: none;
+  stroke: #6346ea;
+  stroke-width: 3.8;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s ease;
+}
+
+.context-pie-percent {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #433d59;
+}
+
+.compact-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #f4f2fb;
+  border: 1px solid #d4cde7;
+  border-radius: 8px;
+  color: #553bb8;
+  font-weight: 600;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.compact-button:hover:not(:disabled) {
+  background: #eae5f7;
+  border-color: #b7addb;
+  transform: translateY(-1px);
+}
+
+.compact-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.compact-icon {
+  font-size: 13px;
+}
+
+/* Model Context Limit Input in Settings */
+.model-context-limit-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f6f5fa;
+  border: 1px solid #dedae8;
+  border-radius: 6px;
+  padding: 3px 8px;
+  margin-left: 8px;
+}
+
+.model-context-limit-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #6d687c;
+}
+
+.model-context-limit-input {
+  width: 72px;
+  padding: 2px 4px;
+  border: 1px solid #cfcae0;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #2b283a;
+  background: #fff;
+  text-align: right;
+}
+
+.model-context-limit-input:focus {
+  outline: none;
+  border-color: #6246ea;
+}
+

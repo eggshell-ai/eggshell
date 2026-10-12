@@ -130,6 +130,8 @@ pub struct ProviderSummary {
     pub api_key_set: bool,
     pub models: Vec<String>,
     pub reasoning: Option<String>,
+    pub context_limits: std::collections::HashMap<String, u64>,
+    pub default_context_limit: u64,
 }
 
 /// Combines the configured providers with their descriptors and cached models.
@@ -166,6 +168,16 @@ pub fn provider_summaries(
                     models = fetched;
                 }
             }
+            let mut context_limits = config.context_limits.clone().unwrap_or_default();
+            for model in &models {
+                if !context_limits.contains_key(model) {
+                    context_limits.insert(model.clone(), config.context_limit_for_model(model));
+                }
+            }
+            let default_context_limit = config.default_context_limit.unwrap_or_else(|| {
+                if provider_type.to_lowercase() == "ollama" { 32_768 } else { 128_000 }
+            });
+
             ProviderSummary {
                 id: id.clone(),
                 key: id,
@@ -177,6 +189,8 @@ pub fn provider_summaries(
                 api_key_set: !config.api_key.trim().is_empty(),
                 models,
                 reasoning: config.reasoning.clone(),
+                context_limits,
+                default_context_limit,
             }
         })
         .collect()

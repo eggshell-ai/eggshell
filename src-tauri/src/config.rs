@@ -74,6 +74,12 @@ pub struct ProviderConfig {
     /// Optional reasoning level ("off", "minimal", "low", "medium", "high", "xhigh")
     #[serde(default)]
     pub reasoning: Option<String>,
+    /// Optional map of model names to their context window token limits (e.g. 128000)
+    #[serde(default, rename = "contextLimits")]
+    pub context_limits: Option<std::collections::HashMap<String, u64>>,
+    /// Fallback default context limit for this provider if not specified on the model
+    #[serde(default, rename = "defaultContextLimit")]
+    pub default_context_limit: Option<u64>,
 }
 
 impl ProviderConfig {
@@ -99,6 +105,22 @@ impl ProviderConfig {
             .filter(|title| !title.trim().is_empty())
             .unwrap_or(&self.name)
             .to_string()
+    }
+
+    pub fn context_limit_for_model(&self, model: &str) -> u64 {
+        if let Some(limits) = &self.context_limits {
+            if let Some(limit) = limits.get(model) {
+                return *limit;
+            }
+        }
+        if let Some(default_limit) = self.default_context_limit {
+            return default_limit;
+        }
+        // Sensible fallbacks based on provider type or modern model baselines
+        match self.provider_type().to_lowercase().as_str() {
+            "ollama" => 32_768,
+            _ => 128_000,
+        }
     }
 }
 

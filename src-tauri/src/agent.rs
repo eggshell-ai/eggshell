@@ -23,6 +23,7 @@ pub struct AgentArtifact {
 pub struct AgentRunResult {
     pub content: String,
     pub tool_calls: Vec<Value>,
+    pub token_usage: Option<u64>,
 }
 
 /// Executes an LLM conversation until it produces a response without tool calls.
@@ -88,6 +89,7 @@ impl AgentService {
         let mut all_tool_calls = Vec::new();
         let mut log = Vec::new();
         let mut final_content = String::new();
+        let mut latest_token_usage: Option<u64> = None;
         let cancel_token = options.cancellation_token.clone();
 
         while turn < max_turns {
@@ -140,6 +142,22 @@ impl AgentService {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
+            let usage = response.get("usage").cloned();
+            if let Some(u) = &usage {
+                if let Some(total) = u.get("total_tokens").and_then(Value::as_u64) {
+                    latest_token_usage = Some(total);
+                    emit(
+                        &options,
+                        "token_usage",
+                        json!({
+                            "turn": turn,
+                            "prompt_tokens": u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
+                            "completion_tokens": u.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0),
+                            "total_tokens": total,
+                        }),
+                    );
+                }
+            }
 
             final_content = content.clone();
             if !thought.is_empty() {
@@ -250,11 +268,16 @@ impl AgentService {
         let result = AgentRunResult {
             content: final_content,
             tool_calls: all_tool_calls,
+            token_usage: latest_token_usage,
         };
         emit(
             &options,
             "complete",
-            json!({ "content": result.content, "tool_calls": result.tool_calls }),
+            json!({
+                "content": result.content,
+                "tool_calls": result.tool_calls,
+                "token_usage": result.token_usage,
+            }),
         );
         if options.log_conversation {
             if let Err(error) = self.write_conversation_log(

@@ -12,7 +12,13 @@ import ReportMenu from "./ReportMenu";
 
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
-type Session = { id: number; title: string; conversation_history: string };
+type Session = {
+  id: number;
+  title: string;
+  conversation_history: string;
+  token_usage?: number;
+  compacted_summary?: string | null;
+};
 type SetupState = {
   setup_completed: boolean;
   providers: { id?: string; key: string; name: string; models: string[]; api_key_set?: boolean }[];
@@ -119,6 +125,14 @@ function App() {
           }
           return [...current, { role: "thought", content, data }];
         });
+        return;
+      }
+      if (type === "token_usage") {
+        const totalTokens = (data as { total_tokens?: number })?.total_tokens ?? 0;
+        if (totalTokens > 0) {
+          setActiveSession((current) => current ? { ...current, token_usage: totalTokens } : current);
+          setSessions((current) => current.map((s) => s.id === activeSession?.id ? { ...s, token_usage: totalTokens } : s));
+        }
         return;
       }
       setStreamedMessages((current) => [...current, {
@@ -253,6 +267,23 @@ function App() {
     }
   }
 
+  async function compactSession() {
+    if (!activeProject || !activeSession || isSending) return;
+    setError(""); setIsSending(true);
+    try {
+      const compacted = await invoke<Session>("compact_session", {
+        projectId: activeProject.id,
+        sessionId: activeSession.id,
+      });
+      setActiveSession(compacted);
+      setSessions((current) => current.map((s) => s.id === compacted.id ? compacted : s));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setIsSending(false);
+    }
+  }
+
   const persistedMessages: ChatMessage[] = activeSession ? JSON.parse(activeSession.conversation_history) : [];
   const messages: ChatMessage[] = isSending
     ? [...persistedMessages, { role: "user", content: pendingPrompt || "Proceed with implementation of the approved plan." }, ...streamedMessages]
@@ -286,7 +317,7 @@ function App() {
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
   if (!isSetupComplete) return <SetupPage onComplete={() => { setIsSetupComplete(true); void syncSetupState(); }} />;
-  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} />;
+  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} />;
 
   return (
     <main className="home">

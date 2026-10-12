@@ -2,6 +2,7 @@ pub mod config;
 mod db;
 pub mod dependencies;
 pub mod llm;
+use llm::LLMService;
 pub mod providers;
 pub mod logger;
 pub mod migrations;
@@ -344,6 +345,8 @@ async fn test_provider_config(
         api_key: resolved_api_key,
         models: Vec::new(),
         reasoning: None,
+        context_limits: None,
+        default_context_limit: None,
     };
 
     let service = providers::build_service(&provider_config).map_err(|error| error.to_string())?;
@@ -393,6 +396,8 @@ async fn save_provider_config(
     base_url: Option<String>,
     models: Vec<String>,
     api_key: String,
+    context_limits: Option<std::collections::HashMap<String, u64>>,
+    default_context_limit: Option<u64>,
     app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
     hub: tauri::State<'_, Arc<providers::ProviderHub>>,
@@ -474,6 +479,9 @@ async fn save_provider_config(
         .filter(|url| !url.trim().is_empty())
         .or_else(|| existing.and_then(|idx| config.providers[idx].base_url.clone()));
 
+    let merged_context_limits = context_limits.or_else(|| existing.and_then(|idx| config.providers[idx].context_limits.clone()));
+    let merged_default_context_limit = default_context_limit.or_else(|| existing.and_then(|idx| config.providers[idx].default_context_limit));
+
     let mut provider_config = config::ProviderConfig {
         id: Some(final_id.clone()),
         name: kind.to_string(),
@@ -483,6 +491,8 @@ async fn save_provider_config(
         api_key: resolved_api_key,
         models,
         reasoning,
+        context_limits: merged_context_limits,
+        default_context_limit: merged_default_context_limit,
     };
 
     // Test the provider connection before saving
@@ -807,6 +817,88 @@ async fn stop_chat(
     Ok(())
 }
 
+#[tauri::command]
+async fn compact_session(
+    project_id: i64,
+    session_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+    hub: tauri::State<'_, Arc<providers::ProviderHub>>,
+) -> Result<db::Session, String> {
+    let session = db::SessionsRepository::get(pool.inner(), project_id, session_id)
+        .await
+        .map_err(|e| format!("Failed to fetch session: {e}"))?;
+
+    let messages: Vec<db::ChatMessage> = serde_json::from_str(&session.conversation_history).unwrap_or_default();
+    if messages.is_empty() {
+        return Ok(session);
+    }
+
+    // Build compaction conversation prompt
+    let conversation_text = messages
+        .iter()
+        .map(|msg| format!("{}: {}", msg.role.to_uppercase(), msg.content))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let prompt = format!(
+        "You are an expert AI development assistant and task context summarizer.
+Your job is to condense and compact the following ongoing development conversation into a clean, structured state checkpoint so that the chat context can be trimmed while retaining full situational awareness.
+
+Provide your summary in Markdown with EXACTLY these three headings:
+
+### Current Status
+Summarize the current progress, outcomes achieved, architectural decisions, and key files touched.
+
+### To-Do List
+Provide a markdown checklist (- [ ] or - [x]) of remaining work and completed tasks based on the discussion.
+
+### Plan Summary
+If a plan, design, or schema was formulated or approved during the conversation, summarize its key steps and architecture. If none, state 'No plan active.'
+
+Here is the conversation history to compact:
+---
+{}
+---",
+        conversation_text
+    );
+
+    let summary = hub
+        .execute_prompt(&prompt, None)
+        .await
+        .map_err(|e| format!("Compaction model error: {e}"))?;
+
+    // Create a condensed checkpoint message history:
+    let compacted_messages = vec![
+        db::ChatMessage {
+            role: "user".to_string(),
+            content: "Please summarize the current task status, todo list, and active plan to compact our context.".to_string(),
+            data: None,
+        },
+        db::ChatMessage {
+            role: "assistant".to_string(),
+            content: summary.clone(),
+            data: Some(serde_json::json!({ "isCompactedCheckpoint": true })),
+        },
+    ];
+
+    let compacted_history = serde_json::to_string(&compacted_messages)
+        .map_err(|e| format!("Serialization error: {e}"))?;
+
+    // Estimate initial token usage of the compacted message (approx 4 chars per token)
+    let estimated_tokens = (summary.len() / 4 + 30) as i64;
+
+    db::SessionsRepository::compact_session(
+        pool.inner(),
+        project_id,
+        session_id,
+        compacted_history,
+        summary,
+        estimated_tokens,
+    )
+    .await
+    .map_err(|e| format!("Failed to save compacted session: {e}"))
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct SubmitFeedbackPayload {
     pub rating: String,
@@ -1116,6 +1208,7 @@ pub fn run() {
             delete_session,
             send_message,
             stop_chat,
+            compact_session,
             submit_feedback,
             get_app_version
         ])

@@ -30,6 +30,9 @@ pub struct Session {
     pub id: i64,
     pub title: String,
     pub conversation_history: String,
+    #[serde(default)]
+    pub token_usage: i64,
+    pub compacted_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -129,8 +132,35 @@ pub struct SessionsRepository;
 
 impl SessionsRepository {
     pub async fn list(pool: &SqlitePool, project_id: i64) -> Result<Vec<Session>, sqlx::Error> {
-        sqlx::query_as::<_, Session>("SELECT id, title, conversation_history FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC")
+        sqlx::query_as::<_, Session>("SELECT id, title, conversation_history, token_usage, compacted_summary FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC")
             .bind(project_id).fetch_all(pool).await
+    }
+
+    pub async fn get(pool: &SqlitePool, project_id: i64, id: i64) -> Result<Session, sqlx::Error> {
+        sqlx::query_as::<_, Session>("SELECT id, title, conversation_history, token_usage, compacted_summary FROM sessions WHERE id = ? AND project_id = ?")
+            .bind(id)
+            .bind(project_id)
+            .fetch_one(pool)
+            .await
+    }
+
+    pub async fn compact_session(
+        pool: &SqlitePool,
+        project_id: i64,
+        id: i64,
+        compacted_history: String,
+        compacted_summary: String,
+        token_usage: i64,
+    ) -> Result<Session, sqlx::Error> {
+        sqlx::query("UPDATE sessions SET conversation_history = ?, compacted_summary = ?, token_usage = ? WHERE id = ? AND project_id = ?")
+            .bind(&compacted_history)
+            .bind(&compacted_summary)
+            .bind(token_usage)
+            .bind(id)
+            .bind(project_id)
+            .execute(pool)
+            .await?;
+        Self::get(pool, project_id, id).await
     }
 
     pub async fn delete(pool: &SqlitePool, project_id: i64, id: i64) -> Result<(), sqlx::Error> {
@@ -278,12 +308,29 @@ impl SessionsRepository {
             .map(|message| message.content.chars().take(48).collect::<String>())
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| "New chat".to_string());
-        sqlx::query("UPDATE sessions SET title = ?, conversation_history = ? WHERE id = ? AND project_id = ?")
-            .bind(&title).bind(&history).bind(id).bind(project_id).execute(pool).await?;
+        let token_usage_val = result.token_usage.unwrap_or(0) as i64;
+        let mut update_query = "UPDATE sessions SET title = ?, conversation_history = ?".to_string();
+        if token_usage_val > 0 {
+            update_query.push_str(", token_usage = ?");
+            sqlx::query(&format!("{update_query} WHERE id = ? AND project_id = ?"))
+                .bind(&title).bind(&history).bind(token_usage_val).bind(id).bind(project_id).execute(pool).await?;
+        } else {
+            sqlx::query(&format!("{update_query} WHERE id = ? AND project_id = ?"))
+                .bind(&title).bind(&history).bind(id).bind(project_id).execute(pool).await?;
+        }
+        let (current_token_usage, current_compacted): (i64, Option<String>) = sqlx::query_as("SELECT token_usage, compacted_summary FROM sessions WHERE id = ? AND project_id = ?")
+            .bind(id)
+            .bind(project_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or((token_usage_val, None));
+
         Ok(Session {
             id,
             title,
             conversation_history: history,
+            token_usage: current_token_usage,
+            compacted_summary: current_compacted,
         })
     }
 }
@@ -460,5 +507,14 @@ pub async fn initialize(app: &AppHandle) -> Result<SqlitePool, Box<dyn std::erro
     let pool = SqlitePool::connect_with(options).await?;
 
     MIGRATOR.run(&pool).await?;
+
+    // Defensive check: ensure newly added columns exist in older SQLite databases
+    let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN token_usage INTEGER NOT NULL DEFAULT 0")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN compacted_summary TEXT")
+        .execute(&pool)
+        .await;
+
     Ok(pool)
 }
