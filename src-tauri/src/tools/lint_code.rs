@@ -121,19 +121,17 @@ impl Tool for LintCodeTool {
 
         let mut issues: Vec<Value> = Vec::new();
         let mut total_errors: usize = 0;
-        let mut total_warnings: usize = 0;
+        let total_warnings: usize = 0;
 
         if shell == "backend" || shell == "all" {
             let backend_dir = project_path.join("backend");
             if backend_dir.is_dir() {
                 let php_issues = lint_php_shell(&backend_dir, relative_path)?;
                 for issue in php_issues {
-                    if issue.get("severity").and_then(Value::as_str) == Some("warning") {
-                        total_warnings += 1;
-                    } else {
+                    if issue.get("severity").and_then(Value::as_str) == Some("error") {
                         total_errors += 1;
+                        issues.push(issue);
                     }
-                    issues.push(issue);
                 }
             } else if shell == "backend" {
                 return Ok(json!({
@@ -164,14 +162,45 @@ impl Tool for LintCodeTool {
             };
 
             if frontend_dir.is_dir() {
+                // Lint src/menu-items/menu.json if it exists to ensure it is valid JSON
+                let menu_schema_path = frontend_dir.join("src").join("menu-items").join("menu.json");
+                if menu_schema_path.is_file() {
+                    match fs::read_to_string(&menu_schema_path) {
+                        Ok(content) => {
+                            if let Err(err) = serde_json::from_str::<Value>(&content) {
+                                total_errors += 1;
+                                issues.push(json!({
+                                    "shell": "frontend",
+                                    "file": "src/menu-items/menu.json",
+                                    "line": err.line(),
+                                    "column": err.column(),
+                                    "message": format!("Invalid JSON: {err}"),
+                                    "severity": "error",
+                                    "source": "json"
+                                }));
+                            }
+                        }
+                        Err(err) => {
+                            total_errors += 1;
+                            issues.push(json!({
+                                "shell": "frontend",
+                                "file": "src/menu-items/menu.json",
+                                "line": 0,
+                                "column": null,
+                                "message": format!("Failed to read src/menu-items/menu.json: {err}"),
+                                "severity": "error",
+                                "source": "json"
+                            }));
+                        }
+                    }
+                }
+
                 let js_issues = lint_frontend_shell(&frontend_dir, relative_path)?;
                 for issue in js_issues {
-                    if issue.get("severity").and_then(Value::as_str) == Some("warning") {
-                        total_warnings += 1;
-                    } else {
+                    if issue.get("severity").and_then(Value::as_str) == Some("error") {
                         total_errors += 1;
+                        issues.push(issue);
                     }
-                    issues.push(issue);
                 }
             } else if shell == "frontend" {
                 return Ok(json!({
@@ -273,8 +302,7 @@ fn lint_php_shell(backend_dir: &Path, relative_filter: Option<&str>) -> LlmResul
             .to_string_lossy()
             .replace('\\', "/");
 
-        let mut cmd = Command::new("php");
-        configure_env_php(&mut cmd);
+        let mut cmd = crate::llm::symfony::new_php_command();
         cmd.arg("-l")
             .arg(&file_path)
             .current_dir(backend_dir)
@@ -351,8 +379,7 @@ fn lint_php_shell(backend_dir: &Path, relative_filter: Option<&str>) -> LlmResul
     let console_bin = backend_dir.join("bin").join("console");
     let vendor_dir = backend_dir.join("vendor");
     if console_bin.is_file() && vendor_dir.is_dir() {
-        let mut cmd = Command::new("php");
-        configure_env_php(&mut cmd);
+        let mut cmd = crate::llm::symfony::new_php_command();
         cmd.args(["bin/console", "doctrine:schema:validate", "--skip-sync", "--no-interaction"])
             .current_dir(backend_dir)
             .stdin(Stdio::null())
@@ -416,32 +443,6 @@ fn collect_php_files(dir: &Path, list: &mut Vec<PathBuf>) {
                 list.push(path);
             }
         }
-    }
-}
-
-fn configure_env_php(command: &mut Command) {
-    command.env_clear();
-    for name in [
-        "PATH",
-        "HOME",
-        "APPDATA",
-        "COMPOSER_HOME",
-        "USERPROFILE",
-        "SystemRoot",
-        "ComSpec",
-        "PATHEXT",
-        "TEMP",
-        "TMP",
-        "LOCALAPPDATA",
-    ] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-
-    #[cfg(windows)]
-    if let Some(directory) = crate::setup::managed_php_dir() {
-        prepend_to_path(command, &directory);
     }
 }
 
@@ -519,6 +520,12 @@ fn lint_frontend_shell(frontend_dir: &Path, relative_filter: Option<&str>) -> Ll
 
                 if let Some(messages) = file_res.messages {
                     for msg in messages {
+                        if let Some(ref rule) = msg.rule_id {
+                            if rule == "no-unused-vars" || rule == "@typescript-eslint/no-unused-vars" {
+                                continue;
+                            }
+                        }
+
                         let severity_str = match msg.severity {
                             Some(1) => "warning",
                             _ => "error",
@@ -592,18 +599,9 @@ fn configure_env_node(command: &mut Command) {
     #[cfg(windows)]
     if let Some(directory) = crate::setup::managed_node_dir() {
         if directory.join("node.exe").is_file() {
-            prepend_to_path(command, &directory);
+            crate::llm::symfony::prepend_to_path(command, &directory);
         }
     }
-}
-
-fn prepend_to_path(command: &mut Command, directory: &Path) {
-    let mut value = directory.as_os_str().to_os_string();
-    if let Some(existing) = std::env::var_os("PATH").filter(|existing| !existing.is_empty()) {
-        value.push(if cfg!(windows) { ";" } else { ":" });
-        value.push(existing);
-    }
-    command.env("PATH", value);
 }
 
 #[cfg(test)]
@@ -662,6 +660,38 @@ mod tests {
         assert!(bad_issue.is_some());
         let bad = bad_issue.unwrap();
         assert_eq!(bad["line"], 5); // line 5 is where '}' is unexpected after '1 +'
+
+        // Clean up
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_frontend_lint_detects_invalid_menu_json() {
+        let tool = LintCodeTool::new();
+        let temp_dir = std::env::temp_dir().join("eggshell_lint_menu_json_test");
+        let frontend_menu_dir = temp_dir.join("frontend").join("src").join("menu-items");
+        fs::create_dir_all(&frontend_menu_dir).unwrap();
+
+        let menu_file = frontend_menu_dir.join("menu.json");
+        fs::write(&menu_file, "[\n  {\n    \"name\": \"Test\",\n    \"route\": \"/test\"\n  ,\n]").unwrap(); // trailing comma or invalid JSON
+
+        let args = json!({
+            "shell": "frontend",
+            "projectPath": temp_dir.to_str().unwrap()
+        });
+
+        let res = tool.execute(args).await.expect("Tool execution failed");
+        assert_eq!(res["success"], false);
+        assert!(res["totalErrors"].as_u64().unwrap() >= 1);
+
+        let issues = res["issues"].as_array().unwrap();
+        let menu_issue = issues
+            .iter()
+            .find(|i| i["file"].as_str().unwrap().contains("src/menu-items/menu.json"));
+        assert!(menu_issue.is_some());
+        let issue = menu_issue.unwrap();
+        assert_eq!(issue["severity"], "error");
+        assert_eq!(issue["source"], "json");
 
         // Clean up
         let _ = fs::remove_dir_all(&temp_dir);

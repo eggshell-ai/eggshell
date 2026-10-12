@@ -102,7 +102,7 @@ impl ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MysqlConfig {
     #[serde(rename = "type", default = "default_mysql_type")]
     pub kind: String,
@@ -115,6 +115,19 @@ pub struct MysqlConfig {
     #[serde(default)]
     pub is_mariadb: bool,
 }
+
+impl Default for MysqlConfig {
+    fn default() -> Self {
+        Self {
+            kind: default_mysql_type(),
+            port: default_mysql_port(),
+            user: default_mysql_user(),
+            pass: String::new(),
+            is_mariadb: false,
+        }
+    }
+}
+
 fn default_mysql_type() -> String {
     "managed".to_string()
 }

@@ -28,7 +28,8 @@ export default function BarChartCard({
   xAxisKey = 'x',
   yAxisKey = 'y',
   seriesLabel = 'Value',
-  height = 300,
+  height = 280,
+  sx,
   ...props
 }) {
   const dashboard = useDashboardContext();
@@ -122,8 +123,8 @@ export default function BarChartCard({
     : null;
 
   const content = (
-    <MainCard content={false} {...props}>
-      <Box sx={{ p: 2 }}>
+    <MainCard content={false} sx={{ height: '100%', display: 'flex', flexDirection: 'column', ...(typeof sx === 'function' ? sx : sx || {}) }} {...props}>
+      <Box sx={{ p: 2, flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
         <Typography variant="h5" sx={{ mb: 2 }}>
           {title}
         </Typography>
@@ -158,6 +159,8 @@ export default function BarChartCard({
 
   return content;
 }
+
+BarChartCard.dashboardKind = 'chart';
 
 BarChartCard.propTypes = {
   title: PropTypes.string.isRequired,

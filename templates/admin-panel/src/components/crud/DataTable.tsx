@@ -5,6 +5,7 @@ import { Table, Card, Button, Input, Space, DatePicker, Select, Tag } from 'antd
 import { SearchOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import apiService from '../../api/apiService';
+import { formatCurrency, formatNumber } from '../../services/currencyService';
 
 interface DataTableFilter {
   name: string;
@@ -14,14 +15,36 @@ interface DataTableFilter {
   options?: Record<string, string> | { label: string; value: any }[];
 }
 
+export type DataTableTotalType = boolean | 'sum' | 'avg' | ((data: any[]) => React.ReactNode);
+
+export interface DataTableColumnConfig {
+  header?: string;
+  title?: string;
+  label?: string;
+  dataIndex?: string;
+  key?: string;
+  align?: 'left' | 'center' | 'right';
+  format?: 'number' | 'currency';
+  type?: 'number' | 'currency';
+  currency?: string | boolean;
+  compact?: boolean;
+  decimals?: number;
+  total?: DataTableTotalType;
+  totalLabel?: string;
+  render?: (val: any, record: any, index: number) => React.ReactNode;
+  [key: string]: any;
+}
+
 interface DataTableProps {
   endpoint: string;
-  columns: ColumnsType<any>;
+  columns: (DataTableColumnConfig | any)[];
   filters?: DataTableFilter[];
   title?: string;
   rowKey?: string;
   params?: Record<string, any>;
   pageSize?: number;
+  showTotal?: boolean;
+  totalScope?: 'all' | 'page';
 }
 
 export default function DataTable({
@@ -32,8 +55,11 @@ export default function DataTable({
   rowKey = 'id',
   params = {},
   pageSize = 10,
+  showTotal,
+  totalScope = 'all',
 }: DataTableProps) {
   const [data, setData] = useState<any[]>([]);
+  const [summaryData, setSummaryData] = useState<Record<string, any> | null>(null);
   const [loading, setLoading] = useState(false);
   const [filterValues, setFilterValues] = useState<Record<string, any>>({});
   const [searchTerm, setSearchTerm] = useState('');
@@ -94,6 +120,11 @@ export default function DataTable({
         if (isMounted) {
           const items = Array.isArray(res) ? res : (res?.data || res?.items || []);
           setData(items);
+          if (res && !Array.isArray(res)) {
+            setSummaryData(res.summary || res.totals || res.total || null);
+          } else {
+            setSummaryData(null);
+          }
         }
       } catch (err) {
         if (isMounted) {
@@ -139,6 +170,11 @@ export default function DataTable({
       .then((res) => {
         const items = Array.isArray(res) ? res : (res?.data || res?.items || []);
         setData(items);
+        if (res && !Array.isArray(res)) {
+          setSummaryData(res.summary || res.totals || res.total || null);
+        } else {
+          setSummaryData(null);
+        }
       })
       .catch((err) => console.error('Error fetching DataTable data:', err))
       .finally(() => setLoading(false));
@@ -155,6 +191,42 @@ export default function DataTable({
     setFilterValues({});
     setSearchTerm('');
   };
+
+  const resolvedColumns = (columns || []).map((col: any) => {
+    const title = col.header || col.title || col.label;
+    const isNumeric = Boolean(
+      col.currency ||
+      col.format === 'currency' ||
+      col.format === 'number' ||
+      col.type === 'number' ||
+      col.type === 'currency'
+    );
+
+    let render = col.render;
+    if (!render) {
+      if (col.currency || col.format === 'currency' || col.type === 'currency') {
+        const symbol = typeof col.currency === 'string' ? col.currency : '$';
+        render = (val: any) =>
+          formatCurrency(val, symbol, {
+            compact: Boolean(col.compact),
+            decimals: col.decimals
+          });
+      } else if (col.format === 'number' || col.type === 'number') {
+        render = (val: any) =>
+          formatNumber(val, {
+            compact: Boolean(col.compact),
+            decimals: col.decimals
+          });
+      }
+    }
+
+    return {
+      ...col,
+      title,
+      align: col.align || (isNumeric ? 'right' : 'left'),
+      ...(render ? { render } : {})
+    };
+  });
 
   return (
     <Card
@@ -224,11 +296,98 @@ export default function DataTable({
       )}
 
       <Table
-        columns={columns}
+        columns={resolvedColumns}
         dataSource={data}
         rowKey={rowKey}
         loading={loading}
         pagination={{ pageSize, showSizeChanger: true }}
+        summary={(pageData) => {
+          const hasExplicitTotalCol = (columns || []).some((col: any) => col.total || col.totalLabel);
+          const shouldRenderSummary = showTotal || Boolean(summaryData) || hasExplicitTotalCol;
+          if (!shouldRenderSummary) return null;
+
+          const dataset = totalScope === 'page' ? pageData : data;
+
+          return (
+            <Table.Summary fixed>
+              <Table.Summary.Row style={{ fontWeight: 600, background: '#fafafa' }}>
+                {resolvedColumns.map((col: any, index: number) => {
+                  const fieldKey = col.dataIndex || col.key;
+                  let cellContent: React.ReactNode = null;
+
+                  if (col.totalLabel) {
+                    cellContent = col.totalLabel;
+                  } else if (index === 0 && !hasExplicitTotalCol && !col.total) {
+                    cellContent = 'Total';
+                  } else if (typeof col.total === 'function') {
+                    cellContent = col.total(dataset);
+                  } else if (summaryData && fieldKey && summaryData[fieldKey] !== undefined) {
+                    const rawVal = summaryData[fieldKey];
+                    if (col.currency || col.format === 'currency' || col.type === 'currency') {
+                      const symbol = typeof col.currency === 'string' ? col.currency : '$';
+                      cellContent = formatCurrency(rawVal, symbol, {
+                        compact: Boolean(col.compact),
+                        decimals: col.decimals,
+                      });
+                    } else if (col.format === 'number' || col.type === 'number') {
+                      cellContent = formatNumber(rawVal, {
+                        compact: Boolean(col.compact),
+                        decimals: col.decimals,
+                      });
+                    } else {
+                      cellContent = rawVal;
+                    }
+                  } else if (col.total === 'avg' && fieldKey) {
+                    const validNums = dataset
+                      .map((row: any) => Number(row[fieldKey]))
+                      .filter((val: number) => !isNaN(val));
+                    const avg = validNums.length > 0 ? validNums.reduce((acc, curr) => acc + curr, 0) / validNums.length : 0;
+                    if (col.currency || col.format === 'currency' || col.type === 'currency') {
+                      const symbol = typeof col.currency === 'string' ? col.currency : '$';
+                      cellContent = formatCurrency(avg, symbol, {
+                        compact: Boolean(col.compact),
+                        decimals: col.decimals,
+                      });
+                    } else {
+                      cellContent = formatNumber(avg, {
+                        compact: Boolean(col.compact),
+                        decimals: col.decimals,
+                      });
+                    }
+                  } else if ((col.total === true || col.total === 'sum') && fieldKey) {
+                    const sum = dataset.reduce((acc: number, row: any) => {
+                      const val = Number(row[fieldKey]);
+                      return acc + (isNaN(val) ? 0 : val);
+                    }, 0);
+
+                    if (col.currency || col.format === 'currency' || col.type === 'currency') {
+                      const symbol = typeof col.currency === 'string' ? col.currency : '$';
+                      cellContent = formatCurrency(sum, symbol, {
+                        compact: Boolean(col.compact),
+                        decimals: col.decimals,
+                      });
+                    } else {
+                      cellContent = formatNumber(sum, {
+                        compact: Boolean(col.compact),
+                        decimals: col.decimals,
+                      });
+                    }
+                  }
+
+                  return (
+                    <Table.Summary.Cell
+                      key={fieldKey || index}
+                      index={index}
+                      align={col.align || 'left'}
+                    >
+                      {cellContent}
+                    </Table.Summary.Cell>
+                  );
+                })}
+              </Table.Summary.Row>
+            </Table.Summary>
+          );
+        }}
       />
     </Card>
   );

@@ -115,7 +115,13 @@ read_file({
 
 Update `views/dashboard/default.jsx` using `write_file` to add the new `KPICard` widget inside `<Dashboard>`.
 
-The `<Dashboard>` container automatically handles title headers, refresh actions, and automated cache registration/invalidation. Widgets declare their grid size via the `size` prop (using a 12-column grid system, e.g. `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
+The `<Dashboard>` container automatically handles title headers, refresh actions, automated cache registration/invalidation, and **automatic row layout formation**. **Do not provide `size` props** — the framework forms rows automatically by kind (KPI cards, charts, tables) and ensures equal height across each row.
+
+#### KPICard Props: Currency and Compaction
+- `currency`: Currency symbol or code (e.g., `"$"` or `"USD"`). When provided, values are automatically formatted with the currency symbol and two decimal places.
+- `compact`: Optional boolean flag controlling number compaction.
+  - When `currency` is passed and `compact` is omitted, compaction **defaults to `true`**, formatting large figures with abbreviated suffixes (e.g. `$14.82m` instead of `$14,820,000.00`).
+  - Pass `compact={false}` if you want the full uncompacted value with thousand separators (e.g. `$14,820,000.00`).
 
 **Tool call example:**
 ```javascript
@@ -136,7 +142,11 @@ export default function DashboardDefault() {
       <KPICard
         title="Customers"
         endpoint="/analytics/customers/count"
-        size={{ xs: 12, sm: 6, lg: 3 }}
+      />
+      <KPICard
+        title="Total Revenue"
+        endpoint="/analytics/revenue/total"
+        currency="$"
       />
     </Dashboard>
   );
@@ -211,35 +221,40 @@ Expects an array of row objects (or `{ "data": [...] }` or `{ "items": [...] }`)
 
 Each column definition object in `columns` supports:
 - **Field Key**: `dataIndex`, `field`, or `key` &mdash; The property key in the row data object to read.
-- **Header Label**: `title`, `label`, or `header` &mdash; The display label for the column header.
-- **Alignment**: `align` &mdash; Header and cell alignment: `'left'` (default), `'center'`, or `'right'`.
-- **Custom Render**: `render(value, row)` &mdash; Optional custom rendering function returning string or JSX.
+- **Header Label**: `header`, `title`, or `label` &mdash; The display label for the column header (`header` is supported and takes precedence).
+- **Alignment**: `align` &mdash; Header and cell alignment: `'left'`, `'center'`, or `'right'`. Defaults to `'right'` for currency and numbers, and `'left'` otherwise.
+- **Currency Formatting**:
+  - `currency`: Currency symbol or code string (e.g. `'$'`, `'USD'`, `'€'`). Formats the numeric value with the currency symbol and 2 decimal places by default.
+  - `compact`: Optional boolean flag (`true` / `false`). When `true`, compacts large values (e.g. `$14.82m` or `$15k`). Defaults to `false` in tables so exact numbers remain visible.
+  - `decimals`: Optional integer specifying custom decimal precision (e.g. `0` for whole dollar amounts, `2` for cents).
+- **Number Formatting**:
+  - `format`: `'number'` | `'currency'` &mdash; When set to `'number'`, formats values with thousand separators (e.g. `1,420`).
+  - `compact`: Optional boolean flag (`true` / `false`). When `true`, compacts large numbers (e.g. `14.82m` or `15k`).
+  - `decimals`: Optional integer specifying custom decimal precision.
+- **Custom Render**: `render(value, row)` &mdash; Optional custom rendering function returning a string or JSX. Takes precedence over `currency`/`format`.
 - **Link Template**: `link` &mdash; Optional URL template string with `{fieldName}` placeholders (e.g. `"/products/{id}"`). The cell content will be wrapped in a Next.js `Link`.
 
-**Example `TableCard` usage on a dashboard:**
+**Example `TableCard` usage on a dashboard (declarative formatting without custom render callbacks):**
 ```jsx
 <TableCard
   title="Top Selling Products"
   endpoint="/analytics/products/topSelling"
   maxRows={5}
-  size={{ xs: 12, lg: 6 }}
   columns={[
     {
-      title: 'Product',
+      header: 'Product',
       dataIndex: 'name',
       link: '/products/{id}',
-      align: 'left'
     },
     {
-      title: 'Units Sold',
+      header: 'Units Sold',
       dataIndex: 'totalSold',
-      align: 'right'
+      format: 'number',
     },
     {
-      title: 'Revenue',
+      header: 'Revenue',
       dataIndex: 'totalRevenue',
-      align: 'right',
-      render: (val) => `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+      currency: '$',
     }
   ]}
 />
@@ -349,12 +364,10 @@ export default function DashboardDefault() {
       <KPICard
         title="Customers"
         endpoint="/analytics/customers/count"
-        size={{ xs: 12, sm: 6, lg: 3 }}
       />
       <LineChartCard
         title="Monthly Sales"
         endpoint="/analytics/sales/monthly"
-        size={{ xs: 12, lg: 6 }}
       />
     </Dashboard>
   );
@@ -375,12 +388,29 @@ The `DataTable` component (`components/crud/DataTable`) provides a table with in
 
 #### Props:
 - `endpoint`: API endpoint (e.g., `"/analytics/orders/report"`). **Do NOT prefix with `/api`** — the frontend `apiService` automatically prefixes `/api`.
-- `columns`: Ant Design table column definitions array
+- `columns`: Array of column definition objects (see Column Configuration below).
 - `filters`: Array of filter definitions:
   - `{ name: "dateRange", type: "dateRange", label: "Date Range" }`
   - `{ name: "status", type: "select", label: "Status", options: { draft: "Draft", confirmed: "Confirmed" } }`
   - `{ name: "search", type: "text", label: "Search" }`
 - `params`: Object of constant query parameters to pass to the endpoint
+- `showTotal`: Optional boolean. When `true`, automatically renders a fixed bottom summary row for column totals. (Also auto-enabled if any column specifies `total` or `totalLabel`, or if the API response returns `totals`/`summary`).
+- `totalScope`: Optional `'all' | 'page'` (defaults to `'all'`). Controls whether column totals aggregate all fetched records or only the current page.
+
+#### `columns` Configuration & Total Summary Rows:
+Each column definition supports:
+- `header` / `title` / `label`: Column header title.
+- `dataIndex` / `key`: Field key from row records.
+- `currency`: String symbol (e.g. `"$"` or `true`). Formats cell values and column totals with the currency symbol and 2 decimal places.
+- `format` / `type`: `'currency'` or `'number'` for auto-formatting numbers with thousand separators.
+- `decimals`: Custom decimal precision (e.g. `2`).
+- `align`: `'left'` | `'center'` | `'right'`. Defaults to `'right'` for numeric/currency columns and `'left'` otherwise.
+- `totalLabel`: String (e.g. `"Total"`, `"Total Cost"`, `"BOM Total"`). Overrides cell content in the summary row for this column (typically placed on the first column).
+- `total`: Enables column aggregation in the bottom summary row:
+  - `true` or `'sum'`: Calculates the sum of numerical values for this column across all records.
+  - `'avg'`: Calculates the average value for this column.
+  - `(data: any[]) => React.ReactNode`: Custom aggregation function receiving the dataset.
+- Server-side totals: If your backend aggregator returns an object containing `{ "items": [...], "totals": { "totalCost": 1250.50 } }`, `DataTable` automatically maps the corresponding `totals[fieldKey]` into the summary row cell and formats it.
 
 ### Backend Handler for Dedicated Reports (NEVER Write a Controller!)
 
@@ -519,7 +549,7 @@ const statusColors = {
 
 export default function OrderReportPage() {
   const columns = [
-    { title: 'Order #', dataIndex: 'orderNumber', key: 'orderNumber' },
+    { title: 'Order #', dataIndex: 'orderNumber', key: 'orderNumber', totalLabel: 'Total' },
     { title: 'Customer', dataIndex: 'customerName', key: 'customerName' },
     { title: 'Date', dataIndex: 'orderDate', key: 'orderDate' },
     {
@@ -532,7 +562,8 @@ export default function OrderReportPage() {
       title: 'Total Value',
       dataIndex: 'totalAmount',
       key: 'totalAmount',
-      render: (val) => '$' + Number(val || 0).toFixed(2),
+      currency: '$',
+      total: 'sum',
     },
   ];
 
@@ -553,6 +584,7 @@ export default function OrderReportPage() {
         endpoint="/analytics/orders/report"
         columns={columns}
         filters={filters}
+        showTotal
       />
     </div>
   );
@@ -591,7 +623,13 @@ patch_file({
 3. **Never create custom Symfony controllers for reports**: Never create an `AbstractController` or `#[Route('/api/analytics/...')]` class. The framework automatically dispatches `/api/analytics/{category}/{metric}` to any service implementing `AnalyticsAggregatorInterface` under `App\Service\Analytics\`. Use `getValueWithRequest(Request $request)` to read filter or search params.
 4. **Never include `/api` in frontend endpoints**: Frontend requests go through `apiService` which already prefixes `/api`. Using `"/api/analytics/..."` will result in `"/api/api/analytics/..."` and fail with a 404. Always use `"/analytics/..."`.
 5. **Chart data format**: All chart widgets use the documented JSON data formats (Cartesian, Distribution, or Tabular).
-6. **Grid Sizing**: Widgets can declare their own 12-column layout sizing directly via the `size` prop (e.g., `size={{ xs: 12, sm: 6, lg: 3 }}` or `size={3}`).
+6. **Framework-Driven Layout (No `size` prop needed)**: The agent declares content widgets inside `<Dashboard>`, and the framework builds rows automatically:
+   - **KPI cards**: One row, equal columns (up to 4 per row, 3 per row beyond that).
+   - **Charts** (`LineChartCard`, `BarChartCard`, `PieChartCard`): 2 per row; an odd last chart spans the full width. Chart bodies have a fixed 280px height.
+   - **Tables** (`TableCard`): 2 per row; an odd last table spans the full width. Table bodies have a max height and scroll internally.
+   - The layout order is always KPIs, then charts, then tables.
+   - Every row uses CSS grid with `align-items: stretch` and `height: 100%`, guaranteeing cards in a row match in height.
+   - **Do not calculate or pass `size` props** from the agent.
 7. **Optimized DB queries & QueryBuilder filtering**:
    - Perform calculations (e.g. `COUNT`, `SUM`, `AVG`) at the database layer via QueryBuilder rather than loading full entity collections into memory.
    - **Always use `andWhere()` (or `orWhere()`) instead of chaining multiple `where()` calls**: In Doctrine QueryBuilder, calling `->where(...)` multiple times overwrites prior conditions. Use `->where(...)` for the initial condition and subsequent `->andWhere(...)` for additional filters.

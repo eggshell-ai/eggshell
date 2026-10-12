@@ -21,6 +21,7 @@ import apiService from 'api/apiService';
 import { useDashboardContext } from 'components/dashboard/DashboardContext';
 import { parseGridSize } from 'components/dashboard/DashboardWidget';
 import MainCard from 'components/MainCard';
+import { formatCurrency, formatNumber } from 'services/currencyService';
 
 export default function TableCard({
   title,
@@ -31,6 +32,7 @@ export default function TableCard({
   cacheTTL = 300000,
   size,
   maxRows,
+  sx,
   ...props
 }) {
   const dashboard = useDashboardContext();
@@ -121,17 +123,49 @@ export default function TableCard({
 
   const resolvedColumns =
     columns && columns.length > 0
-      ? columns
+      ? columns.map((col) => {
+          const header = col.header || col.title || col.label;
+          const isNumeric = Boolean(
+            col.currency ||
+            col.format === 'currency' ||
+            col.format === 'number' ||
+            col.type === 'number' ||
+            col.type === 'currency'
+          );
+          return {
+            ...col,
+            header: header || (col.dataIndex || col.field || col.key ? formatHeader(col.dataIndex || col.field || col.key) : ''),
+            align: col.align || (isNumeric ? 'right' : 'left')
+          };
+        })
       : rows.length > 0
       ? Object.keys(rows[0]).map((key) => ({
           header: formatHeader(key),
-          dataIndex: key
+          dataIndex: key,
+          align: 'left'
         }))
       : [];
 
   const renderCellContent = (row, col) => {
     const rawVal = row[col.dataIndex || col.field || col.key];
-    let content = col.render ? col.render(rawVal, row) : rawVal !== undefined && rawVal !== null ? String(rawVal) : '-';
+
+    let content;
+    if (col.render) {
+      content = col.render(rawVal, row);
+    } else if (col.currency || col.format === 'currency' || col.type === 'currency') {
+      const symbol = typeof col.currency === 'string' ? col.currency : '$';
+      content = formatCurrency(rawVal, symbol, {
+        compact: Boolean(col.compact),
+        decimals: col.decimals
+      });
+    } else if (col.format === 'number' || col.type === 'number') {
+      content = formatNumber(rawVal, {
+        compact: Boolean(col.compact),
+        decimals: col.decimals
+      });
+    } else {
+      content = rawVal !== undefined && rawVal !== null ? String(rawVal) : '—';
+    }
 
     if (col.link) {
       // Replace {field} template in link string, e.g. "/products/{id}"
@@ -147,27 +181,27 @@ export default function TableCard({
   };
 
   const content = (
-    <MainCard content={false} {...props}>
-      <Box sx={{ p: 2 }}>
+    <MainCard content={false} sx={{ height: '100%', display: 'flex', flexDirection: 'column', ...(typeof sx === 'function' ? sx : sx || {}) }} {...props}>
+      <Box sx={{ p: 2, flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
         <Typography variant="h5" sx={{ mb: 2 }}>
           {title}
         </Typography>
         {loading ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200, flexGrow: 1 }}>
             <CircularProgress />
           </Box>
         ) : error ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200, flexGrow: 1 }}>
             <Typography color="error">{error}</Typography>
           </Box>
         ) : rows.length > 0 ? (
-          <TableContainer>
-            <Table size="small">
+          <TableContainer sx={{ maxHeight: 340, overflowY: 'auto' }}>
+            <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>
                   {resolvedColumns.map((col, idx) => (
                     <TableCell key={col.dataIndex || col.key || idx} align={col.align || 'left'} sx={{ fontWeight: 600 }}>
-                      {col.title || col.label || col.header}
+                      {col.header || col.title || col.label}
                     </TableCell>
                   ))}
                 </TableRow>
@@ -186,7 +220,7 @@ export default function TableCard({
             </Table>
           </TableContainer>
         ) : (
-          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 150 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 150, flexGrow: 1 }}>
             <Typography color="textSecondary">No records found</Typography>
           </Box>
         )}
@@ -200,6 +234,8 @@ export default function TableCard({
 
   return content;
 }
+
+TableCard.dashboardKind = 'table';
 
 TableCard.propTypes = {
   title: PropTypes.string.isRequired,

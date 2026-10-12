@@ -203,8 +203,23 @@ class InitCommand extends Command
 
     private function runMigrations(SymfonyStyle $io): void
     {
-        $process = new Process(['php', 'bin/console', 'doctrine:migrations:migrate', '--no-interaction']);
-        $process->setWorkingDirectory($this->getApplication()->getKernel()->getProjectDir());
+        $projectDir = $this->getApplication()->getKernel()->getProjectDir();
+
+        // Step 4a: Automatically generate migrations if needed
+        $io->text('Generating migrations...');
+        $makeProcess = new Process(['php', 'bin/console', 'make:migration', '--no-interaction']);
+        $makeProcess->setWorkingDirectory($projectDir);
+        $makeProcess->run(function ($type, $buffer) use ($io) {
+            if (Process::OUT === $type) {
+                $io->text($buffer);
+            } else {
+                $io->text('<fg=yellow>' . $buffer . '</>');
+            }
+        });
+
+        // Step 4b: Execute migrations
+        $process = new Process(['php', 'bin/console', 'doctrine:migrations:migrate', '--no-interaction', '--allow-no-migration']);
+        $process->setWorkingDirectory($projectDir);
         
         $process->run(function ($type, $buffer) use ($io) {
             if (Process::OUT === $type) {
