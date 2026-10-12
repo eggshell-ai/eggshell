@@ -388,12 +388,29 @@ The `DataTable` component (`components/crud/DataTable`) provides a table with in
 
 #### Props:
 - `endpoint`: API endpoint (e.g., `"/analytics/orders/report"`). **Do NOT prefix with `/api`** — the frontend `apiService` automatically prefixes `/api`.
-- `columns`: Ant Design table column definitions array
+- `columns`: Array of column definition objects (see Column Configuration below).
 - `filters`: Array of filter definitions:
   - `{ name: "dateRange", type: "dateRange", label: "Date Range" }`
   - `{ name: "status", type: "select", label: "Status", options: { draft: "Draft", confirmed: "Confirmed" } }`
   - `{ name: "search", type: "text", label: "Search" }`
 - `params`: Object of constant query parameters to pass to the endpoint
+- `showTotal`: Optional boolean. When `true`, automatically renders a fixed bottom summary row for column totals. (Also auto-enabled if any column specifies `total` or `totalLabel`, or if the API response returns `totals`/`summary`).
+- `totalScope`: Optional `'all' | 'page'` (defaults to `'all'`). Controls whether column totals aggregate all fetched records or only the current page.
+
+#### `columns` Configuration & Total Summary Rows:
+Each column definition supports:
+- `header` / `title` / `label`: Column header title.
+- `dataIndex` / `key`: Field key from row records.
+- `currency`: String symbol (e.g. `"$"` or `true`). Formats cell values and column totals with the currency symbol and 2 decimal places.
+- `format` / `type`: `'currency'` or `'number'` for auto-formatting numbers with thousand separators.
+- `decimals`: Custom decimal precision (e.g. `2`).
+- `align`: `'left'` | `'center'` | `'right'`. Defaults to `'right'` for numeric/currency columns and `'left'` otherwise.
+- `totalLabel`: String (e.g. `"Total"`, `"Total Cost"`, `"BOM Total"`). Overrides cell content in the summary row for this column (typically placed on the first column).
+- `total`: Enables column aggregation in the bottom summary row:
+  - `true` or `'sum'`: Calculates the sum of numerical values for this column across all records.
+  - `'avg'`: Calculates the average value for this column.
+  - `(data: any[]) => React.ReactNode`: Custom aggregation function receiving the dataset.
+- Server-side totals: If your backend aggregator returns an object containing `{ "items": [...], "totals": { "totalCost": 1250.50 } }`, `DataTable` automatically maps the corresponding `totals[fieldKey]` into the summary row cell and formats it.
 
 ### Backend Handler for Dedicated Reports (NEVER Write a Controller!)
 
@@ -532,7 +549,7 @@ const statusColors = {
 
 export default function OrderReportPage() {
   const columns = [
-    { title: 'Order #', dataIndex: 'orderNumber', key: 'orderNumber' },
+    { title: 'Order #', dataIndex: 'orderNumber', key: 'orderNumber', totalLabel: 'Total' },
     { title: 'Customer', dataIndex: 'customerName', key: 'customerName' },
     { title: 'Date', dataIndex: 'orderDate', key: 'orderDate' },
     {
@@ -545,7 +562,8 @@ export default function OrderReportPage() {
       title: 'Total Value',
       dataIndex: 'totalAmount',
       key: 'totalAmount',
-      render: (val) => '$' + Number(val || 0).toFixed(2),
+      currency: '$',
+      total: 'sum',
     },
   ];
 
@@ -566,6 +584,7 @@ export default function OrderReportPage() {
         endpoint="/analytics/orders/report"
         columns={columns}
         filters={filters}
+        showTotal
       />
     </div>
   );
