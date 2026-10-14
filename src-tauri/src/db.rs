@@ -183,6 +183,7 @@ impl SessionsRepository {
         mode: Option<String>,
         app_handle: Option<&AppHandle>,
         cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
+        iteration_control: Option<Arc<crate::iterate::IterationControl>>,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
         let is_plan_mode = mode.as_deref() == Some("plan");
         let existing_history = match session_id {
@@ -219,6 +220,23 @@ impl SessionsRepository {
         };
 
         let is_qa_mode = mode.as_deref() == Some("qa");
+        let is_iterate_mode = mode.as_deref() == Some("iterate");
+
+        if is_iterate_mode {
+            let control = iteration_control.unwrap_or_else(|| Arc::new(crate::iterate::IterationControl::new()));
+            return crate::iterate::run_iterate_loop(
+                pool,
+                project_id,
+                id,
+                user_message,
+                artifacts,
+                agent,
+                event_sink,
+                app_handle,
+                control,
+            )
+            .await;
+        }
 
         let (system_prompt, tools) = if is_plan_mode {
             let app = llm::PlanningApp;

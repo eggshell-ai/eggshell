@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import ReportMenu from "./ReportMenu";
 import SettingsPopup from "./SettingsPopup";
 import FeedbackPopup from "./FeedbackPopup";
+import IterationLoopCard, { IterationLoopData } from "./IterationLoopCard";
 
 export type ChatMessage = {
   role: "user" | "assistant" | "thought" | "tool_call" | "tool_result";
@@ -179,14 +180,16 @@ type ChatProps = {
   /** The first model in the active provider's list is the backend's current default. */
   activeModel: string;
   onModelChange: (provider: string, model: string, reasoning?: string) => void;
-  mode: "implement" | "plan" | "qa";
-  onModeChange: (mode: "implement" | "plan" | "qa") => void;
+  mode: "implement" | "plan" | "qa" | "iterate";
+  onModeChange: (mode: "implement" | "plan" | "qa" | "iterate") => void;
   onProceedToImplement: () => void;
   onStop?: () => void;
   onCompact?: () => void;
+  isWrappingUp?: boolean;
+  iterateStatus?: { loop?: number; stage?: string; phase?: string } | null;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -457,6 +460,18 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
       );
       continue;
     }
+    const isIterationLoop = (message.data as IterationLoopData | undefined)?.isIterationLoop;
+    if (isIterationLoop) {
+      const loopData = message.data as IterationLoopData;
+      renderedMessages.push(
+        <IterationLoopCard
+          key={`iteration-loop-${index}`}
+          data={loopData}
+          isCurrent={false}
+        />
+      );
+      continue;
+    }
     const isPlan = (message.data as { isPlan?: boolean } | undefined)?.isPlan;
     const planPath = (message.data as { planPath?: string } | undefined)?.planPath;
     if (isPlan) {
@@ -565,13 +580,36 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
               ))}
             </ul>
           )}
+          {isSending && mode === "iterate" && (
+            <div className="iterate-hud-banner">
+              <div className="iterate-hud-info">
+                <span className="iterate-hud-loop">Loop #{iterateStatus?.loop ?? 1}</span>
+                <span className="iterate-hud-stepper">
+                  <span className={`hud-step ${iterateStatus?.stage === "planner" ? "active" : "done"}`}>
+                    📋 Planner
+                  </span>
+                  <span className="hud-arrow">➔</span>
+                  <span className={`hud-step ${iterateStatus?.stage === "implementer" ? "active" : iterateStatus?.stage === "qa" ? "done" : ""}`}>
+                    ⚙️ Implementer
+                  </span>
+                  <span className="hud-arrow">➔</span>
+                  <span className={`hud-step ${iterateStatus?.stage === "qa" ? "active" : ""}`}>
+                    🧪 QA Testing
+                  </span>
+                </span>
+              </div>
+              {isWrappingUp && (
+                <span className="iterate-hud-pill">Wrapping up after QA…</span>
+              )}
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             className="composer-textarea"
             value={draft}
             onChange={(e: ChangeEvent<HTMLTextAreaElement>) => onDraftChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message… (Press Enter to send, Shift+Enter for new line)"
+            placeholder={mode === "iterate" ? "Describe your application goal to begin autonomous iteration… (Press Enter)" : "Type a message… (Press Enter to send, Shift+Enter for new line)"}
             rows={1}
             aria-label="Message"
           />
@@ -588,19 +626,20 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                 <span className="composer-attach-icon">📎</span>
                 <span className="composer-attach-label">Attach</span>
               </button>
-              <div className={`composer-mode-picker ${mode === "plan" ? "plan-active" : mode === "qa" ? "qa-active" : ""}`}>
-                <span className="composer-mode-icon">{mode === "plan" ? "📋" : mode === "qa" ? "🧪" : "⚙️"}</span>
+              <div className={`composer-mode-picker ${mode === "plan" ? "plan-active" : mode === "qa" ? "qa-active" : mode === "iterate" ? "iterate-active" : ""}`}>
+                <span className="composer-mode-icon">{mode === "plan" ? "📋" : mode === "qa" ? "🧪" : mode === "iterate" ? "🔄" : "⚙️"}</span>
                 <span className="composer-mode-label">Mode:</span>
                 <select
                   className="composer-mode-select"
                   value={mode}
                   aria-label="Mode Selection"
                   disabled={isSending}
-                  onChange={({ target }) => onModeChange(target.value as "implement" | "plan" | "qa")}
+                  onChange={({ target }) => onModeChange(target.value as "implement" | "plan" | "qa" | "iterate")}
                 >
                   <option value="implement">Implement</option>
                   <option value="plan">Plan</option>
                   <option value="qa">QA / Test</option>
+                  <option value="iterate">Iterate (Autonomous)</option>
                 </select>
               </div>
               {selectableProviders.length > 0 && (
@@ -663,16 +702,31 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
             </div>
             {isSending ? (
               <button
-                className="composer-stop-btn"
+                className={`composer-stop-btn ${mode === "iterate" ? (isWrappingUp ? "force-stop" : "wrap-up") : ""}`}
                 type="button"
                 onClick={onStop}
-                aria-label="Stop generation"
+                aria-label={mode === "iterate" ? (isWrappingUp ? "Force Stop immediately" : "Wrap Up after QA") : "Stop generation"}
+                title={mode === "iterate" ? (isWrappingUp ? "Force stop immediately" : "Wrap up: stops after current loop's QA") : "Stop"}
               >
-                <span className="composer-stop-icon" aria-hidden="true">■</span> Stop
+                {mode === "iterate" ? (
+                  isWrappingUp ? (
+                    <>
+                      <span className="composer-stop-icon" aria-hidden="true">⚡</span> Force Stop
+                    </>
+                  ) : (
+                    <>
+                      <span className="composer-stop-icon" aria-hidden="true">🛑</span> Wrap Up
+                    </>
+                  )
+                ) : (
+                  <>
+                    <span className="composer-stop-icon" aria-hidden="true">■</span> Stop
+                  </>
+                )}
               </button>
             ) : (
               <button className="composer-send-btn" disabled={!draft.trim()} type="submit">
-                Send
+                {mode === "iterate" ? "Start Iteration" : "Send"}
               </button>
             )}
           </div>

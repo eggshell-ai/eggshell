@@ -1,6 +1,7 @@
 pub mod config;
 mod db;
 pub mod dependencies;
+pub mod iterate;
 pub mod llm;
 use llm::LLMService;
 pub mod providers;
@@ -28,6 +29,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 type ActiveGenerationMap = Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>;
+type ActiveIterationMap = Arc<Mutex<HashMap<i64, Arc<iterate::IterationControl>>>>;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -760,6 +762,7 @@ async fn send_message(
     pool: tauri::State<'_, SqlitePool>,
     agent: tauri::State<'_, llm::AgentService>,
     active_generations: tauri::State<'_, ActiveGenerationMap>,
+    active_iterations: tauri::State<'_, ActiveIterationMap>,
 ) -> Result<Session, String> {
     let message = message.trim().to_string();
     if message.is_empty() {
@@ -789,10 +792,21 @@ async fn send_message(
         }
     });
 
+    let is_iterate = mode.as_deref() == Some("iterate");
     let cancel_flag = Arc::new(AtomicBool::new(false));
+    let iteration_ctrl = if is_iterate {
+        Some(Arc::new(iterate::IterationControl::new()))
+    } else {
+        None
+    };
+
     {
         let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
         map.insert(project_id, cancel_flag.clone());
+    }
+    if let Some(ref ctrl) = iteration_ctrl {
+        let mut iter_map = active_iterations.lock().unwrap_or_else(|p| p.into_inner());
+        iter_map.insert(project_id, ctrl.clone());
     }
 
     let result = SessionsRepository::save_exchange(
@@ -806,6 +820,7 @@ async fn send_message(
         mode,
         Some(&app),
         Some(cancel_flag),
+        iteration_ctrl,
     )
     .await;
 
@@ -813,15 +828,78 @@ async fn send_message(
         let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
         map.remove(&project_id);
     }
+    if is_iterate {
+        let mut iter_map = active_iterations.lock().unwrap_or_else(|p| p.into_inner());
+        iter_map.remove(&project_id);
+    }
 
     result.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn wrap_up_chat(
+    project_id: i64,
+    active_iterations: tauri::State<'_, ActiveIterationMap>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let map = active_iterations.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(ctrl) = map.get(&project_id) {
+        ctrl.wrap_up.store(true, Ordering::Relaxed);
+        let _ = app.emit("agent-event", serde_json::json!({
+            "projectId": project_id,
+            "event": {
+                "type": "iterate_status",
+                "data": { "phase": "wrapping_up" }
+            }
+        }));
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn stop_chat(
     project_id: i64,
     active_generations: tauri::State<'_, ActiveGenerationMap>,
+    active_iterations: tauri::State<'_, ActiveIterationMap>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // Check if an iteration is active
+    let iter_control = {
+        let map = active_iterations.lock().unwrap_or_else(|p| p.into_inner());
+        map.get(&project_id).cloned()
+    };
+
+    if let Some(ctrl) = iter_control {
+        if !ctrl.wrap_up.load(Ordering::Relaxed) {
+            // First stop click: enter wrap-up phase
+            ctrl.wrap_up.store(true, Ordering::Relaxed);
+            let _ = app.emit("agent-event", serde_json::json!({
+                "projectId": project_id,
+                "event": {
+                    "type": "iterate_status",
+                    "data": { "phase": "wrapping_up" }
+                }
+            }));
+            return Ok(());
+        } else {
+            // Second stop click: force stop immediately
+            ctrl.force_stop.store(true, Ordering::Relaxed);
+            let map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(flag) = map.get(&project_id) {
+                flag.store(true, Ordering::Relaxed);
+            }
+            let _ = app.emit("agent-event", serde_json::json!({
+                "projectId": project_id,
+                "event": {
+                    "type": "iterate_status",
+                    "data": { "phase": "force_stopped" }
+                }
+            }));
+            return Ok(());
+        }
+    }
+
+    // Default regular mode stop
     let map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(flag) = map.get(&project_id) {
         flag.store(true, Ordering::Relaxed);
@@ -1190,6 +1268,8 @@ pub fn run() {
             app.manage(hub);
             let active_generations: ActiveGenerationMap = Arc::new(Mutex::new(HashMap::new()));
             app.manage(active_generations);
+            let active_iterations: ActiveIterationMap = Arc::new(Mutex::new(HashMap::new()));
+            app.manage(active_iterations);
 
             // Probing the port and waiting for the daemon both block, and the
             // window should not wait on a database it does not use itself.
@@ -1220,6 +1300,7 @@ pub fn run() {
             list_sessions,
             delete_session,
             send_message,
+            wrap_up_chat,
             stop_chat,
             compact_session,
             submit_feedback,

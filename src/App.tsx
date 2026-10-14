@@ -50,7 +50,9 @@ function App() {
   const [isStarting, setIsStarting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(true);
-  const [mode, setMode] = useState<"implement" | "plan" | "qa">("implement");
+  const [mode, setMode] = useState<"implement" | "plan" | "qa" | "iterate">("implement");
+  const [isWrappingUp, setIsWrappingUp] = useState(false);
+  const [iterateStatus, setIterateStatus] = useState<{ loop?: number; stage?: string; phase?: string } | null>(null);
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
@@ -141,6 +143,36 @@ function App() {
         }
         return;
       }
+      if (type === "iterate_loop_start") {
+        const loopData = data as { loop?: number; isWrapUp?: boolean };
+        setIterateStatus((prev) => ({ ...prev, loop: loopData.loop, stage: "planner" }));
+        if (loopData.isWrapUp) setIsWrappingUp(true);
+        return;
+      }
+      if (type === "iterate_stage_start") {
+        const stageData = data as { loop?: number; stage?: string };
+        setIterateStatus((prev) => ({ ...prev, loop: stageData.loop, stage: stageData.stage }));
+        return;
+      }
+      if (type === "iterate_status") {
+        const statusData = data as { phase?: string };
+        if (statusData.phase === "wrapping_up") {
+          setIsWrappingUp(true);
+        } else if (statusData.phase === "completed" || statusData.phase === "force_stopped") {
+          setIsWrappingUp(false);
+          setIterateStatus(null);
+        }
+        return;
+      }
+      if (type === "iterate_loop_complete") {
+        const loopPayload = data as { loop?: number; plan?: string; implementation?: string; qaReport?: string; tokenUsage?: number };
+        if (loopPayload.tokenUsage) {
+          setActiveSession((current) => current ? { ...current, token_usage: loopPayload.tokenUsage } : current);
+          setSessions((current) => current.map((s) => s.id === activeSession?.id ? { ...s, token_usage: loopPayload.tokenUsage } : s));
+        }
+        setStreamedMessages([]);
+        return;
+      }
       setStreamedMessages((current) => [...current, {
         role: type as ChatMessage["role"],
         content: eventContent(type, data),
@@ -148,7 +180,7 @@ function App() {
       }]);
     }).then((stop) => { unlisten = stop; });
     return () => unlisten?.();
-  }, [activeProject?.id]);
+  }, [activeProject?.id, activeSession?.id]);
   // Registered at mount rather than when a create starts: `listen` resolves
   // asynchronously, and the first commands would have run before it was ready.
   // That is also why this needs no history command, unlike the setup log.
@@ -267,7 +299,12 @@ function App() {
   async function stopChat() {
     if (!activeProject) return;
     try {
-      await invoke("stop_chat", { projectId: activeProject.id });
+      if (mode === "iterate" && !isWrappingUp) {
+        setIsWrappingUp(true);
+        await invoke("wrap_up_chat", { projectId: activeProject.id });
+      } else {
+        await invoke("stop_chat", { projectId: activeProject.id });
+      }
     } catch (reason) {
       setError(String(reason));
     }
@@ -333,7 +370,7 @@ function App() {
   if (activeProject) {
     return (
       <>
-        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} />
+        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} />
         <UpdatePrompt autoCheck={autoUpdateEnabled} />
       </>
     );
