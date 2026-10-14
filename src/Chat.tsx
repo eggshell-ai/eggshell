@@ -27,6 +27,24 @@ const toolCallFormatters: Record<string, ToolMessageFormatter> = {
     const skillName = (args as { skillName?: unknown } | undefined)?.skillName;
     return `Loaded skill: ${typeof skillName === "string" ? skillName : "unknown"}`;
   },
+  browser_open: ({ arguments: args }) => {
+    const url = (args as { url?: string } | undefined)?.url || "http://localhost:4000";
+    return `Opening browser at ${url}`;
+  },
+  browser_navigate: ({ arguments: args }) => {
+    const url = (args as { url?: string } | undefined)?.url || "";
+    return `Navigating to ${url}`;
+  },
+  browser_click: ({ arguments: args }) => {
+    const selector = (args as { selector?: string } | undefined)?.selector || "";
+    return `Clicking element: ${selector}`;
+  },
+  browser_fill: ({ arguments: args }) => {
+    const selector = (args as { selector?: string } | undefined)?.selector || "";
+    return `Filling input: ${selector}`;
+  },
+  browser_get_page_content: () => "Inspecting page content & tables",
+  browser_get_console_errors: () => "Checking browser errors",
 };
 
 function formatToolMessage(event: ToolEvent) {
@@ -161,8 +179,8 @@ type ChatProps = {
   /** The first model in the active provider's list is the backend's current default. */
   activeModel: string;
   onModelChange: (provider: string, model: string, reasoning?: string) => void;
-  mode: "implement" | "plan";
-  onModeChange: (mode: "implement" | "plan") => void;
+  mode: "implement" | "plan" | "qa";
+  onModeChange: (mode: "implement" | "plan" | "qa") => void;
   onProceedToImplement: () => void;
   onStop?: () => void;
   onCompact?: () => void;
@@ -570,18 +588,19 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                 <span className="composer-attach-icon">📎</span>
                 <span className="composer-attach-label">Attach</span>
               </button>
-              <div className={`composer-mode-picker ${mode === "plan" ? "plan-active" : ""}`}>
-                <span className="composer-mode-icon">{mode === "plan" ? "📋" : "⚙️"}</span>
+              <div className={`composer-mode-picker ${mode === "plan" ? "plan-active" : mode === "qa" ? "qa-active" : ""}`}>
+                <span className="composer-mode-icon">{mode === "plan" ? "📋" : mode === "qa" ? "🧪" : "⚙️"}</span>
                 <span className="composer-mode-label">Mode:</span>
                 <select
                   className="composer-mode-select"
                   value={mode}
                   aria-label="Mode Selection"
                   disabled={isSending}
-                  onChange={({ target }) => onModeChange(target.value as "implement" | "plan")}
+                  onChange={({ target }) => onModeChange(target.value as "implement" | "plan" | "qa")}
                 >
                   <option value="implement">Implement</option>
                   <option value="plan">Plan</option>
+                  <option value="qa">QA / Test</option>
                 </select>
               </div>
               {selectableProviders.length > 0 && (

@@ -50,7 +50,7 @@ function App() {
   const [isStarting, setIsStarting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(true);
-  const [mode, setMode] = useState<"implement" | "plan">("implement");
+  const [mode, setMode] = useState<"implement" | "plan" | "qa">("implement");
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);

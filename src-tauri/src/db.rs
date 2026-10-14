@@ -218,8 +218,13 @@ impl SessionsRepository {
             }
         };
 
+        let is_qa_mode = mode.as_deref() == Some("qa");
+
         let (system_prompt, tools) = if is_plan_mode {
             let app = llm::PlanningApp;
+            (app.system_prompt(), app.tools())
+        } else if is_qa_mode {
+            let app = llm::QaApp;
             (app.system_prompt(), app.tools())
         } else {
             let app = llm::AdminPanelApp;

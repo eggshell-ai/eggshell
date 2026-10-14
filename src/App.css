@@ -618,6 +618,11 @@
   background: #f3effe;
 }
 
+.composer-mode-picker.qa-active {
+  border-color: #059669;
+  background: #ecfdf5;
+}
+
 .composer-mode-icon {
   font-size: 13px;
 }
@@ -630,6 +635,10 @@
 
 .composer-mode-picker.plan-active .composer-mode-label {
   color: #6246ea;
+}
+
+.composer-mode-picker.qa-active .composer-mode-label {
+  color: #059669;
 }
 
 .composer-mode-select {
@@ -646,6 +655,10 @@
 
 .composer-mode-picker.plan-active .composer-mode-select {
   color: #5237de;
+}
+
+.composer-mode-picker.qa-active .composer-mode-select {
+  color: #059669;
 }
 
 .composer-mode-select:focus {

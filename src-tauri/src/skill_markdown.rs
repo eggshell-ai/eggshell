@@ -19,6 +19,7 @@ pub fn load(name: &str) -> &'static str {
         "notification_creation.md" => include_str!("skills/notification_creation.md"),
         "profile_management.md" => include_str!("skills/profile_management.md"),
         "roles_and_permissions.md" => include_str!("skills/roles_and_permissions.md"),
+        "qa_testing.md" => include_str!("skills/qa_testing.md"),
         other => panic!("No skill markdown file named '{other}'"),
     }
 }
