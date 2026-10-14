@@ -36,6 +36,13 @@ pub struct AppConfig {
     /// Whether the user has opted in to anonymous telemetry and error reporting.
     #[serde(rename = "telemetryEnabled", default)]
     pub telemetry_enabled: bool,
+    /// Whether the application should automatically check for updates.
+    #[serde(rename = "autoUpdateEnabled", default = "default_true")]
+    pub auto_update_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -47,6 +54,7 @@ impl Default for AppConfig {
             setup_completed: false,
             installation_id: None,
             telemetry_enabled: false,
+            auto_update_enabled: true,
         }
     }
 }

@@ -123,6 +123,7 @@ struct SetupState {
     mysql: MysqlSummary,
     telemetry_enabled: bool,
     installation_id: String,
+    auto_update_enabled: bool,
 }
 
 #[tauri::command]
@@ -151,6 +152,7 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
                 mysql,
                 telemetry_enabled: config.telemetry_enabled,
                 installation_id: config.installation_id.unwrap_or_default(),
+                auto_update_enabled: config.auto_update_enabled,
             }
         }
         // A first launch has no configuration to read yet, which is exactly when
@@ -173,6 +175,7 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
                 mysql,
                 telemetry_enabled: false,
                 installation_id: String::new(),
+                auto_update_enabled: true,
             }
         }
     }
@@ -200,6 +203,15 @@ fn save_privacy_settings(app: tauri::AppHandle, enabled: bool) -> Result<(), Str
     } else {
         telemetry::clear_scope();
     }
+    Ok(())
+}
+
+/// Updates the user's automatic update checking preference in config.yaml.
+#[tauri::command]
+fn save_auto_update_setting(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mut config = config::ConfigService::load_default(&app).unwrap_or_default();
+    config.auto_update_enabled = enabled;
+    config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1193,6 +1205,7 @@ pub fn run() {
             read_logs,
             load_setup_state,
             save_privacy_settings,
+            save_auto_update_setting,
             config::save_mysql_config,
             config::save_mysql_settings,
             save_provider_config,

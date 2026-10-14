@@ -9,6 +9,7 @@ import SettingsPopup from "./SettingsPopup";
 import ProjectLogPanel, { ProgressLine } from "./ProjectLogPanel";
 import Chat, { ChatMessage, eventContent } from "./Chat";
 import ReportMenu from "./ReportMenu";
+import UpdatePrompt from "./UpdatePrompt";
 
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
@@ -22,6 +23,7 @@ type Session = {
 type SetupState = {
   setup_completed: boolean;
   providers: { id?: string; key: string; name: string; models: string[]; api_key_set?: boolean }[];
+  auto_update_enabled?: boolean;
 };
 const emptyProject: ProjectForm = { title: "", slug: "", path: "" };
 
@@ -47,6 +49,7 @@ function App() {
   const [isSending, setIsSending] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(true);
   const [mode, setMode] = useState<"implement" | "plan">("implement");
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
   // What the shells have reported for the project currently being created.
@@ -54,8 +57,11 @@ function App() {
 
   async function syncSetupState() {
     try {
-      const { setup_completed, providers } = await invoke<SetupState>("load_setup_state");
+      const { setup_completed, providers, auto_update_enabled } = await invoke<SetupState>("load_setup_state");
       setIsSetupComplete(setup_completed);
+      if (auto_update_enabled !== undefined) {
+        setAutoUpdateEnabled(Boolean(auto_update_enabled));
+      }
       const configured = providers.find((p) => p.models.length > 0 && (p.api_key_set ?? true))
         || providers.find((p) => p.models.length > 0)
         || providers.find((p) => p.api_key_set);
@@ -316,8 +322,22 @@ function App() {
   // open, so the lines and the reason belong together.
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
-  if (!isSetupComplete) return <SetupPage onComplete={() => { setIsSetupComplete(true); void syncSetupState(); }} />;
-  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} />;
+  if (!isSetupComplete) {
+    return (
+      <>
+        <SetupPage onComplete={() => { setIsSetupComplete(true); void syncSetupState(); }} />
+        <UpdatePrompt autoCheck={autoUpdateEnabled} />
+      </>
+    );
+  }
+  if (activeProject) {
+    return (
+      <>
+        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} />
+        <UpdatePrompt autoCheck={autoUpdateEnabled} />
+      </>
+    );
+  }
 
   return (
     <main className="home">
@@ -351,6 +371,7 @@ function App() {
       </section>
       <ReportMenu screenName="Home" />
       <SettingsPopup isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); void syncSetupState(); }} />
+      <UpdatePrompt autoCheck={autoUpdateEnabled} />
     </main>
   );
 }

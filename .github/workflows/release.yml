@@ -63,3 +63,23 @@ jobs:
           releaseBody: ${{ github.event.release.body }}
           releaseDraft: false
           prerelease: ${{ github.event.release.prerelease }}
+
+  updater-manifest:
+    name: Generate and publish unified latest.json
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Combine and publish latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: python .github/scripts/combine_updater.py
