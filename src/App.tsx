@@ -7,7 +7,7 @@ import "./App.css";
 import SetupPage from "./SetupPage";
 import SettingsPopup from "./SettingsPopup";
 import ProjectLogPanel, { ProgressLine } from "./ProjectLogPanel";
-import Chat, { ChatMessage, eventContent } from "./Chat";
+import Chat, { ChatMessage, ChatUser, eventContent } from "./Chat";
 import ReportMenu from "./ReportMenu";
 import UpdatePrompt from "./UpdatePrompt";
 
@@ -42,6 +42,7 @@ function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [users, setUsers] = useState<ChatUser[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [draft, setDraft] = useState("");
   const [pendingPrompt, setPendingPrompt] = useState("");
@@ -237,6 +238,12 @@ function App() {
       }
     }
     catch (reason) { setError(String(reason)); }
+    void loadUsers(project.id);
+  }
+
+  async function loadUsers(projectId: number) {
+    try { setUsers(await invoke<ChatUser[]>("list_users", { projectId })); }
+    catch (reason) { console.error("[App] list_users failed", { reason }); }
   }
   async function removeSession(session: Session) {
     if (!activeProject || !window.confirm(`Delete “${session.title}”? This cannot be undone.`)) return;
@@ -274,7 +281,7 @@ function App() {
       });
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); setPendingPrompt(""); }
+    finally { setIsSending(false); setPendingPrompt(""); void loadUsers(activeProject.id); }
   }
 
   async function proceedToImplement() {
@@ -370,7 +377,7 @@ function App() {
   if (activeProject) {
     return (
       <>
-        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} />
+        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} />
         <UpdatePrompt autoCheck={autoUpdateEnabled} />
       </>
     );

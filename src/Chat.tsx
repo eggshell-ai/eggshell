@@ -13,6 +13,15 @@ export type ChatMessage = {
   data?: unknown;
 };
 
+/** A sign-in account for the active project (mirrored from the Symfony backend). */
+export type ChatUser = {
+  id: number;
+  project_id: number;
+  email: string;
+  role: string;
+  password: string;
+};
+
 type ToolEvent = {
   name?: string;
   arguments?: unknown;
@@ -78,9 +87,7 @@ function MessageContent({ content }: { content: string }) {
   </div>;
 }
 
-type ToolRunProps = { call: ChatMessage; result?: ChatMessage };
-
-function ThinkingBlock({ content, isRunning }: { content: string; isRunning: boolean }) {
+type ToolRunProps = { call: ChatMessage; result?: ChatMessage };function ThinkingBlock({ content, isRunning }: { content: string; isRunning: boolean }) {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
@@ -130,9 +137,54 @@ function ToolRun({ call, result }: ToolRunProps) {
   </article>;
 }
 
+function UsersList({ users }: { users: ChatUser[] }) {
+  const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
+
+  async function copyCredentials(user: ChatUser) {
+    try {
+      await navigator.clipboard.writeText(`${user.email} / ${user.password}`);
+      setCopiedEmail(user.email);
+      setTimeout(() => setCopiedEmail((current) => (current === user.email ? null : current)), 2000);
+    } catch (reason) {
+      console.error("[Chat] clipboard write failed", { reason });
+    }
+  }
+
+  return (
+    <aside className="login-details" aria-label="Project login details">
+      <p className="eyebrow">Sign-in accounts</p>
+      {users.length === 0 ? (
+        <p className="users-empty">No users yet. The admin account appears once the project is created.</p>
+      ) : (
+        <ul className="user-list">
+          {users.map((user) => (
+            <li className={`user-item ${user.role === "ROLE_ADMIN" ? "is-admin" : ""}`} key={`${user.project_id}-${user.email}`}>
+              <div className="user-item-header">
+                <span className="user-email" title={user.email}>{user.email}</span>
+                <button
+                  className="user-copy-button"
+                  type="button"
+                  aria-label={`Copy credentials for ${user.email}`}
+                  title="Copy email and password"
+                  onClick={() => void copyCredentials(user)}
+                >
+                  {copiedEmail === user.email ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <div className="user-item-meta">
+                <span className="user-role">{user.role === "ROLE_ADMIN" ? "Admin" : user.role.replace(/^ROLE_/, "")}</span>
+                <span className="user-password" title="Password">{user.password || "—"}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </aside>
+  );
+}
+
 // Mirrors `providers::ProviderSummary` as returned by `load_setup_state`.
-type ProviderSummary = {
-  id: string;
+type ProviderSummary = {  id: string;
   key: string;
   provider_type: string;
   name: string;
@@ -165,6 +217,7 @@ type ChatProps = {
   isSending: boolean;
   isStarting: boolean;
   error: string;
+  users: ChatUser[];
   onBack: () => void;
   onStart: () => void;
   onNewSession: () => void;
@@ -189,7 +242,7 @@ type ChatProps = {
   iterateStatus?: { loop?: number; stage?: string; phase?: string } | null;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, users, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -513,7 +566,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     renderedMessages.push(<article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Eggshell"}</span><MessageContent content={message.content} /></article>);
   }
   return <main className="chat-layout">
-    <aside className="chat-sidebar"><button className="back-button" type="button" onClick={onBack}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{projectTitle}</h2></div><button className="start-button" type="button" onClick={onStart} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><aside className="login-details" aria-label="Admin login details"><p className="eyebrow">Admin login</p><dl><div><dt>Username</dt><dd>admin@dummy-project.com</dd></div><div><dt>Password</dt><dd>12345678</dd></div></dl></aside><button className="new-chat-button" type="button" onClick={onNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSessionId === session.id ? "session-row active" : "session-row"} key={session.id}><button className={activeSessionId === session.id ? "session-item active" : "session-item"} type="button" onClick={() => onSelectSession(session.id)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => onDeleteSession(session.id)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
+    <aside className="chat-sidebar"><button className="back-button" type="button" onClick={onBack}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{projectTitle}</h2></div><button className="start-button" type="button" onClick={onStart} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><UsersList users={users} /><button className="new-chat-button" type="button" onClick={onNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSessionId === session.id ? "session-row active" : "session-row"} key={session.id}><button className={activeSessionId === session.id ? "session-item active" : "session-item"} type="button" onClick={() => onSelectSession(session.id)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => onDeleteSession(session.id)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
     <section className="chat-panel">
       <header className="chat-header">
         <div className="chat-heading">

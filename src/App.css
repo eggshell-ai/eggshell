@@ -348,6 +348,18 @@
 .login-details dt { color: #858291; font-size: .7rem; font-weight: 700; text-transform: uppercase; }
 .login-details dd { margin: 2px 0 0; overflow-wrap: anywhere; color: #353241; font-size: .8rem; }
 
+.users-empty { margin: 0; color: #858291; font-size: .75rem; }
+.user-list { list-style: none; display: grid; gap: 8px; margin: 0; padding: 0; max-height: 220px; overflow-y: auto; }
+.user-item { padding: 8px 10px; border: 1px solid #eceaf3; border-radius: 7px; background: #fafafd; }
+.user-item.is-admin { border-color: #d7ccf7; background: #f5f2ff; }
+.user-item-header { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.user-email { font-size: .78rem; font-weight: 600; color: #353241; overflow-wrap: anywhere; }
+.user-copy-button { flex: none; padding: 2px 8px; border: 1px solid #d9d5e8; border-radius: 6px; background: #fff; color: #5b5570; font-size: .68rem; font-weight: 600; cursor: pointer; }
+.user-copy-button:hover { background: #f2f0f9; }
+.user-item-meta { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.user-role { padding: 1px 7px; border-radius: 999px; background: #ece9f7; color: #5b4bbd; font-size: .66rem; font-weight: 700; text-transform: uppercase; }
+.user-password { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem; color: #6b6779; overflow-wrap: anywhere; }
+
 .tool-run-summary {
   display: flex;
   align-items: center;

@@ -10,6 +10,29 @@ use crate::progress::ProgressLog;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+/// Admin credentials seeded into every project by `app:init`
+/// (`templates/backend/src/Command/InitCommand.php`). Mirrored into the local
+/// `users` table when a project is created.
+pub const ADMIN_EMAIL: &str = "admin@dummy-project.com";
+pub const ADMIN_PASSWORD: &str = "12345678";
+
+/// Process-wide handle to the SQLite pool.
+///
+/// Tauri commands receive the pool through managed state, but agent tools are
+/// constructed without it. Mirroring [`crate::logger::Logger::global`], this
+/// lets any code that runs after startup reach the database.
+static POOL: std::sync::OnceLock<SqlitePool> = std::sync::OnceLock::new();
+
+/// Stores the pool for process-wide access. Called once from [`initialize`].
+pub fn set_pool(pool: SqlitePool) {
+    let _ = POOL.set(pool);
+}
+
+/// Returns the process-wide pool, if [`initialize`] has run.
+pub fn pool() -> Option<&'static SqlitePool> {
+    POOL.get()
+}
+
 #[derive(Debug, Serialize, FromRow)]
 pub struct Project {
     pub id: i64,
@@ -41,6 +64,27 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+}
+
+/// A sign-in account mirrored from the project's Symfony backend.
+///
+/// The authoritative record lives in the project's MySQL `user` table; this is
+/// the local copy the desktop UI lists (see `0004_create_users.sql`). The
+/// password is stored in plain text so it can be shown in the chat sidebar.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct User {
+    #[serde(default)]
+    pub id: i64,
+    pub project_id: i64,
+    pub email: String,
+    #[serde(default = "default_user_role")]
+    pub role: String,
+    #[serde(default)]
+    pub password: String,
+}
+
+fn default_user_role() -> String {
+    "ROLE_USER".to_string()
 }
 
 /// Data-access layer for the `projects` table.
@@ -80,6 +124,21 @@ impl ProjectsRepository {
             .execute(pool)
             .await?
             .last_insert_rowid();
+
+        // Mirror the admin account `app:init` seeds into the project's Symfony
+        // backend, so the chat login list shows it alongside any users created
+        // later.
+        UsersRepository::upsert(
+            pool,
+            &User {
+                id: 0,
+                project_id: id,
+                email: ADMIN_EMAIL.to_string(),
+                role: "ROLE_ADMIN".to_string(),
+                password: ADMIN_PASSWORD.to_string(),
+            },
+        )
+        .await?;
 
         Ok(Project {
             id,
@@ -125,6 +184,60 @@ impl ProjectsRepository {
         }
 
         Ok(candidate)
+    }
+}
+
+/// Data-access layer for the `users` table (project sign-in accounts).
+pub struct UsersRepository;
+
+impl UsersRepository {
+    pub async fn list(pool: &SqlitePool, project_id: i64) -> Result<Vec<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>(
+            "SELECT id, project_id, email, role, password FROM users WHERE project_id = ? ORDER BY (role = 'ROLE_ADMIN') DESC, email ASC",
+        )
+        .bind(project_id)
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Inserts a user, or updates the existing row when the email already
+    /// exists for the project (matching on `(project_id, email)`).
+    pub async fn upsert(pool: &SqlitePool, user: &User) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO users (project_id, email, role, password) VALUES (?, ?, ?, ?)
+             ON CONFLICT (project_id, email) DO UPDATE SET role = excluded.role, password = excluded.password",
+        )
+        .bind(user.project_id)
+        .bind(&user.email)
+        .bind(&user.role)
+        .bind(&user.password)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete(
+        pool: &SqlitePool,
+        project_id: i64,
+        email: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM users WHERE project_id = ? AND email = ?")
+            .bind(project_id)
+            .bind(email)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Resolves the owning project id from a project directory path.
+    pub async fn project_id_for_path(
+        pool: &SqlitePool,
+        path: &str,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        sqlx::query_scalar::<_, i64>("SELECT id FROM projects WHERE path = ?")
+            .bind(path)
+            .fetch_optional(pool)
+            .await
     }
 }
 
@@ -538,6 +651,8 @@ pub async fn initialize(app: &AppHandle) -> Result<SqlitePool, Box<dyn std::erro
     let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN compacted_summary TEXT")
         .execute(&pool)
         .await;
+
+    set_pool(pool.clone());
 
     Ok(pool)
 }

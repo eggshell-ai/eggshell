@@ -1,6 +1,7 @@
 mod browser;
 mod lint_code;
 mod load_skill;
+mod manage_user;
 mod move_file;
 mod read_file;
 mod read_schema;
@@ -14,6 +15,7 @@ pub use browser::{
 };
 pub use lint_code::LintCodeTool;
 pub use load_skill::LoadSkillTool;
+pub use manage_user::ManageUserTool;
 pub use move_file::MoveFileTool;
 pub use patch_file::PatchFileTool;
 pub use read_file::ReadFileTool;

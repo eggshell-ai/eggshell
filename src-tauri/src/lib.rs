@@ -16,7 +16,7 @@ pub use dependencies::{
     add_managed_tools_to_process_path, managed_bin_dir, managed_composer_present, managed_mysqld,
 };
 
-use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository};
+use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository, User, UsersRepository};
 use progress::ProgressLog;
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -654,6 +654,16 @@ fn select_model(
 #[tauri::command]
 async fn list_projects(pool: tauri::State<'_, SqlitePool>) -> Result<Vec<Project>, String> {
     ProjectsRepository::list(pool.inner())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_users(
+    project_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<User>, String> {
+    UsersRepository::list(pool.inner(), project_id)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1297,6 +1307,7 @@ pub fn run() {
             create_project,
             delete_project,
             start_project,
+            list_users,
             list_sessions,
             delete_session,
             send_message,

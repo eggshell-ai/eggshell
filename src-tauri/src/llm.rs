@@ -10,8 +10,8 @@ use crate::progress::ProgressLog;
 
 use crate::tools::{
     BrowserClickTool, BrowserFillTool, BrowserGetContentTool, BrowserGetErrorsTool,
-    BrowserNavigateTool, BrowserOpenTool, LintCodeTool, LoadSkillTool, MoveFileTool, PatchFileTool,
-    ReadFileTool, ReadSchemaTool, SyncSchemaTool, WriteFileTool,
+    BrowserNavigateTool, BrowserOpenTool, LintCodeTool, LoadSkillTool, ManageUserTool, MoveFileTool,
+    PatchFileTool, ReadFileTool, ReadSchemaTool, SyncSchemaTool, WriteFileTool,
 };
 
 #[path = "symfony.rs"]
@@ -127,6 +127,7 @@ impl App for AdminPanelApp {
             Box::new(SyncSchemaTool::new()),
             Box::new(ReadSchemaTool::new()),
             Box::new(LintCodeTool::new()),
+            Box::new(ManageUserTool::new()),
         ]
     }
 

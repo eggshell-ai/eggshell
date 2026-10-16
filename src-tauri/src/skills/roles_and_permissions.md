@@ -1,6 +1,6 @@
 # Roles & Permissions Management Skill
 
-This skill teaches the agent how to manage roles and permissions across the application stack. You have access to create new roles, grant or revoke permissions, remove roles, and protect administrative access.
+This skill teaches the agent how to manage roles, permissions, and per-project users across the application stack. You have access to create new roles, grant or revoke permissions, remove roles, create or drop users, and protect administrative access.
 
 ---
 
@@ -48,6 +48,60 @@ The security and access control system consists of:
 >    - `products.view`, `products.create`, `products.edit`, `products.delete`
 >    - `orders.view`, `orders.create`, `orders.edit`, `orders.delete`
 > 4. **Do Not Overwrite Unrelated Roles**: When adding permissions, always append or grant specifically rather than wiping existing permissions unless an explicit sync/reset is requested.
+> 5. **Never drop the admin user**: `admin@dummy-project.com` is the bootstrap account. It cannot be dropped by `app:user:manage`.
+> 6. **One user per role**: Whenever you create a role, also create a user for that role (see §5). This keeps every role testable and visible in the chat sign-in list.
+
+---
+
+## 2b. User Management (per-project sign-in accounts)
+
+Every project has its own set of sign-in accounts. They live authoritatively in
+the project's Symfony backend (`App\Entity\User`, table `user`), and are
+**mirrored into the desktop app's SQLite `users` table** so the chat sidebar
+(`src/Chat.tsx`) can list them alongside their passwords.
+
+**These users are the ones you sign in with in the browser** (`http://localhost:4000`)
+during QA. Use the non-admin account for a role to verify that role's access.
+
+### Interacting with users
+
+Prefer the **`manage_user` tool** when you need to add accounts (it drives the
+console command *and* keeps the SQLite mirror in sync). Under the hood it runs:
+
+```bash
+php bin/console app:user:manage <action> [email] [password] [role] [--json]
+```
+
+| Action | Meaning | Notes |
+|---|---|---|
+| `create` | Create a new user | Password is generated when omitted. `--json` returns it. |
+| `drop` | Delete a user | Refuses to drop `admin@dummy-project.com`. |
+| `add` | Assign an additional role to an existing user | |
+| `list` | List users (email + role) | |
+
+Examples:
+
+```bash
+# Create a manager user with a generated password, returning JSON
+php bin/console app:user:manage create manager@dummy-project.com "" ROLE_MANAGER --json
+
+# Create with an explicit password
+php bin/console app:user:manage create staff@dummy-project.com Secret123 ROLE_STAFF
+
+# Give an existing user an extra role
+php bin/console app:user:manage add manager@dummy-project.com "" ROLE_EDITOR
+
+# Remove a user
+php bin/console app:user:manage drop staff@dummy-project.com
+
+# List everyone
+php bin/console app:user:manage list --json
+```
+
+> [!IMPORTANT]
+> New users are always created with a **random password** unless one is supplied.
+> Always capture and report the generated password: it is surfaced in the chat
+> sidebar so the human can sign in as that user.
 
 ---
 
@@ -189,11 +243,19 @@ Any user logged into the frontend will only see menu items where their assigned 
 
 When handling user prompts about roles and permissions:
 
+> [!TIP]
+> **Always pair a role with a user.** For every role you create, also create a
+> user assigned to that role (see §2b) so the role can be signed into and tested.
+> The generated password is shown in the chat sidebar.
+
 | Prompt Requirement | Action |
 |---|---|
-| "Create a role named X that can only view Y" | Create `ROLE_X` with `y.view` using `RoleManagementService` or `app:role:manage create`. |
+| "Create a role named X that can only view Y" | Create `ROLE_X` with `y.view` using `RoleManagementService` or `app:role:manage create`. **Then create a user for that role** (`manage_user` / `app:user:manage create <email> "" ROLE_X`) so it can be signed into. |
 | "Allow X role to edit Y" | Run `app:role:manage grant ROLE_X y.edit` or call `$roleService->addPermissionsToRole()`. |
 | "Prevent role X from deleting Y" | Run `app:role:manage revoke ROLE_X y.delete` or call `$roleService->removePermissionsFromRole()`. |
 | "Delete the old X role" | Run `app:role:manage delete ROLE_X` or call `$roleService->deleteRole()`. |
 | "Hide menu item from non-managers" | Add `"permission": "<permission>"` to `menu-items/menu.json`. |
 | "Ensure all controller permissions are in DB" | Run `php bin/console app:permissions:sync`. |
+| "Create a user for role X" | Run the `manage_user` tool or `app:user:manage create <email> "" ROLE_X --json`; report the generated password (it also appears in the chat sign-in list). |
+| "Give an existing user another role" | Run `manage_user` with action `add`, or `app:user:manage add <email> "" ROLE_Y`. |
+| "Remove a user" | Run `manage_user` with action `drop`, or `app:user:manage drop <email>` (admin cannot be dropped). |
