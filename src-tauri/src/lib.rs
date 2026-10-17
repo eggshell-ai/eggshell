@@ -669,6 +669,19 @@ async fn list_users(
 }
 
 fn bundled_template_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    #[cfg(debug_assertions)]
+    {
+        let dev_templates = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("templates"));
+
+        if let Some(dev_path) = dev_templates {
+            if dev_path.is_dir() {
+                return Ok(dev_path);
+            }
+        }
+    }
+
     let resource_dir = app
         .path()
         .resource_dir()
