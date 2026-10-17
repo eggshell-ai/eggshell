@@ -408,6 +408,22 @@ pub trait Shell: Send + Sync {
     async fn start(&self, project_path: &str) -> LlmResult<()>;
 }
 
+/// An on-demand document attached to a skill.
+///
+/// Documents let a skill keep its main instructions concise while still
+/// shipping deeper reference material that the agent only needs occasionally
+/// (for example detailed row-action or custom-UI guidance). Each document is
+/// fetched individually through the `load_skill` tool by passing its `name`.
+#[derive(Debug, Clone)]
+pub struct SkillDocument {
+    /// Short identifier used to request the document (e.g. "row_actions").
+    pub name: &'static str,
+    /// Human-readable description shown in the skills summary.
+    pub description: &'static str,
+    /// The document body, typically a markdown file embedded at compile time.
+    pub content: &'static str,
+}
+
 /// Metadata describing a skill available to the LLM.
 pub trait Skill: Send + Sync {
     fn name(&self) -> &str;
@@ -415,6 +431,12 @@ pub trait Skill: Send + Sync {
     fn content(&self) -> &str;
     fn category(&self) -> Option<&str>;
     fn tags(&self) -> &[String];
+
+    /// Additional documents bundled with this skill, fetched on demand via the
+    /// `load_skill` tool. Defaults to an empty list.
+    fn documents(&self) -> &[SkillDocument] {
+        &[]
+    }
 }
 
 /// Returns the skills bundled with the application by default.

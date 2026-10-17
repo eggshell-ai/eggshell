@@ -4,9 +4,10 @@ import React, { useState, useEffect } from 'react';
 import { Table, Button, Input, Space, Typography, Tag, Badge, Image, Modal, message } from 'antd';
 import type { ColumnsType, TableProps } from 'antd/es/table';
 import { PlusOutlined, FilterOutlined, CloseCircleFilled } from '@ant-design/icons';
-import type { FieldConfig, ResourceAction } from '../../types/resource';
+import type { FieldConfig, ResourceAction, ResourceActionForm } from '../../types/resource';
 import apiService from '../../api/apiService';
 import authService from '../../services/authService';
+import ActionFormModal from './ActionFormModal';
 
 interface ResourceGridProps {
   source: (() => Promise<any[]>) | any[];
@@ -24,6 +25,8 @@ interface ResourceGridProps {
   actions?: ResourceAction[];
   /** Base endpoint used to execute custom actions (e.g. '/users') */
   endpoint?: string;
+  /** Resource name, passed to form actions for validation hook resolution */
+  resourceName?: string;
 }
 
 export default function ResourceGrid({
@@ -40,6 +43,7 @@ export default function ResourceGrid({
   onClearFilters,
   actions,
   endpoint,
+  resourceName,
 }: ResourceGridProps) {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -48,6 +52,8 @@ export default function ResourceGrid({
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [allowedActions, setAllowedActions] = useState<Record<number, boolean>>({});
   const [actionLoadingKeys, setActionLoadingKeys] = useState<string[]>([]);
+  const [formActionConfig, setFormActionConfig] = useState<ResourceActionForm | null>(null);
+  const [formActionRecord, setFormActionRecord] = useState<any>(null);
 
   const activeFilterCount = filters ? Object.keys(filters).length : 0;
   const hasFilterPanel = Boolean(filterPanel);
@@ -182,6 +188,110 @@ export default function ResourceGrid({
     }
   };
 
+  /**
+   * Build the helper API injected into custom JavaScript action handlers.
+   * Handlers run with only these helpers available by convention: `data`/`record`,
+   * `api`, `message`, `modal`, `refresh`, `openForm`, `close`, and `values`.
+   */
+  const buildHandlerContext = (
+    record: any,
+    values?: any,
+    close?: () => void
+  ) => ({
+    data: record,
+    record,
+    values,
+    api: apiService,
+    message,
+    modal: Modal,
+    refresh: fetchData,
+    openForm: (config: ResourceActionForm) => {
+      setFormActionRecord(record);
+      setFormActionConfig(config);
+    },
+    close: close || (() => {}),
+  });
+
+  /** Execute a custom JavaScript handler with the injected helper context. */
+  const runHandler = async (action: ResourceAction, record: any, label: string) => {
+    const loadingKey = `${record[rowKey]}:handler`;
+    const run = async () => {
+      try {
+        setActionLoadingKeys((keys) => [...keys, loadingKey]);
+        const context = buildHandlerContext(record);
+        // eslint-disable-next-line no-new-func
+        const fn = new Function(
+          'data',
+          'record',
+          'values',
+          'api',
+          'message',
+          'modal',
+          'refresh',
+          'openForm',
+          'close',
+          `return (async () => { ${action.handler} })();`
+        );
+        await fn(
+          context.data,
+          context.record,
+          context.values,
+          context.api,
+          context.message,
+          context.modal,
+          context.refresh,
+          context.openForm,
+          context.close
+        );
+      } catch (error: any) {
+        const errorMsg =
+          error?.response?.data?.detail ||
+          error?.response?.data?.message ||
+          error?.response?.data?.error ||
+          error?.message ||
+          `Failed to ${label.toLowerCase()} record`;
+        message.error(errorMsg);
+        console.error('Error executing action handler:', error);
+      } finally {
+        setActionLoadingKeys((keys) => keys.filter((key) => key !== loadingKey));
+      }
+    };
+
+    if (action.confirm) {
+      Modal.confirm({
+        title: 'Confirm Action',
+        content: `Are you sure you want to ${label.toLowerCase()} this record?`,
+        okText: label,
+        cancelText: 'Cancel',
+        onOk: run,
+      });
+    } else {
+      await run();
+    }
+  };
+
+  /** Open a reusable form/popup action dialog for the given record. */
+  const openFormAction = (action: ResourceAction, record: any) => {
+    if (!action.form) return;
+    setFormActionRecord(record);
+    setFormActionConfig(action.form);
+  };
+
+  /** Dispatch a row action to the correct execution path based on its kind. */
+  const dispatchAction = (action: ResourceAction, label: string, record: any, actionPath?: string) => {
+    if (action.form) {
+      openFormAction(action, record);
+      return;
+    }
+    if (action.handler) {
+      void runHandler(action, record, label);
+      return;
+    }
+    if (actionPath) {
+      void executeAction(action, actionPath, label, record);
+    }
+  };
+
   /** Render custom action buttons for a row (only permitted actions with truthy labels) */
   const renderCustomActions = (record: any): React.ReactNode[] => {
     if (!actions || actions.length === 0) return [];
@@ -193,17 +303,21 @@ export default function ResourceGrid({
       const label = evaluateActionExpression(action.labelExpression, record);
       if (!label) return; // falsy label hides the button for this row
 
-      const actionPath = evaluateActionExpression(action.actionExpression, record);
-      if (!actionPath) return;
+      // Path actions resolve their request path from the row; handler and form
+      // actions do not require an actionExpression.
+      const actionPath = action.actionExpression
+        ? evaluateActionExpression(action.actionExpression, record)
+        : undefined;
+      if (!action.handler && !action.form && !actionPath) return;
 
-      const loadingKey = `${record[rowKey]}:${actionPath}`;
+      const loadingKey = `${record[rowKey]}:${actionPath ?? (action.handler ? 'handler' : 'form')}`;
       buttons.push(
         <Button
           key={`action-${index}`}
           type="link"
           size="small"
           loading={actionLoadingKeys.includes(loadingKey)}
-          onClick={() => executeAction(action, actionPath, label, record)}
+          onClick={() => dispatchAction(action, label, record, actionPath)}
         >
           {label}
         </Button>
@@ -497,6 +611,20 @@ export default function ResourceGrid({
         dataSource={data}
         rowKey={rowKey}
         loading={loading}
+      />
+
+      <ActionFormModal
+        open={Boolean(formActionConfig)}
+        config={formActionConfig}
+        record={formActionRecord}
+        resourceName={resourceName}
+        onClose={() => {
+          setFormActionConfig(null);
+          setFormActionRecord(null);
+        }}
+        onSubmitted={() => {
+          fetchData();
+        }}
       />
     </div>
   );

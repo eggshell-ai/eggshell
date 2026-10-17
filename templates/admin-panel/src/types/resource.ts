@@ -127,6 +127,29 @@ export interface ResourceValidationHook {
 }
 
 /**
+ * Configuration for a reusable form/popup row action.
+ *
+ * The action opens a modal built from `fields`, optionally pre-filled with
+ * `values`, and submits to `endpoint` (with `{id}` replaced by the record id).
+ */
+export interface ResourceActionForm {
+  /** Dialog title */
+  title?: string;
+  /** Submission endpoint; supports `{id}`. Defaults to a POST against `<resource endpoint>/<record.id>`. */
+  endpoint?: string;
+  /** HTTP method for submission (default 'POST') */
+  method?: 'POST' | 'PUT' | 'PATCH';
+  /** Submit button label (default 'Submit') */
+  submitLabel?: string;
+  /** Message shown on success */
+  successMessage?: string;
+  /** Static default values keyed by field name */
+  values?: Record<string, any>;
+  /** Form fields using the shared field definition shape (name/type/label/...) */
+  fields?: Field[] | FieldConfig[];
+}
+
+/**
  * Custom row action configuration (e.g. activate/deactivate).
  * Expressions are evaluated per row with the record available as `data`.
  */
@@ -139,6 +162,14 @@ export interface ResourceAction {
   labelExpression?: string;
   /** Show a confirmation dialog before executing */
   confirm?: boolean;
+  /**
+   * Custom JavaScript executed with an injected helper API
+   * ({ data, record, api, message, modal, refresh, openForm, close, values }).
+   * Handlers may be async and use `await`.
+   */
+  handler?: string;
+  /** Opens a reusable form/popup dialog and submits to a custom endpoint */
+  form?: ResourceActionForm;
   [key: string]: any;
 }
 

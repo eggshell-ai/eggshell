@@ -619,9 +619,12 @@ Use this mapping as the default interpretation.
 | "Show B if A == X" | `visibleWhen: "data.A == 'X'"` |
 | "If A == X, B is required" | `visibleWhen` + mirrored validation hooks |
 | "At least one of A or B" | Mirrored frontend/backend validation hooks |
-| "Custom per-row button" | Resource `actions` + backend POST route |
+| "Custom per-row button" | Resource `actions` + backend POST route (see `row_actions` doc) |
 | "Only show action in state X" | `actionExpression` returning path or `null` |
 | "Confirm custom action" | `confirm: true` |
+| "Run custom JavaScript on a row" | Action `handler` (see `row_actions` doc) |
+| "Popup/form that collects input then submits" | Action `form` (see `row_actions` doc) |
+| "Bespoke UI beyond standard CRUD" | See `custom_ui` doc |
 | "Confirm deletion" | Built into `ResourcePage`; do not add custom confirmation |
 | "Show matching record count" | Built into `ResourcePage` |
 | "Show count for selected filters" | Built into `ResourcePage` and follows active filters/search |
@@ -1430,218 +1433,31 @@ If the implementation uses a custom page instead of `ResourcePage`, the automati
 
 ## 7. Custom Row Actions
 
-Use resource `actions` for row-level domain operations such as:
+Row-level domain operations (activate/deactivate, mark contacted, approve, cancel, reopen) are configured through the resource `actions` array.
 
-- activate/deactivate;
-- mark contacted;
-- approve;
-- cancel;
-- reopen.
-
-A custom row action consists of:
-
-1. frontend/resource action declaration;
-2. backend POST route;
-3. matching permission enforcement;
-4. backend state/business-rule validation.
-
-Frontend visibility is convenience. Backend checks are security and correctness.
-
----
-
-### 7.1 Frontend action declaration
-
-Example:
+This topic is documented separately to keep these instructions concise. Before implementing or modifying any custom row action, load the detailed document:
 
 ```javascript
-actions: [
-  {
-    permission: "leads.edit",
-    actionExpression: "data.status == 'new' ? '/contacted' : null",
-    labelExpression: "data.status == 'new' ? 'Mark Contacted' : null",
-    confirm: true
-  }
-]
+load_skill({ skillName: "crud_creation", document: "row_actions" })
 ```
 
-Behavior:
+That document covers:
 
-- `permission` controls whether the action is available to the user in the UI;
-- `actionExpression` is evaluated for each row with the row available as `data`;
-- its result is appended to `<endpoint>/<record.id>`;
-- a `null`/falsy action result hides the action for that row;
-- `labelExpression` determines the displayed label and may also return a falsy value when no button should be shown;
-- `confirm: true` shows a confirmation dialog;
-- the action uses POST;
-- the grid refreshes after a successful action.
+- the three action kinds (backend path actions, custom JavaScript handlers, and form/popup actions);
+- the injected JavaScript helper API for custom handlers;
+- reusable popup/form actions that submit to custom endpoints;
+- the frontend visibility vs. backend enforcement invariant;
+- the permission invariant;
+- backend custom routes and state validation;
+- complete worked examples.
 
-For:
+For custom popups, forms, and bespoke UI behavior beyond standard CRUD, load:
 
 ```javascript
-endpoint: "/leads"
+load_skill({ skillName: "crud_creation", document: "custom_ui" })
 ```
 
-record id `42`, and:
-
-```javascript
-actionExpression: "'/contacted'"
-```
-
-the request is:
-
-```text
-POST /api/leads/42/contacted
-```
-
-through the normal backend resource route.
-
----
-
-### 7.2 Frontend visibility is not backend enforcement
-
-This is a critical invariant.
-
-Suppose the action is only visible when:
-
-```javascript
-data.status == 'new'
-```
-
-A client can still manually send:
-
-```text
-POST /api/leads/42/contacted
-```
-
-even if the record is already `qualified`, `lost`, or `contacted`.
-
-Therefore the backend route must verify the same state rule.
-
-Do not treat:
-
-```javascript
-actionExpression: "data.status == 'new' ? '/contacted' : null"
-```
-
-as authorization or validation.
-
-It is UI behavior only.
-
----
-
-### 7.3 Permission invariant
-
-Unless a task deliberately specifies a different backend permission model, the permission declared on the resource action must exactly match the permission checked by the backend route.
-
-If the resource says:
-
-```javascript
-permission: "leads.edit"
-```
-
-the backend must check:
-
-```php
-$this->denyAccessUnlessGranted('leads.edit');
-```
-
-Do not accidentally check an unrelated permission such as:
-
-```php
-$this->denyAccessUnlessGranted('users.edit');
-```
-
-Before finishing, compare the permission strings character-for-character.
-
-If a different backend permission is intentionally required, document the reason explicitly rather than silently diverging.
-
----
-
-### 7.4 Backend custom route
-
-Create the resource controller using `write_file`, and add the custom route to it.
-
-Example:
-
-```javascript
-write_file({
-  shell: "backend",
-  path: "Controller/LeadController.php",
-  content: `<?php
-
-namespace App\Controller;
-
-use App\Entity\Lead;
-use App\Resource\ResourceController;
-use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
-use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
-use Symfony\Component\Routing\Attribute\Route;
-
-#[Route('/api/leads', name: 'leads.')]
-final class LeadController extends ResourceController
-{
-    protected function getEntityClass(): string
-    {
-        return Lead::class;
-    }
-
-    protected function getResourceName(): string
-    {
-        return 'leads';
-    }
-
-    #[Route('/{id}/contacted', name: 'contacted', requirements: ['id' => '\d+'], methods: ['POST'])]
-    public function contacted(int $id): JsonResponse
-    {
-        $this->denyAccessUnlessGranted('leads.edit');
-
-        $record = $this->entityManager
-            ->getRepository($this->getEntityClass())
-            ->find($id);
-
-        if (!$record) {
-            throw new NotFoundHttpException('Record not found');
-        }
-
-        if ($record->status !== 'new') {
-            throw new BadRequestHttpException('Only new leads can be marked as contacted.');
-        }
-
-        $record->status = 'contacted';
-        $this->entityManager->flush();
-
-        return $this->json($record);
-    }
-}
-`
-})
-```
-
-This route checks all three essential things:
-
-1. permission;
-2. record existence;
-3. valid current state.
-
-Only then does it mutate state.
-
----
-
-### 7.5 State validation rule
-
-Every state-dependent row action should ask:
-
-> What must be true about the current record for this transition to be valid?
-
-Examples:
-
-- Mark Contacted → current status must be `new`;
-- Approve → current status must be `draft`;
-- Cancel → current status must be one of the cancellable states;
-- Reactivate → current status must be `inactive`.
-
-Mirror this state in the frontend expression for good UX, but enforce it again on the backend.
+Do not reimplement row actions or custom popups inline from memory; always load the relevant document first.
 
 ---
 

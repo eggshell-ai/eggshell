@@ -351,10 +351,19 @@ impl AgentService {
             if !skill.tags().is_empty() {
                 summary.push_str(&format!("Tags: {}\n", skill.tags().join(", ")));
             }
+            if !skill.documents().is_empty() {
+                summary.push_str("Documents (load on demand):\n");
+                for document in skill.documents() {
+                    summary.push_str(&format!(
+                        "  - {}: {}\n",
+                        document.name, document.description
+                    ));
+                }
+            }
             summary.push('\n');
         }
         summary.push_str(
-            "To use a skill, call the load_skill tool with the skill name.\n=== END SKILLS ===\n",
+            "To use a skill, call the load_skill tool with the skill name. To load a specific document of a skill, also pass its document name.\n=== END SKILLS ===\n",
         );
         if let Some(system) = messages
             .iter_mut()

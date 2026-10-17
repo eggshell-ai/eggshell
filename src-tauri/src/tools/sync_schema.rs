@@ -57,6 +57,31 @@ struct ResourceAction {
     action_expression: Option<String>,
     label_expression: Option<String>,
     confirm: Option<bool>,
+    /// Custom JavaScript executed with an injected helper API when the action runs.
+    handler: Option<String>,
+    /// Optional popup/form configuration that opens a dialog and submits to a custom endpoint.
+    form: Option<ActionForm>,
+}
+
+/// Configuration for a reusable popup/form row action.
+///
+/// The action opens a modal built from `fields`, pre-filled with optional
+/// static `values`, and submits to `endpoint` (defaulting to a POST against
+/// the current resource record).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActionForm {
+    title: Option<String>,
+    /// Custom endpoint template; supports `{id}` which is replaced with the record id.
+    endpoint: Option<String>,
+    /// HTTP method for the submission (defaults to POST).
+    method: Option<String>,
+    submit_label: Option<String>,
+    success_message: Option<String>,
+    /// Form fields, using the same field definition shape as resource fields.
+    fields: Option<Vec<Field>>,
+    /// Static default values keyed by field name.
+    values: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,12 +325,62 @@ fn actions_js(r: &Resource) -> String {
             if a.confirm.unwrap_or(false) {
                 s.push_str("      confirm: true,\n");
             }
+            if let Some(handler) = &a.handler {
+                s.push_str(&format!("      handler: {},\n", js(handler)));
+            }
+            if let Some(form) = &a.form {
+                s.push_str(&format!("      form: {},\n", action_form_js(form)));
+            }
             s.push_str("    }");
             s
         })
         .collect::<Vec<_>>()
         .join(",\n");
     format!("  actions: [\n{}\n  ],\n", items)
+}
+
+/// Serializes an action form configuration into an object literal.
+fn action_form_js(form: &ActionForm) -> String {
+    let mut s = String::from("{\n");
+    if let Some(title) = &form.title {
+        s.push_str(&format!("        title: {},\n", js(title)));
+    }
+    if let Some(endpoint) = &form.endpoint {
+        s.push_str(&format!("        endpoint: {},\n", js(endpoint)));
+    }
+    if let Some(method) = &form.method {
+        s.push_str(&format!("        method: {},\n", js(method)));
+    }
+    if let Some(label) = &form.submit_label {
+        s.push_str(&format!("        submitLabel: {},\n", js(label)));
+    }
+    if let Some(message) = &form.success_message {
+        s.push_str(&format!("        successMessage: {},\n", js(message)));
+    }
+    if let Some(values) = &form.values {
+        s.push_str(&format!(
+            "        values: {},\n",
+            serde_json::to_string(values).unwrap_or_else(|_| "{}".to_string())
+        ));
+    }
+    if let Some(fields) = &form.fields {
+        let rendered = fields
+            .iter()
+            .map(|f| {
+                let js_field = field_js(f);
+                // Indent the field literal to sit inside the form object.
+                js_field
+                    .lines()
+                    .map(|line| format!("          {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+        s.push_str(&format!("        fields: [\n{}\n        ],\n", rendered));
+    }
+    s.push_str("      }");
+    s
 }
 fn field_js(f: &Field) -> String {
     let mut s = format!("    field.{}({})", f.field_type, js(&f.name));

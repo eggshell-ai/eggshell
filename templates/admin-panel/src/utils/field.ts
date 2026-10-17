@@ -259,6 +259,16 @@ class ActionBuilder implements ResourceAction {
     return this;
   }
 
+  handler(handler: string): ActionBuilder {
+    this._config.handler = handler;
+    return this;
+  }
+
+  form(form: any): ActionBuilder {
+    this._config.form = form;
+    return this;
+  }
+
   // Allow arbitrary extra options
   [key: string]: any;
 }
