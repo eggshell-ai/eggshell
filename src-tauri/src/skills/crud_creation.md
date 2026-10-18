@@ -9,11 +9,18 @@ The preferred approach is:
 1. Model the requirement as a resource.
 2. Express all ordinary behavior declaratively in `sync_schema`.
 3. Add mirrored frontend/backend validation hooks only for rules that cannot be represented by field properties.
-4. Create the backend `ResourceController` using `write_file`.
-5. Add custom backend routes only for resource actions or other behavior that cannot be declarative.
-6. Create the frontend page with `ResourcePage`.
-7. Add the menu entry.
-8. Audit every user requirement against the implementation before finishing.
+4. Add before-save/after-save hooks or a custom save flow only when the requirement needs to customize the save lifecycle.
+5. Create the backend `ResourceController` using `write_file`.
+6. Add custom backend routes only for resource actions or other behavior that cannot be declarative.
+7. Create the frontend page with `ResourcePage`.
+8. Add the menu entry.
+9. Audit every user requirement against the implementation before finishing.
+
+Steps 3 and 4 (hooks and custom save behavior) are documented in detail in a dedicated on-demand document. Load it with:
+
+```javascript
+load_skill({ skillName: "crud_creation", document: "hooks_and_lifecycle" })
+```
 
 ---
 
@@ -631,7 +638,10 @@ Use this mapping as the default interpretation.
 | "Standard table/forms/view" | Built into `ResourcePage` |
 | "Helpful validation messages" | Built in; use `messages` only if custom wording is specifically required |
 | "Backend CRUD" | Standard `ResourceController` |
-| "Cross-field business rule" | Validation hooks |
+| "Cross-field business rule" | Validation hooks (see `hooks_and_lifecycle` doc) |
+| "Run code before saving (e.g. custom prep/validation)" | Before-save hook (see `hooks_and_lifecycle` doc) |
+| "Run code after saving (e.g. update related records)" | After-save hook (see `hooks_and_lifecycle` doc) |
+| "Custom save flow / write the save method" | Override `store()`/`update()` (see `hooks_and_lifecycle` doc) |
 | "Workflow/state mutation" | Custom action/backend route plus backend state check |
 | "Convert to uppercase / lowercase / trim" | `transforms: [{ type: "uppercase" }]` |
 | "Price / currency / two decimal places" | `type: "decimal", scale: 2, min: 0` |
@@ -778,6 +788,8 @@ Whenever a custom validation rule exists:
 - create the matching frontend validation hook;
 - register the frontend hook safely;
 - keep both implementations semantically equivalent.
+
+For before-save/after-save hooks and custom save flows, see the `hooks_and_lifecycle` document (load it with `load_skill`). Do not implement hooks from memory.
 
 ### Step 4 — Create controller with `write_file`
 
@@ -949,334 +961,42 @@ Backend validation errors must remain field-addressable so `ResourcePage` can sh
 
 ---
 
-### 5.2 Backend validation hooks
+### 5.2 Custom validation hooks
 
-For validation that cannot be represented declaratively, create a hook under:
-
-```text
-src/Resource/Hooks/<resourceName>/
-```
-
-With `write_file`, the backend-relative path is:
+For validation that cannot be represented declaratively, use a **backend validation hook** (implementing `ValidatesResource`) placed under:
 
 ```text
 Resource/Hooks/<resourceName>/<ClassName>.php
 ```
 
-The namespace is:
-
-```php
-App\Resource\Hooks\<resourceName>
-```
-
-The hook implements `ValidatesResource`.
-
-Shape:
-
-```php
-<?php
-
-namespace App\Resource\Hooks\orders;
-
-use App\Resource\Hook\ValidatesResource;
-
-final class OrderValidationHook implements ValidatesResource
-{
-    public function validate(object $entity, array $data, string $action): array
-    {
-        $errors = [];
-
-        // custom rules
-
-        return $errors;
-    }
-}
-```
-
-The hook runs during `store` and `update` after standard declarative validation.
-
-Return:
-
-```php
-[
-    'fieldName' => 'Error message'
-]
-```
-
-or arrays of messages if needed.
-
-Return an empty array when validation passes.
-
-Custom validation errors produce the normal validation response and should be displayed by `ResourcePage` beside the relevant field.
-
-Do not put resource validation rules in controller actions merely because custom code is needed. Validation hooks are the designated mechanism.
-
----
-
-### 5.3 Frontend validation hooks
-
-Mirror every backend custom validation rule in the frontend.
-
-Create the hook under:
-
-```text
-src/resources/hooks/<resourceName>/
-```
-
-With `write_file`, the frontend-relative path is:
+and mirror it with a **frontend validation hook** under:
 
 ```text
 resources/hooks/<resourceName>/<hookName>.ts
 ```
 
-Example:
+registered in `resources/hooks/index.ts`.
 
-```typescript
-import type { ResourceValidationHook } from '../../../types/resource';
+Backend hooks run during `store` and `update` after standard declarative validation. A backend hook returns a map of `fieldName => message(s)` (empty when validation passes), and custom errors are displayed by `ResourcePage` beside the relevant field.
 
-const orderValidationHook: ResourceValidationHook = {
-  validate: (data, action, record) => {
-    const errors: Record<string, string | string[]> = {};
+The frontend hook is for immediate feedback; the backend hook is authoritative. They must implement the same logical rule.
 
-    // mirror backend rules
-
-    return errors;
-  },
-};
-
-export default orderValidationHook;
-```
-
-The hook receives:
-
-```text
-(data, action, record)
-```
-
-where:
-
-- `data` is the submitted form data;
-- `action` is `"store"` or `"update"`;
-- `record` is the existing record on update.
-
-The frontend hook is for immediate feedback.
-
-The backend hook is authoritative.
-
-They must implement the same logical rule.
-
----
-
-### 5.4 Validation registry safety
-
-After creating a frontend validation hook, register it in:
-
-```text
-src/resources/hooks/index.ts
-```
-
-This registry may already contain hooks for other resources.
-
-**Never overwrite it from memory.**
-
-Required sequence:
-
-1. Read the current registry.
-2. Preserve all existing imports and registrations.
-3. Add the new import/registration.
-4. Overwrite the file with the full updated registry.
-
-Tool sequence:
+This topic is documented in full — including the hook class shape, the frontend mirror, registry-safety rules, and worked cross-field and conditional-required recipes — in the dedicated document. **Load it before implementing any hook or custom save behavior:**
 
 ```javascript
-read_file({
-  shell: "frontend",
-  path: "resources/hooks/index.ts"
-})
+load_skill({ skillName: "crud_creation", document: "hooks_and_lifecycle" })
 ```
 
-Then:
+That document covers:
 
-```javascript
-write_file({
-  shell: "frontend",
-  path: "resources/hooks/index.ts",
-  content: "<full existing registry plus the new hook>"
-})
-```
+- the resource save lifecycle and where each extension point runs;
+- backend validation hooks (`ValidatesResource`) and their frontend mirrors;
+- before-save hooks (`BeforeSavesResource`) and the `beforeSave()` controller override;
+- after-save hooks (`AfterSavesResource`) for updating related records;
+- writing the save operation from scratch by overriding `store()` / `update()`;
+- registry safety and a completion checklist.
 
-Example final registry:
-
-```typescript
-import type { ResourceValidationHook } from '../../types/resource';
-import userValidationHook from './users/userValidationHook';
-import invoiceValidationHook from './invoices/invoiceValidationHook';
-import leadValidationHook from './leads/leadValidationHook';
-
-const validationHooks: Record<string, ResourceValidationHook[]> = {
-  users: [userValidationHook],
-  invoices: [invoiceValidationHook],
-  leads: [leadValidationHook],
-};
-
-export default validationHooks;
-```
-
-Do not delete unrelated hook registrations.
-
-When modifying an existing hook, read it if necessary, then write the complete updated file. Keep backend and frontend mirrors synchronized.
-
----
-
-### 5.5 Cross-field validation recipe: at least one of email or phone
-
-This pattern is common and must be implemented carefully.
-
-Requirement:
-
-> At least one of email or phone must be provided.
-
-Do not write checks that accidentally accept both fields being absent.
-
-Normalize empty strings and whitespace.
-
-#### Backend
-
-```javascript
-write_file({
-  shell: "backend",
-  path: "Resource/Hooks/leads/LeadValidationHook.php",
-  content: `<?php
-
-namespace App\Resource\Hooks\leads;
-
-use App\Resource\Hook\ValidatesResource;
-
-final class LeadValidationHook implements ValidatesResource
-{
-    public function validate(object $entity, array $data, string $action): array
-    {
-        $errors = [];
-
-        $email = trim((string) ($entity->email ?? ''));
-        $phone = trim((string) ($entity->phone ?? ''));
-
-        if ($email === '' && $phone === '') {
-            $errors['email'] = 'Enter at least an email address or phone number.';
-            $errors['phone'] = 'Enter at least an email address or phone number.';
-        }
-
-        return $errors;
-    }
-}
-`
-})
-```
-
-#### Frontend
-
-```javascript
-write_file({
-  shell: "frontend",
-  path: "resources/hooks/leads/leadValidationHook.ts",
-  content: `import type { ResourceValidationHook } from '../../../types/resource';
-
-const leadValidationHook: ResourceValidationHook = {
-  validate: (data, action, record) => {
-    const errors: Record<string, string | string[]> = {};
-
-    const email = String(data?.email ?? '').trim();
-    const phone = String(data?.phone ?? '').trim();
-
-    if (!email && !phone) {
-      const message = 'Enter at least an email address or phone number.';
-      errors.email = message;
-      errors.phone = message;
-    }
-
-    return errors;
-  },
-};
-
-export default leadValidationHook;
-`
-})
-```
-
-The two checks are intentionally equivalent:
-
-```text
-backend: email == empty AND phone == empty
-frontend: !email AND !phone
-```
-
-Do not use an expression such as:
-
-```javascript
-!(data?.email || data.phone == null)
-```
-
-because that changes the logical meaning and can accept invalid input.
-
----
-
-### 5.6 Conditional-required recipe
-
-Requirement:
-
-> If source is `other`, show `sourceDescription` and require it.
-
-This requires two parts:
-
-1. conditional frontend visibility;
-2. frontend + backend validation.
-
-#### Resource field
-
-```javascript
-{
-  name: "sourceDescription",
-  type: "text",
-  label: "Other Source Description",
-  visibleWhen: "data.source == 'other'"
-}
-```
-
-Do **not** set:
-
-```javascript
-required: true
-```
-
-if the field is required only under that condition, because unconditional `required: true` would make it required for every source.
-
-Instead, enforce the condition with hooks.
-
-#### Backend rule
-
-```php
-$source = (string) ($entity->source ?? '');
-$description = trim((string) ($entity->sourceDescription ?? ''));
-
-if ($source === 'other' && $description === '') {
-    $errors['sourceDescription'] = 'Describe the other lead source.';
-}
-```
-
-#### Frontend rule
-
-```typescript
-const source = String(data?.source ?? '');
-const description = String(data?.sourceDescription ?? '').trim();
-
-if (source === 'other' && !description) {
-  errors.sourceDescription = 'Describe the other lead source.';
-}
-```
-
-These rules must remain equivalent.
-
-Conditional visibility is not validation. A malicious or custom client can call the backend without respecting `visibleWhen`, so the backend hook must enforce the rule.
+Do not put resource validation rules in controller actions merely because custom code is needed. Validation hooks are the designated mechanism.
 
 ---
 
@@ -2456,4 +2176,5 @@ Use these principles throughout CRUD generation:
 14. **Keep permissions consistent from resource action to backend route.**
 15. **Re-check state on the backend for state-dependent actions.**
 16. **Do not hand-build functionality already supplied by the resource system.**
-17. **Finish with a requirement-to-implementation audit.**
+17. **Use the correct save extension point.** Before-save hooks for pre-persist logic, after-save hooks for work needing the saved record's primary key, and a full `store()`/`update()` override only when the standard pipeline cannot apply. Load the `hooks_and_lifecycle` document before implementing any of these.
+18. **Finish with a requirement-to-implementation audit.**

@@ -35,6 +35,11 @@ impl CrudCreationSkill {
                     description: "How to add custom JavaScript behavior, bespoke functionality, and reusable popups/forms to resources that go beyond standard CRUD.",
                     content: skill_markdown::load("custom_ui.md"),
                 },
+                SkillDocument {
+                    name: "hooks_and_lifecycle",
+                    description: "Detailed reference for customizing the save flow: validation hooks, before-save and after-save hooks, and writing the save operation from scratch.",
+                    content: skill_markdown::load("hooks_and_lifecycle.md"),
+                },
             ],
         }
     }

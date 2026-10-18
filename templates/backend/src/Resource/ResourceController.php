@@ -20,6 +20,8 @@ use Symfony\Component\Validator\ConstraintViolationListInterface;
 use ReflectionClass;
 use App\Resource\Attribute\Relation;
 use App\Resource\Hook\ValidatesResource;
+use App\Resource\Hook\BeforeSavesResource;
+use App\Resource\Hook\AfterSavesResource;
 
 abstract class ResourceController extends AbstractController
 {
@@ -168,6 +170,38 @@ abstract class ResourceController extends AbstractController
         }
 
         return $errors;
+    }
+
+    /**
+     * Run all before-save hooks for this resource.
+     *
+     * Hooks implementing BeforeSavesResource run during store and update,
+     * after the entity has been populated and validated, but before the
+     * entity is persisted.
+     */
+    protected function runBeforeSaveHooks(object $entity, array $data, string $action): void
+    {
+        foreach ($this->getHooks() as $hook) {
+            if ($hook instanceof BeforeSavesResource) {
+                $hook->beforeSave($entity, $data, $action, $this->entityManager);
+            }
+        }
+    }
+
+    /**
+     * Run all after-save hooks for this resource.
+     *
+     * Hooks implementing AfterSavesResource run during store and update,
+     * after the entity (and any child line items) have been persisted and
+     * flushed. The entity has its primary key at this point.
+     */
+    protected function runAfterSaveHooks(object $entity, array $data, string $action): void
+    {
+        foreach ($this->getHooks() as $hook) {
+            if ($hook instanceof AfterSavesResource) {
+                $hook->afterSave($entity, $data, $action, $this->entityManager);
+            }
+        }
     }
 
     private function checkPermission(string $action): void
@@ -341,6 +375,9 @@ abstract class ResourceController extends AbstractController
         // Run hook
         $this->beforeSave($record, $data, 'store');
 
+        // Run before-save lifecycle hooks
+        $this->runBeforeSaveHooks($record, $data, 'store');
+
         // Validate entity
         $violations = $this->validator->validate($record, null, ['Default', 'store']);
         if (count($violations) > 0) {
@@ -359,6 +396,9 @@ abstract class ResourceController extends AbstractController
         // Save child line relations after parent entity receives primary key
         $this->saveChildRelations($record, $data);
         $this->entityManager->flush();
+
+        // Run after-save lifecycle hooks now that the record is persisted
+        $this->runAfterSaveHooks($record, $data, 'store');
 
         // Load child relations into entity for serialized response
         $this->loadChildRelations($record);
@@ -398,6 +438,9 @@ abstract class ResourceController extends AbstractController
         // Run hook
         $this->beforeSave($record, $data, 'update');
 
+        // Run before-save lifecycle hooks
+        $this->runBeforeSaveHooks($record, $data, 'update');
+
         // Validate entity
         $violations = $this->validator->validate($record, null, ['Default', 'update']);
         if (count($violations) > 0) {
@@ -412,6 +455,9 @@ abstract class ResourceController extends AbstractController
 
         $this->saveChildRelations($record, $data);
         $this->entityManager->flush();
+
+        // Run after-save lifecycle hooks now that the record is persisted
+        $this->runAfterSaveHooks($record, $data, 'update');
 
         // Load child relations into entity for serialized response
         $this->loadChildRelations($record);

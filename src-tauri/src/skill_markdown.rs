@@ -17,6 +17,7 @@ pub fn load(name: &str) -> &'static str {
         "crud_creation.md" => include_str!("skills/crud_creation.md"),
         "row_actions.md" => include_str!("skills/row_actions.md"),
         "custom_ui.md" => include_str!("skills/custom_ui.md"),
+        "hooks_and_lifecycle.md" => include_str!("skills/hooks_and_lifecycle.md"),
         "analytics_and_reporting.md" => include_str!("skills/analytics_and_reporting.md"),
         "notification_creation.md" => include_str!("skills/notification_creation.md"),
         "profile_management.md" => include_str!("skills/profile_management.md"),
