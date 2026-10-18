@@ -87,6 +87,33 @@ fn default_user_role() -> String {
     "ROLE_USER".to_string()
 }
 
+/// One task in a Max mode build.
+///
+/// Max mode first breaks a requirement into a list of business-oriented tasks
+/// (a screen, CRUD, or report each) and then runs one sequential agent per
+/// task. These rows persist that list so a long build can be resumed after a
+/// restart or interruption. See `0005_create_max_tasks.sql`.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct MaxTask {
+    #[serde(default)]
+    pub id: i64,
+    pub project_id: i64,
+    pub session_id: i64,
+    pub task_index: i64,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// One of: `pending`, `running`, `completed`, `failed`, `skipped`.
+    #[serde(default = "default_task_status")]
+    pub status: String,
+    #[serde(default)]
+    pub result_summary: Option<String>,
+}
+
+fn default_task_status() -> String {
+    "pending".to_string()
+}
+
 /// Data-access layer for the `projects` table.
 pub struct ProjectsRepository;
 
@@ -241,6 +268,107 @@ impl UsersRepository {
     }
 }
 
+/// Data-access layer for the `max_tasks` table (Max mode task lists).
+pub struct MaxTasksRepository;
+
+impl MaxTasksRepository {
+    /// Replaces the stored task list for a session with a freshly generated one.
+    ///
+    /// Any previous tasks for the session are dropped first, so re-running the
+    /// breakdown phase always starts from a clean slate.
+    pub async fn replace_for_session(
+        pool: &SqlitePool,
+        project_id: i64,
+        session_id: i64,
+        tasks: &[(String, String)],
+    ) -> Result<Vec<MaxTask>, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM max_tasks WHERE project_id = ? AND session_id = ?")
+            .bind(project_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        for (index, (title, description)) in tasks.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO max_tasks (project_id, session_id, task_index, title, description, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+            )
+            .bind(project_id)
+            .bind(session_id)
+            .bind(index as i64)
+            .bind(title)
+            .bind(description)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Self::list(pool, project_id, session_id).await
+    }
+
+    /// Lists the tasks for a session in execution order.
+    pub async fn list(
+        pool: &SqlitePool,
+        project_id: i64,
+        session_id: i64,
+    ) -> Result<Vec<MaxTask>, sqlx::Error> {
+        sqlx::query_as::<_, MaxTask>(
+            "SELECT id, project_id, session_id, task_index, title, description, status, result_summary FROM max_tasks WHERE project_id = ? AND session_id = ? ORDER BY task_index ASC",
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Returns the first task that still needs to run (pending or failed), if any.
+    pub async fn next_unfinished(
+        pool: &SqlitePool,
+        project_id: i64,
+        session_id: i64,
+    ) -> Result<Option<MaxTask>, sqlx::Error> {
+        sqlx::query_as::<_, MaxTask>(
+            "SELECT id, project_id, session_id, task_index, title, description, status, result_summary FROM max_tasks WHERE project_id = ? AND session_id = ? AND status IN ('pending', 'failed') ORDER BY task_index ASC LIMIT 1",
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+    }
+
+    /// Updates the status (and optionally the result summary) of a single task.
+    pub async fn set_status(
+        pool: &SqlitePool,
+        id: i64,
+        status: &str,
+        result_summary: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE max_tasks SET status = ?, result_summary = COALESCE(?, result_summary), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(status)
+        .bind(result_summary)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Marks every failed task back to pending so the sequence can be retried.
+    pub async fn reset_failed(
+        pool: &SqlitePool,
+        project_id: i64,
+        session_id: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE max_tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE project_id = ? AND session_id = ? AND status = 'failed'",
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}
+
 pub struct SessionsRepository;
 
 impl SessionsRepository {
@@ -334,6 +462,7 @@ impl SessionsRepository {
 
         let is_qa_mode = mode.as_deref() == Some("qa");
         let is_iterate_mode = mode.as_deref() == Some("iterate");
+        let is_max_mode = mode.as_deref() == Some("max");
 
         if is_iterate_mode {
             let control = iteration_control.unwrap_or_else(|| Arc::new(crate::iterate::IterationControl::new()));
@@ -347,6 +476,20 @@ impl SessionsRepository {
                 event_sink,
                 app_handle,
                 control,
+            )
+            .await;
+        }
+
+        if is_max_mode {
+            return crate::max::run_max_breakdown(
+                pool,
+                project_id,
+                id,
+                user_message,
+                artifacts,
+                agent,
+                event_sink,
+                app_handle,
             )
             .await;
         }

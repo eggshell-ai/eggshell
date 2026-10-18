@@ -6,6 +6,7 @@ import ReportMenu from "./ReportMenu";
 import SettingsPopup from "./SettingsPopup";
 import FeedbackPopup from "./FeedbackPopup";
 import IterationLoopCard, { IterationLoopData } from "./IterationLoopCard";
+import MaxTasksCard, { MaxPlanData, MaxTask } from "./MaxTasksCard";
 
 export type ChatMessage = {
   role: "user" | "assistant" | "thought" | "tool_call" | "tool_result";
@@ -235,16 +236,20 @@ type ChatProps = {
   /** The first model in the active provider's list is the backend's current default. */
   activeModel: string;
   onModelChange: (provider: string, model: string, reasoning?: string) => void;
-  mode: "implement" | "plan" | "qa" | "iterate";
-  onModeChange: (mode: "implement" | "plan" | "qa" | "iterate") => void;
+  mode: "implement" | "plan" | "qa" | "iterate" | "max";
+  onModeChange: (mode: "implement" | "plan" | "qa" | "iterate" | "max") => void;
   onProceedToImplement: () => void;
   onStop?: () => void;
   onCompact?: () => void;
   isWrappingUp?: boolean;
   iterateStatus?: { loop?: number; stage?: string; phase?: string } | null;
+  /** Current Max mode task list for the session, if any. */
+  maxTasks?: MaxTask[];
+  onRunMaxTasks?: () => void;
+  onRetryMaxTasks?: () => void;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, users, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, users, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null, maxTasks = [], onRunMaxTasks, onRetryMaxTasks }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -527,6 +532,20 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
       );
       continue;
     }
+    const isMaxPlan = (message.data as MaxPlanData | undefined)?.isMaxPlan;
+    if (isMaxPlan) {
+      renderedMessages.push(
+        <MaxTasksCard
+          key={`max-plan-${index}`}
+          data={message.data as MaxPlanData}
+          tasks={maxTasks}
+          isSending={isSending}
+          onRun={onRunMaxTasks ?? (() => undefined)}
+          onRetryFailed={onRetryMaxTasks ?? (() => undefined)}
+        />
+      );
+      continue;
+    }
     const isPlan = (message.data as { isPlan?: boolean } | undefined)?.isPlan;
     const planPath = (message.data as { planPath?: string } | undefined)?.planPath;
     if (isPlan) {
@@ -664,7 +683,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
             value={draft}
             onChange={(e: ChangeEvent<HTMLTextAreaElement>) => onDraftChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={mode === "iterate" ? "Describe your application goal to begin autonomous iteration… (Press Enter)" : "Type a message… (Press Enter to send, Shift+Enter for new line)"}
+            placeholder={mode === "iterate" ? "Describe your application goal to begin autonomous iteration… (Press Enter)" : mode === "max" ? "Describe the large application you want to build. Max will break it into tasks… (Press Enter)" : "Type a message… (Press Enter to send, Shift+Enter for new line)"}
             rows={1}
             aria-label="Message"
           />
@@ -681,20 +700,21 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                 <span className="composer-attach-icon">📎</span>
                 <span className="composer-attach-label">Attach</span>
               </button>
-              <div className={`composer-mode-picker ${mode === "plan" ? "plan-active" : mode === "qa" ? "qa-active" : mode === "iterate" ? "iterate-active" : ""}`}>
-                <span className="composer-mode-icon">{mode === "plan" ? "📋" : mode === "qa" ? "🧪" : mode === "iterate" ? "🔄" : "⚙️"}</span>
+              <div className={`composer-mode-picker ${mode === "plan" ? "plan-active" : mode === "qa" ? "qa-active" : mode === "iterate" ? "iterate-active" : mode === "max" ? "max-active" : ""}`}>
+                <span className="composer-mode-icon">{mode === "plan" ? "📋" : mode === "qa" ? "🧪" : mode === "iterate" ? "🔄" : mode === "max" ? "🚀" : "⚙️"}</span>
                 <span className="composer-mode-label">Mode:</span>
                 <select
                   className="composer-mode-select"
                   value={mode}
                   aria-label="Mode Selection"
                   disabled={isSending}
-                  onChange={({ target }) => onModeChange(target.value as "implement" | "plan" | "qa" | "iterate")}
+                  onChange={({ target }) => onModeChange(target.value as "implement" | "plan" | "qa" | "iterate" | "max")}
                 >
                   <option value="implement">Implement</option>
                   <option value="plan">Plan</option>
                   <option value="qa">QA / Test</option>
                   <option value="iterate">Iterate (Autonomous)</option>
+                  <option value="max">Max (Large App)</option>
                 </select>
               </div>
               {selectableProviders.length > 0 && (

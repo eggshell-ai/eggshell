@@ -10,6 +10,7 @@ import ProjectLogPanel, { ProgressLine } from "./ProjectLogPanel";
 import Chat, { ChatMessage, ChatUser, eventContent } from "./Chat";
 import ReportMenu from "./ReportMenu";
 import UpdatePrompt from "./UpdatePrompt";
+import { MaxTask } from "./MaxTasksCard";
 
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
@@ -51,9 +52,10 @@ function App() {
   const [isStarting, setIsStarting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(true);
-  const [mode, setMode] = useState<"implement" | "plan" | "qa" | "iterate">("implement");
+  const [mode, setMode] = useState<"implement" | "plan" | "qa" | "iterate" | "max">("implement");
   const [isWrappingUp, setIsWrappingUp] = useState(false);
   const [iterateStatus, setIterateStatus] = useState<{ loop?: number; stage?: string; phase?: string } | null>(null);
+  const [maxTasks, setMaxTasks] = useState<MaxTask[]>([]);
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
@@ -174,6 +176,54 @@ function App() {
         setStreamedMessages([]);
         return;
       }
+      if (type === "max_breakdown_complete") {
+        const breakdown = data as { tasks?: MaxTask[] };
+        if (breakdown.tasks) setMaxTasks(breakdown.tasks);
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_execution_start") {
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_task_start") {
+        const started = data as { taskId?: number };
+        if (started.taskId) {
+          setMaxTasks((current) => current.map((task) => task.id === started.taskId ? { ...task, status: "running" } : task));
+        }
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_task_complete") {
+        const done = data as { taskId?: number; summary?: string };
+        if (done.taskId) {
+          setMaxTasks((current) => current.map((task) => task.id === done.taskId ? { ...task, status: "completed", result_summary: done.summary ?? task.result_summary } : task));
+        }
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_task_failed") {
+        const failed = data as { taskId?: number; error?: string };
+        if (failed.taskId) {
+          setMaxTasks((current) => current.map((task) => task.id === failed.taskId ? { ...task, status: "failed", result_summary: failed.error ?? task.result_summary } : task));
+        }
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_execution_complete") {
+        const finished = data as { tasks?: MaxTask[] };
+        if (finished.tasks) setMaxTasks(finished.tasks);
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_status") {
+        const status = data as { phase?: string };
+        if (status.phase === "completed" || status.phase === "stopped" || status.phase === "halted") {
+          setMaxTasks((current) => current.map((task) => task.status === "running" ? { ...task, status: "pending" } : task));
+        }
+        setStreamedMessages([]);
+        return;
+      }
       setStreamedMessages((current) => [...current, {
         role: type as ChatMessage["role"],
         content: eventContent(type, data),
@@ -195,11 +245,22 @@ function App() {
     return () => { stopped = true; unlisten?.(); };
   }, []);
 
+  // Max mode task lists live in the database, so reload them whenever the
+  // active session changes (including switching into a session picked from the
+  // sidebar, or back into one after a restart).
+  useEffect(() => {
+    if (activeProject && activeSession) {
+      void loadMaxTasks(activeProject.id, activeSession.id);
+    } else {
+      setMaxTasks([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject?.id, activeSession?.id]);
+
   async function loadProjects() {
     try { setProjects(await invoke<Project[]>("list_projects")); }
     catch (reason) { setError(String(reason)); }
   }
-
   async function chooseFolder() {
     const selection = await open({ directory: true, multiple: false, title: "Choose project folder" });
     if (typeof selection === "string") {
@@ -317,6 +378,27 @@ function App() {
     }
   }
 
+  async function loadMaxTasks(projectId: number, sessionId: number) {
+    try { setMaxTasks(await invoke<MaxTask[]>("list_max_tasks", { projectId, sessionId })); }
+    catch (reason) { console.error("[App] list_max_tasks failed", { reason }); }
+  }
+
+  async function runMaxTasks(retryFailed: boolean) {
+    if (!activeProject || !activeSession || isSending) return;
+    setError(""); setIsSending(true); setStreamedMessages([]); setMode("max");
+    setPendingPrompt(retryFailed ? "Retrying failed tasks…" : "Running Max tasks…");
+    try {
+      const session = await invoke<Session>("run_max_tasks", {
+        projectId: activeProject.id,
+        sessionId: activeSession.id,
+        retryFailed,
+      });
+      setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]);
+      await loadMaxTasks(activeProject.id, session.id);
+    } catch (reason) { setError(String(reason)); }
+    finally { setIsSending(false); setPendingPrompt(""); void loadUsers(activeProject.id); }
+  }
+
   async function compactSession() {
     if (!activeProject || !activeSession || isSending) return;
     setError(""); setIsSending(true);
@@ -377,7 +459,7 @@ function App() {
   if (activeProject) {
     return (
       <>
-        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} />
+        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} maxTasks={maxTasks} onRunMaxTasks={() => void runMaxTasks(false)} onRetryMaxTasks={() => void runMaxTasks(true)} />
         <UpdatePrompt autoCheck={autoUpdateEnabled} />
       </>
     );

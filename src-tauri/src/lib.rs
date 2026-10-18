@@ -2,6 +2,7 @@ pub mod config;
 mod db;
 pub mod dependencies;
 pub mod iterate;
+pub mod max;
 pub mod llm;
 use llm::LLMService;
 pub mod providers;
@@ -30,6 +31,7 @@ use tauri::{Emitter, Manager};
 
 type ActiveGenerationMap = Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>;
 type ActiveIterationMap = Arc<Mutex<HashMap<i64, Arc<iterate::IterationControl>>>>;
+type ActiveMaxMap = Arc<Mutex<HashMap<i64, Arc<max::MaxControl>>>>;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -859,6 +861,78 @@ async fn send_message(
     result.map_err(|error| error.to_string())
 }
 
+/// Lists the persisted Max mode task list for a session.
+#[tauri::command]
+async fn list_max_tasks(
+    project_id: i64,
+    session_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<db::MaxTask>, String> {
+    db::MaxTasksRepository::list(pool.inner(), project_id, session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Runs Phase 2 of Max mode: execute the stored task list sequentially.
+#[tauri::command]
+async fn run_max_tasks(
+    project_id: i64,
+    session_id: i64,
+    retry_failed: Option<bool>,
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, SqlitePool>,
+    agent: tauri::State<'_, llm::AgentService>,
+    active_generations: tauri::State<'_, ActiveGenerationMap>,
+    active_max: tauri::State<'_, ActiveMaxMap>,
+) -> Result<Session, String> {
+    if retry_failed.unwrap_or(false) {
+        db::MaxTasksRepository::reset_failed(pool.inner(), project_id, session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+
+    let event_sink = Arc::new({
+        let app = app.clone();
+        move |payload| {
+            let _ = app.emit("agent-event", payload);
+        }
+    });
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let max_ctrl = Arc::new(max::MaxControl::new());
+
+    {
+        let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        map.insert(project_id, cancel_flag.clone());
+    }
+    {
+        let mut map = active_max.lock().unwrap_or_else(|p| p.into_inner());
+        map.insert(project_id, max_ctrl.clone());
+    }
+
+    let result = max::run_max_execution(
+        pool.inner(),
+        project_id,
+        session_id,
+        agent.inner(),
+        event_sink,
+        Some(&app),
+        max_ctrl.clone(),
+    )
+    .await;
+
+    {
+        let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(&project_id);
+    }
+    {
+        let mut map = active_max.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(&project_id);
+    }
+
+    result.map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn wrap_up_chat(
     project_id: i64,
@@ -884,8 +958,31 @@ async fn stop_chat(
     project_id: i64,
     active_generations: tauri::State<'_, ActiveGenerationMap>,
     active_iterations: tauri::State<'_, ActiveIterationMap>,
+    active_max: tauri::State<'_, ActiveMaxMap>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // A Max mode run has no wrap-up phase: stopping aborts the current task and
+    // leaves the rest resumable.
+    let max_control = {
+        let map = active_max.lock().unwrap_or_else(|p| p.into_inner());
+        map.get(&project_id).cloned()
+    };
+    if let Some(ctrl) = max_control {
+        ctrl.force_stop.store(true, Ordering::Relaxed);
+        let map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(flag) = map.get(&project_id) {
+            flag.store(true, Ordering::Relaxed);
+        }
+        let _ = app.emit("agent-event", serde_json::json!({
+            "projectId": project_id,
+            "event": {
+                "type": "max_status",
+                "data": { "phase": "stopped" }
+            }
+        }));
+        return Ok(());
+    }
+
     // Check if an iteration is active
     let iter_control = {
         let map = active_iterations.lock().unwrap_or_else(|p| p.into_inner());
@@ -1293,6 +1390,8 @@ pub fn run() {
             app.manage(active_generations);
             let active_iterations: ActiveIterationMap = Arc::new(Mutex::new(HashMap::new()));
             app.manage(active_iterations);
+            let active_max: ActiveMaxMap = Arc::new(Mutex::new(HashMap::new()));
+            app.manage(active_max);
 
             // Probing the port and waiting for the daemon both block, and the
             // window should not wait on a database it does not use itself.
@@ -1326,6 +1425,8 @@ pub fn run() {
             send_message,
             wrap_up_chat,
             stop_chat,
+            list_max_tasks,
+            run_max_tasks,
             compact_session,
             submit_feedback,
             get_app_version

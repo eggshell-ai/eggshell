@@ -640,6 +640,11 @@
   background: #eff6ff;
 }
 
+.composer-mode-picker.max-active {
+  border-color: #7c3aed;
+  background: #f5f3ff;
+}
+
 .composer-mode-icon {
   font-size: 13px;
 }
@@ -660,6 +665,10 @@
 
 .composer-mode-picker.iterate-active .composer-mode-label {
   color: #2563eb;
+}
+
+.composer-mode-picker.max-active .composer-mode-label {
+  color: #7c3aed;
 }
 
 .composer-mode-select {
@@ -684,6 +693,10 @@
 
 .composer-mode-picker.iterate-active .composer-mode-select {
   color: #2563eb;
+}
+
+.composer-mode-picker.max-active .composer-mode-select {
+  color: #7c3aed;
 }
 
 .composer-mode-select:focus {
@@ -1156,6 +1169,239 @@
   max-height: 480px;
   overflow-y: auto;
   padding: 4px;
+}
+
+/* MaxTasksCard styles */
+.max-tasks-card {
+  width: min(100%, 820px);
+  margin: 12px auto;
+  border-radius: 12px;
+  border: 1px solid #ddd6fe;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.06);
+  overflow: hidden;
+}
+
+.max-tasks-card.running {
+  border-color: #8b5cf6;
+  box-shadow: 0 4px 16px rgba(139, 92, 246, 0.15);
+}
+
+.max-tasks-card.done {
+  border-color: #86efac;
+}
+
+.max-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: #faf8ff;
+  border-bottom: 1px solid #f1ecfe;
+}
+
+.max-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.max-badge {
+  font-weight: 700;
+  font-size: 0.75rem;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: #7c3aed;
+  color: #ffffff;
+}
+
+.max-title {
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: #1e293b;
+}
+
+.max-status-pill {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.max-status-pill.pending {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.max-status-pill.running {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.max-status-pill.completed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.max-status-pill.failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.max-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #7c3aed;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.max-progress {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #7c3aed;
+}
+
+.max-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px;
+}
+
+.max-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 6px;
+  border-bottom: 1px solid #f5f3ff;
+}
+
+.max-task-item:last-child {
+  border-bottom: none;
+}
+
+.max-task-item.running .max-task-title {
+  color: #6d28d9;
+}
+
+.max-task-item.completed .max-task-title {
+  color: #15803d;
+}
+
+.max-task-item.failed .max-task-title {
+  color: #b91c1c;
+}
+
+.max-task-status {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: #a5a3b8;
+  min-width: 14px;
+}
+
+.max-task-item.completed .max-task-status {
+  color: #16a34a;
+}
+
+.max-task-item.failed .max-task-status {
+  color: #dc2626;
+}
+
+.max-task-item.running .max-task-status {
+  color: #7c3aed;
+}
+
+.max-task-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.max-task-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.max-task-desc {
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.max-task-pill {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.max-task-pill.completed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.max-task-pill.running {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.max-task-pill.failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.max-task-empty {
+  padding: 12px;
+  font-size: 0.82rem;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.max-card-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #f1ecfe;
+  background: #fcfbff;
+}
+
+.max-run-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #ffffff;
+  background: #7c3aed;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.max-run-btn:hover:not(:disabled) {
+  background: #6d28d9;
+}
+
+.max-run-btn.secondary {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.max-run-btn.secondary:hover:not(:disabled) {
+  background: #ddd6fe;
+}
+
+.max-run-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .tab-pane h2, .tab-pane h3 {
