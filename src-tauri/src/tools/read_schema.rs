@@ -65,7 +65,7 @@ impl Tool for ReadSchemaTool {
         if !schema_path.exists() {
             return Ok(json!({
                 "success": false,
-                "message": format!("No schema file found at: {}", schema_path.display()),
+                "message": "No schema found.",
                 "details": {
                     "filePath": schema_path,
                     "resources": []
@@ -138,16 +138,50 @@ impl Tool for ReadSchemaTool {
                 }
             }
         } else {
+            let summary = summarize_resources(&all_resources);
             Ok(json!({
                 "success": true,
                 "message": "Schemas read successfully.",
-                "resources": all_resources,
-                "schema": schema_val,
+                "summary": summary,
                 "details": {
                     "filePath": schema_path,
-                    "resources": all_resources
+                    "resourceCount": all_resources.len()
                 }
             }))
         }
     }
+}
+
+/// Builds a short, human-readable overview of all resources and their fields,
+/// e.g.
+/// ```text
+/// customers
+/// - id
+/// - name
+///
+/// products
+/// - id
+/// - name
+/// ```
+fn summarize_resources(resources: &[Value]) -> String {
+    resources
+        .iter()
+        .map(|resource| {
+            let name = resource
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>");
+            let mut block = String::from(name);
+            if let Some(fields) = resource.get("fields").and_then(Value::as_array) {
+                for field in fields {
+                    if let Some(field_name) = field.get("name").and_then(Value::as_str) {
+                        block.push_str("\n- ");
+                        block.push_str(field_name);
+                    }
+                }
+            }
+            block
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
