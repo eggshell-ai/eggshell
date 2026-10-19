@@ -520,6 +520,20 @@ fn lint_frontend_shell(frontend_dir: &Path, relative_filter: Option<&str>) -> Ll
 
                 if let Some(messages) = file_res.messages {
                     for msg in messages {
+                        // A directive such as `// eslint-disable-next-line @next/next/no-img-element`
+                        // produces an error when that rule is not registered by the
+                        // active ESLint config. That is a template/configuration
+                        // artifact, not a problem in the code being reviewed, so it
+                        // must not be surfaced to the agent.
+                        if msg
+                            .message
+                            .as_deref()
+                            .map(is_unknown_rule_definition)
+                            .unwrap_or(false)
+                        {
+                            continue;
+                        }
+
                         if let Some(ref rule) = msg.rule_id {
                             if rule == "no-unused-vars" || rule == "@typescript-eslint/no-unused-vars" {
                                 continue;
@@ -555,7 +569,7 @@ fn lint_frontend_shell(frontend_dir: &Path, relative_filter: Option<&str>) -> Ll
 
     // If ESLint exited non-zero but couldn't produce JSON output (e.g. config error or crash)
     if !output.status.success() {
-        let err_text = if !stderr_str.trim().is_empty() {
+        let raw_err_text = if !stderr_str.trim().is_empty() {
             stderr_str.trim()
         } else if !stdout_str.trim().is_empty() {
             stdout_str.trim()
@@ -563,18 +577,43 @@ fn lint_frontend_shell(frontend_dir: &Path, relative_filter: Option<&str>) -> Ll
             "ESLint failed with unknown error"
         };
 
-        issues.push(json!({
-            "shell": "frontend",
-            "file": relative_filter.unwrap_or("src"),
-            "line": 1,
-            "column": null,
-            "message": err_text,
-            "severity": "error",
-            "source": "eslint"
-        }));
+        // Drop lines that only complain about unregistered rules referenced by
+        // inline disable directives; they are template configuration artifacts.
+        let err_text = raw_err_text
+            .lines()
+            .filter(|line| !is_unknown_rule_definition(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+
+        if !err_text.is_empty() {
+            issues.push(json!({
+                "shell": "frontend",
+                "file": relative_filter.unwrap_or("src"),
+                "line": 1,
+                "column": null,
+                "message": err_text,
+                "severity": "error",
+                "source": "eslint"
+            }));
+        }
     }
 
     Ok(issues)
+}
+
+/// ESLint reports `Definition for rule '<name>' was not found.` (and variants)
+/// when an inline disable directive references a rule that the active flat
+/// config does not register. This is a configuration issue in the project
+/// template rather than an error in the source file, so it is not useful
+/// feedback for the agent and is filtered out.
+fn is_unknown_rule_definition(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+
+    (lower.contains("definition for rule") && lower.contains("was not found"))
+        || lower.contains("unknown rule")
+        || (lower.contains("couldn't find rule") && lower.contains("definition"))
 }
 
 fn configure_env_node(command: &mut Command) {
@@ -613,6 +652,21 @@ mod tests {
         let tool = LintCodeTool::new();
         assert_eq!(tool.name(), "lint_code");
         assert!(tool.parameters().contains_key("properties"));
+    }
+
+    #[test]
+    fn test_unknown_rule_definition_filtering() {
+        assert!(is_unknown_rule_definition(
+            "Definition for rule '@next/next/no-img-element' was not found."
+        ));
+        assert!(is_unknown_rule_definition(
+            "unknown rule '@next/next/no-img-element'"
+        ));
+
+        assert!(!is_unknown_rule_definition(
+            "Use of eval in 'data' is strongly discouraged"
+        ));
+        assert!(!is_unknown_rule_definition("Parsing error: Unexpected token"));
     }
 
     #[tokio::test]
