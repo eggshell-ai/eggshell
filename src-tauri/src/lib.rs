@@ -1,3 +1,4 @@
+mod apps;
 pub mod config;
 mod db;
 pub mod dependencies;

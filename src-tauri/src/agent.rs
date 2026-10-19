@@ -69,7 +69,8 @@ impl AgentService {
         tools: Vec<Box<dyn Tool>>,
         options: AgentOptions,
     ) -> LlmResult<AgentRunResult> {
-        self.attach_skills_summary(&mut messages);
+        let skills = options.skills.as_deref().unwrap_or(&self.skills);
+        self.attach_skills_summary(&mut messages, skills);
         self.attach_artifacts(&mut messages, &options.artifacts);
 
         // The prompts themselves are sensitive: they only travel into the
@@ -334,37 +335,15 @@ impl AgentService {
         }
     }
 
-    fn attach_skills_summary(&self, messages: &mut Vec<LLMMessage>) {
-        if self.skills.is_empty() {
+    /// Appends the catalogue of `skills` to the conversation's system message.
+    ///
+    /// An empty slice appends nothing, which lets a mode opt out of the skills
+    /// section entirely through [`AgentOptions::skills`].
+    fn attach_skills_summary(&self, messages: &mut Vec<LLMMessage>, skills: &[Box<dyn Skill>]) {
+        let summary = skills_summary(skills);
+        if summary.is_empty() {
             return;
         }
-        let mut summary = String::from("\n\n=== AVAILABLE SKILLS ===\nYou have access to the following skills that teach you how to perform specific tasks:\n\n");
-        for skill in &self.skills {
-            summary.push_str(&format!(
-                "**{}**\nDescription: {}\n",
-                skill.name(),
-                skill.description()
-            ));
-            if let Some(category) = skill.category() {
-                summary.push_str(&format!("Category: {category}\n"));
-            }
-            if !skill.tags().is_empty() {
-                summary.push_str(&format!("Tags: {}\n", skill.tags().join(", ")));
-            }
-            if !skill.documents().is_empty() {
-                summary.push_str("Documents (load on demand):\n");
-                for document in skill.documents() {
-                    summary.push_str(&format!(
-                        "  - {}: {}\n",
-                        document.name, document.description
-                    ));
-                }
-            }
-            summary.push('\n');
-        }
-        summary.push_str(
-            "To use a skill, call the load_skill tool with the skill name. To load a specific document of a skill, also pass its document name.\n=== END SKILLS ===\n",
-        );
         if let Some(system) = messages
             .iter_mut()
             .find(|message| matches!(message.role, LLMMessageRole::System))
@@ -481,4 +460,111 @@ fn now_millis() -> LlmResult<u128> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?
         .as_millis())
+}
+
+/// Builds the catalogue of available skills appended to a system prompt.
+///
+/// Returns an empty string when `skills` is empty so callers can opt out of the
+/// section altogether.
+fn skills_summary(skills: &[Box<dyn Skill>]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut summary = String::from("\n\n=== AVAILABLE SKILLS ===\nYou have access to the following skills that teach you how to perform specific tasks:\n\n");
+    for skill in skills {
+        summary.push_str(&format!(
+            "**{}**\nDescription: {}\n",
+            skill.name(),
+            skill.description()
+        ));
+        if let Some(category) = skill.category() {
+            summary.push_str(&format!("Category: {category}\n"));
+        }
+        if !skill.tags().is_empty() {
+            summary.push_str(&format!("Tags: {}\n", skill.tags().join(", ")));
+        }
+        if !skill.documents().is_empty() {
+            summary.push_str("Documents (load on demand):\n");
+            for document in skill.documents() {
+                summary.push_str(&format!(
+                    "  - {}: {}\n",
+                    document.name, document.description
+                ));
+            }
+        }
+        summary.push('\n');
+    }
+    summary.push_str(
+        "To use a skill, call the load_skill tool with the skill name. To load a specific document of a skill, also pass its document name.\n=== END SKILLS ===\n",
+    );
+    summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    fn system_message(content: &str) -> LLMMessage {
+        LLMMessage {
+            role: LLMMessageRole::System,
+            content: content.to_owned(),
+            tool_call_id: None,
+            tool_name: None,
+            tool_args: None,
+            tool_calls: None,
+        }
+    }
+
+    #[test]
+    fn skills_summary_is_empty_without_skills() {
+        assert!(skills_summary(&[]).is_empty());
+    }
+
+    #[test]
+    fn skills_summary_lists_the_default_catalogue() {
+        let skills = super::super::default_skills();
+        let summary = skills_summary(&skills);
+        assert!(summary.contains("=== AVAILABLE SKILLS ==="));
+        assert!(summary.contains("crud_creation"));
+        assert!(summary.contains("=== END SKILLS ==="));
+    }
+
+    #[test]
+    fn empty_options_skills_do_not_touch_the_system_prompt() {
+        let agent = AgentService::with_skills(Arc::new(StubLlm), Vec::new());
+        let mut messages = vec![system_message("base prompt")];
+        agent.attach_skills_summary(&mut messages, &[]);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "base prompt");
+    }
+
+    #[test]
+    fn agent_defaults_apply_when_options_do_not_override_skills() {
+        let options = AgentOptions::default();
+        assert!(options.skills.is_none());
+    }
+
+    /// Minimal `LLMService` so the summary tests never need a provider.
+    struct StubLlm;
+
+    #[async_trait]
+    impl LLMService for StubLlm {
+        async fn execute_prompt(
+            &self,
+            _prompt: &str,
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<String> {
+            Ok(String::new())
+        }
+
+        async fn execute_prompt_with_tools(
+            &self,
+            _messages: &[LLMMessage],
+            _tools: &[Box<dyn Tool>],
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<Value> {
+            Ok(Value::Null)
+        }
+    }
 }

@@ -100,6 +100,10 @@ pub async fn run_max_breakdown(
                 project_path: Some(project_path.clone()),
                 artifacts: artifacts.clone(),
                 log_dir,
+                // The planner works without skills: it must produce a purely
+                // business-oriented plan, so no catalogue is appended to its
+                // system prompt.
+                skills: Some(Vec::new()),
                 on_event: Some(Arc::new(move |event| {
                     event_sink_clone(json!({
                         "projectId": project_id,

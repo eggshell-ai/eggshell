@@ -76,7 +76,8 @@ graph TD
 | Change the agent loop | `src-tauri/src/agent.rs` (`AgentService::run_agent`) |
 | Add or change a tool | `src-tauri/src/tools/` (+ register in `tools/mod.rs`) |
 | Add or change a runtime skill | `src-tauri/src/skills/` + a matching `*_skill` module + `default_skills()` in `llm.rs` |
-| Change the agent system prompt / available skills | `src-tauri/src/llm.rs` (`AdminPanelApp`/`PlanningApp`/`QaApp`) |
+| Change an agent mode's system prompt or tools | `src-tauri/src/apps/` (`admin_panel.rs`, `planning.rs`, `qa.rs`, `max_planner.rs`) |
+| Opt a mode out of the skills catalogue | pass `skills: Some(Vec::new())` in `AgentOptions` (see `max.rs::run_max_breakdown`) |
 | Change the desktop UI | `src/App.tsx`, `src/Chat.tsx` |
 | Change generated frontend | `templates/admin-panel/` |
 | Change generated backend | `templates/backend/` |
