@@ -473,7 +473,6 @@ fn task_agent_prompt(overall_goal: &str, all_titles: &[String], task: &MaxTask) 
 === INSTRUCTIONS ===\n\
 - Implement ONLY your task above. Do not start or scaffold the other tasks.\n\
 - Before writing any code, inspect the existing project: read `frontend/src/menu-items/menu.json` and use `read_schema` to see the current database schema, so what you build matches what already exists.\n\
-- Re-read the relevant skills in full with `load_skill` (e.g. crud_creation for a CRUD screen, analytics_and_reporting for a report or dashboard) and follow their instructions exactly.\n\
 - Keep your change small and self-contained: this task should be one screen, CRUD, report, or dashboard.\n\
 - Run `lint_code` after making changes to verify there are no syntax, lint, or schema errors.\n\
 - When done, briefly summarise what you created and any follow-up the other task agents will need.",

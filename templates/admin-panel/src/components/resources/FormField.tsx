@@ -48,6 +48,11 @@ const CalculatedCell: React.FC<{
 }> = ({ form, tableName, rowIndex, col }) => {
   const rowData = Form.useWatch([tableName, rowIndex], form);
 
+  const hasExpression =
+    typeof col.value === 'function' ||
+    Boolean(col.colFieldConfig?.computeExpression) ||
+    typeof col.colFieldConfig?.compute === 'function';
+
   let calculatedValue: any = '';
   if (col.value && typeof col.value === 'function') {
     try {
@@ -78,6 +83,13 @@ const CalculatedCell: React.FC<{
     } catch (e) {
       calculatedValue = '';
     }
+  }
+
+  // A calculated column may be flagged without owning an expression (e.g. the
+  // child field is computed on the server). Fall back to the value present on
+  // the row instead of showing an empty cell.
+  if (!hasExpression && rowData && rowData[col.name] !== undefined && rowData[col.name] !== null) {
+    calculatedValue = rowData[col.name];
   }
 
   useEffect(() => {
@@ -137,9 +149,25 @@ const TableWidget: React.FC<{
 
     const label = colExplicitLabel || resField?.label || formatColumnLabel(colName);
     const isHidden = colName.toLowerCase() === 'id' || resField?.type === 'hidden';
+
+    // Calculated columns are inferred from the child resource definition so
+    // callers do not need to repeat `isCalculated: true` on the parent table
+    // field. An explicit flag (on the column or the child field) is still
+    // honoured for ad-hoc expressions that have no resource behind them.
+    const colOptions = typeof col === 'object' ? col : {};
     const isCalculated =
       typeof colValueFn === 'function' ||
-      Boolean(resField?.computeExpression || resField?.compute || (typeof col === 'object' && (col.computeExpression || col.compute)));
+      (colOptions.isCalculated !== undefined
+        ? Boolean(colOptions.isCalculated)
+        : Boolean(
+            resField?.isCalculated ||
+              resField?.computed ||
+              resField?.computeExpression ||
+              resField?.compute ||
+              colOptions.computed ||
+              colOptions.computeExpression ||
+              colOptions.compute
+          ));
 
     const colFieldConfig: FieldConfig = {
       type: resField?.type || 'text',

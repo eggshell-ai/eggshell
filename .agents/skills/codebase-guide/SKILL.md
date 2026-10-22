@@ -58,8 +58,8 @@ graph TD
   and the shell implementations that copy templates and start dev servers.
 - **`src/`** — the React (Vite) UI of the Eggshell window itself.
 - **`templates/`** — the code that gets copied into each new generated project.
-- **`src-tauri/src/skills/*.md`** — the instruction documents the agent loads on
-  demand (this is *different from* the skill you are reading now).
+- **`src-tauri/src/skills/<skill>/SKILL.md`** — the instruction documents the
+  agent loads on demand (this is *different from* the skill you are reading now).
 
 > **Two different "skills" — do not confuse them.**
 > 1. **Eggshell's runtime skills** (Rust `trait Skill` + markdown in
@@ -75,7 +75,7 @@ graph TD
 | Add/change a Tauri command | `src-tauri/src/lib.rs` |
 | Change the agent loop | `src-tauri/src/agent.rs` (`AgentService::run_agent`) |
 | Add or change a tool | `src-tauri/src/tools/` (+ register in `tools/mod.rs`) |
-| Add or change a runtime skill | `src-tauri/src/skills/` + a matching `*_skill` module + `default_skills()` in `llm.rs` |
+| Add or change a runtime skill | create `src-tauri/src/skills/<name>/SKILL.md` with frontmatter — no Rust wiring needed |
 | Change an agent mode's system prompt or tools | `src-tauri/src/apps/` (`admin_panel.rs`, `planning.rs`, `qa.rs`, `max_planner.rs`) |
 | Opt a mode out of the skills catalogue | pass `skills: Some(Vec::new())` in `AgentOptions` (see `max.rs::run_max_breakdown`) |
 | Change the desktop UI | `src/App.tsx`, `src/Chat.tsx` |
@@ -88,7 +88,9 @@ graph TD
 - The Rust lib is named `eggshell_lib` (not `eggshell`) — see `Cargo.toml`.
 - Templates are bundled as Tauri resources (`../templates/**/*` in `tauri.conf.json`),
   so new template files ship automatically.
-- Runtime skills embed their markdown at compile time via `include_str!`
-  (`skill_markdown.rs`), so adding a skill means both a `.md` file and Rust wiring.
+- Runtime skills live in `src-tauri/src/skills/<skill>/SKILL.md` and are embedded
+  recursively with `include_dir!` (`skill_loader.rs`). Metadata comes from YAML
+  frontmatter; supporting files (e.g. `docs/*.md`) are bundled but not advertised,
+  and are read through `load_skill({ skillName, path })`.
 - Tool file paths are always relative to a shell's `src/` directory (`frontend`
   or `backend`), never absolute.

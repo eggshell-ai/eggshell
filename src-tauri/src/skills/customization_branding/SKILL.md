@@ -1,7 +1,14 @@
-use super::Skill;
+---
+name: customization_branding
+description: Teaches the agent how to customize application branding details such as the title
+category: customization
+tags:
+  - customization
+  - branding
+  - title
+---
 
-// Paste the full customization and branding skill instructions in this constant.
-const CONTENT: &str = "# Customization and Branding Skill
+# Customization and Branding Skill
 
 This skill explains how to customize the branding details of the generated application. It covers changing the application title and other branding variables.
 
@@ -20,10 +27,10 @@ To read and write this file, use the `read_file` and `write_file` tools.
 Use the `read_file` and `write_file` tools to interact with frontend files:
 
 - **`read_file`**:
-  - `shell`: `\"frontend\"`
+  - `shell`: `"frontend"`
   - `path`: Relative path inside `src` directory (e.g., `customization.js`)
 - **`write_file`**:
-  - `shell`: `\"frontend\"`
+  - `shell`: `"frontend"`
   - `path`: Relative path inside `src` directory
   - `content`: The complete updated content to write
 
@@ -59,8 +66,8 @@ Before modifying the customization file, read `customization.js` using `read_fil
 **Tool call example:**
 ```javascript
 read_file({
-  shell: \"frontend\",
-  path: \"customization.js\"
+  shell: "frontend",
+  path: "customization.js"
 })
 ```
 
@@ -71,8 +78,8 @@ Update `customization.js` using `write_file`, changing the `title` value while p
 **Tool call example:**
 ```javascript
 write_file({
-  shell: \"frontend\",
-  path: \"customization.js\",
+  shell: "frontend",
+  path: "customization.js",
   content: `// ==============================|| APP CUSTOMIZATION ||============================== //
 // Central place for all application customization variables.
 // Add any future customization options (logo, colors, footer text, etc.) here.
@@ -109,9 +116,9 @@ If the uploaded file is an SVG (or matches the current extension), move it over 
 **Tool call example:**
 ```javascript
 move_file({
-  source: \"/absolute/path/to/uploaded-logo.svg\",
-  shell: \"frontend\",
-  path: \"../public/logo.svg\"
+  source: "/absolute/path/to/uploaded-logo.svg",
+  shell: "frontend",
+  path: "../public/logo.svg"
 })
 ```
 
@@ -124,17 +131,17 @@ If the uploaded logo has a different extension (e.g. `logo.png`), move it into `
 **Step 1 — move the file:**
 ```javascript
 move_file({
-  source: \"/absolute/path/to/uploaded-logo.png\",
-  shell: \"frontend\",
-  path: \"../public/logo.png\"
+  source: "/absolute/path/to/uploaded-logo.png",
+  shell: "frontend",
+  path: "../public/logo.png"
 })
 ```
 
 **Step 2 — update the customization file:**
 ```javascript
 write_file({
-  shell: \"frontend\",
-  path: \"customization.js\",
+  shell: "frontend",
+  path: "customization.js",
   content: `// ==============================|| APP CUSTOMIZATION ||============================== //
 // Central place for all application customization variables.
 // Add any future customization options (logo, colors, footer text, etc.) here.
@@ -155,34 +162,4 @@ export default customization;
 
 1. **Prefer SVG**: vector logos scale cleanly at any size.
 2. **Keep the filename stable**: overwriting `logo.svg` avoids touching any other file.
-3. **Only change the extension when needed**: if the upload cannot be an SVG, add a `logo` variable to `customization.js` pointing at the new file instead of renaming references elsewhere.";
-
-/// Skill for customizing application branding details such as the title.
-pub struct CustomizationBrandingSkill {
-    tags: Vec<String>,
-}
-
-impl CustomizationBrandingSkill {
-    pub fn new() -> Self {
-        Self {
-            tags: vec!["customization", "branding", "title"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-        }
-    }
-}
-
-impl Default for CustomizationBrandingSkill {
-    fn default() -> Self { Self::new() }
-}
-
-impl Skill for CustomizationBrandingSkill {
-    fn name(&self) -> &str { "customization_branding" }
-    fn description(&self) -> &str {
-        "Teaches the agent how to customize application branding details such as the title"
-    }
-    fn content(&self) -> &str { CONTENT }
-    fn category(&self) -> Option<&str> { Some("customization") }
-    fn tags(&self) -> &[String] { &self.tags }
-}
+3. **Only change the extension when needed**: if the upload cannot be an SVG, add a `logo` variable to `customization.js` pointing at the new file instead of renaming references elsewhere.

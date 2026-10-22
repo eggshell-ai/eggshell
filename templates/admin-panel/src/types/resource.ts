@@ -47,6 +47,14 @@ export interface FieldConfig {
   precision?: number;
   integer?: boolean;
   computed?: boolean;
+  /**
+   * Marks a child-table column as read-only/calculated.
+   *
+   * Only needed for ad-hoc columns that have no backing child field. Columns
+   * whose child resource field is already `computed: true` (or defines
+   * `computeExpression` / `compute`) are detected automatically.
+   */
+  isCalculated?: boolean;
   computeExpression?: string;
   sqlExpression?: string;
   transforms?: Array<{ type: string; [key: string]: any }>;

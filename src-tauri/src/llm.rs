@@ -29,36 +29,8 @@ pub(crate) fn project_shells() -> Vec<Box<dyn Shell>> {
 mod agent;
 pub use agent::{AgentArtifact, AgentRunResult, AgentService};
 
-#[path = "skill_markdown.rs"]
-mod skill_markdown;
-
-#[path = "crud_creation.rs"]
-mod crud_creation;
-pub use crud_creation::CrudCreationSkill;
-
-#[path = "analytics_and_reporting.rs"]
-mod analytics_and_reporting;
-pub use analytics_and_reporting::AnalyticsAndReportingSkill;
-
-#[path = "customization_branding.rs"]
-mod customization_branding;
-pub use customization_branding::CustomizationBrandingSkill;
-
-#[path = "notification_creation.rs"]
-mod notification_creation;
-pub use notification_creation::NotificationCreationSkill;
-
-#[path = "profile_management.rs"]
-mod profile_management;
-pub use profile_management::ProfileManagementSkill;
-
-#[path = "roles_and_permissions.rs"]
-mod roles_and_permissions;
-pub use roles_and_permissions::RolesAndPermissionsSkill;
-
-#[path = "qa_testing.rs"]
-mod qa_testing;
-pub use qa_testing::QaTestingSkill;
+#[path = "skill_loader.rs"]
+mod skill_loader;
 
 #[path = "mock_llm.rs"]
 mod mock_llm;
@@ -249,23 +221,11 @@ pub trait Shell: Send + Sync {
     async fn start(&self, project_path: &str) -> LlmResult<()>;
 }
 
-/// An on-demand document attached to a skill.
-///
-/// Documents let a skill keep its main instructions concise while still
-/// shipping deeper reference material that the agent only needs occasionally
-/// (for example detailed row-action or custom-UI guidance). Each document is
-/// fetched individually through the `load_skill` tool by passing its `name`.
-#[derive(Debug, Clone)]
-pub struct SkillDocument {
-    /// Short identifier used to request the document (e.g. "row_actions").
-    pub name: &'static str,
-    /// Human-readable description shown in the skills summary.
-    pub description: &'static str,
-    /// The document body, typically a markdown file embedded at compile time.
-    pub content: &'static str,
-}
-
 /// Metadata describing a skill available to the LLM.
+///
+/// A skill is a folder containing a `SKILL.md` file. Its metadata comes from
+/// the YAML frontmatter of that file, and any other bundled file in the folder
+/// can be read on demand through [`Skill::read`].
 pub trait Skill: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -273,24 +233,25 @@ pub trait Skill: Send + Sync {
     fn category(&self) -> Option<&str>;
     fn tags(&self) -> &[String];
 
-    /// Additional documents bundled with this skill, fetched on demand via the
-    /// `load_skill` tool. Defaults to an empty list.
-    fn documents(&self) -> &[SkillDocument] {
+    /// Reads a bundled file inside the skill directory, such as
+    /// `docs/row_actions.md`. Returns `None` for unknown or escaping paths.
+    fn read(&self, _path: &str) -> Option<&str> {
+        None
+    }
+
+    /// Every bundled file in the skill directory, relative to it (e.g.
+    /// `SKILL.md`, `docs/row_actions.md`), sorted.
+    fn files(&self) -> &[String] {
         &[]
     }
 }
 
 /// Returns the skills bundled with the application by default.
+///
+/// Skills are discovered from `src/skills/`: every direct subdirectory that
+/// contains a `SKILL.md` becomes a skill, sorted by name.
 pub fn default_skills() -> Vec<Box<dyn Skill>> {
-    vec![
-        Box::new(CrudCreationSkill::default()),
-        Box::new(AnalyticsAndReportingSkill::default()),
-        Box::new(CustomizationBrandingSkill::default()),
-        Box::new(NotificationCreationSkill::default()),
-        Box::new(ProfileManagementSkill::default()),
-        Box::new(RolesAndPermissionsSkill::default()),
-        Box::new(QaTestingSkill::default()),
-    ]
+    skill_loader::load_all()
 }
 
 /// A tool available to the LLM, including its parameter schema and executor.

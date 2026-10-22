@@ -483,19 +483,10 @@ fn skills_summary(skills: &[Box<dyn Skill>]) -> String {
         if !skill.tags().is_empty() {
             summary.push_str(&format!("Tags: {}\n", skill.tags().join(", ")));
         }
-        if !skill.documents().is_empty() {
-            summary.push_str("Documents (load on demand):\n");
-            for document in skill.documents() {
-                summary.push_str(&format!(
-                    "  - {}: {}\n",
-                    document.name, document.description
-                ));
-            }
-        }
         summary.push('\n');
     }
     summary.push_str(
-        "To use a skill, call the load_skill tool with the skill name. To load a specific document of a skill, also pass its document name.\n=== END SKILLS ===\n",
+        "To use a skill, call the load_skill tool with the skill name. A skill may reference supporting documents; load them with the load_skill tool by passing the skill name and the file path.\n=== END SKILLS ===\n",
     );
     summary
 }
@@ -528,6 +519,14 @@ mod tests {
         assert!(summary.contains("=== AVAILABLE SKILLS ==="));
         assert!(summary.contains("crud_creation"));
         assert!(summary.contains("=== END SKILLS ==="));
+    }
+
+    #[test]
+    fn skills_summary_does_not_advertise_reference_documents() {
+        let skills = super::super::default_skills();
+        let summary = skills_summary(&skills);
+        assert!(!summary.contains("Documents (load on demand)"));
+        assert!(!summary.contains("also pass its document name"));
     }
 
     #[test]

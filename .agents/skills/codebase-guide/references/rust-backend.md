@@ -10,10 +10,10 @@ implementations that scaffold and run generated projects.
 |---|---|
 | `lib.rs` | Tauri entry + all `#[tauri::command]` handlers. `run()` builds the app, manages shared state, registers handlers. Helpers `initialize_project(...)`, `start_project(...)`, `start_managed_mysql`. |
 | `main.rs` | Initializes Sentry (telemetry-gated) and calls `eggshell_lib::run()`. |
-| `llm.rs` | Core traits: `App`, `Shell`, `Skill`, `Tool`, `LLMService`; `SkillDocument`, `AgentOptions`, `StreamChunk`; app definitions `AdminPanelApp`, `PlanningApp`, `QaApp`; `default_skills()`. |
+| `llm.rs` | Core traits: `App`, `Shell`, `Skill`, `Tool`, `LLMService`; `AgentOptions`, `StreamChunk`; app definitions `AdminPanelApp`, `PlanningApp`, `QaApp`; `default_skills()`. |
 | `agent.rs` | `AgentService` — the agent loop (`run_agent`), streaming, tool dispatch, conversation logging, `attach_skills_summary`, `attach_artifacts`. |
-| `skill_markdown.rs` | `load(name) -> &'static str` — embeds `skills/*.md` at compile time via `include_str!`. |
-| `crud_creation.rs`, `analytics_and_reporting.rs`, `customization_branding.rs`, `notification_creation.rs`, `profile_management.rs`, `roles_and_permissions.rs`, `qa_testing.rs` | Per-skill `impl Skill` modules (see [`skill-system.md`](./skill-system.md)). |
+| `skill_loader.rs` | `MarkdownSkill` + `load_all()` — embeds `src/skills/**` with `include_dir!`, parses `SKILL.md` frontmatter, and serves bundled files by path. |
+| `skills/<skill>/SKILL.md` | One folder per runtime skill, with optional supporting files (e.g. `docs/*.md`) alongside it (see [`skill-system.md`](./skill-system.md)). |
 | `tools/` | Agent tools (see [`tools.md`](./tools.md)). |
 | `react.rs` / `symfony.rs` | `Shell` implementations that copy templates, install deps, and start dev servers. |
 | `db.rs` + `migrations/` | SQLite via `sqlx`; repositories `ProjectsRepository`, `SessionsRepository`, `UsersRepository`; SQL migrations in `src-tauri/migrations/`. |
@@ -30,8 +30,8 @@ implementations that scaffold and run generated projects.
 
 - `trait App` — `shells()`, `tools()`, `skills()`, `system_prompt()`.
 - `trait Shell` — `init(project_path, slug, template_root, log, mysql_password, is_mariadb)` and `start(project_path)`.
-- `trait Skill` — `name`, `description`, `content`, `category`, `tags`, `documents()`.
-- `struct SkillDocument { name, description, content }` — on-demand skill documents.
+- `trait Skill` — `name`, `description`, `content`, `category`, `tags`, `read(path)`, `files()`.
+- `struct MarkdownSkill` — the single `Skill` implementation, built from a skill folder's `SKILL.md`.
 - `trait Tool` — `name`, `description`, `parameters`, `execute`.
 - `trait LLMService` — `execute_prompt`, `execute_prompt_with_tools`, `execute_prompt_with_tools_cancellable`, `list_models`.
 

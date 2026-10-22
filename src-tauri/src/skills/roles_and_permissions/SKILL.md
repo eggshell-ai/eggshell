@@ -1,3 +1,16 @@
+---
+name: roles_and_permissions
+description: Teaches the agent how to create roles, add or remove permissions, delete roles, and enforce role-based access control across backend and frontend.
+category: security
+tags:
+  - roles
+  - permissions
+  - security
+  - rbac
+  - backend
+  - auth
+---
+
 # Roles & Permissions Management Skill
 
 This skill teaches the agent how to manage roles, permissions, and per-project users across the application stack. You have access to create new roles, grant or revoke permissions, remove roles, create or drop users, and protect administrative access.

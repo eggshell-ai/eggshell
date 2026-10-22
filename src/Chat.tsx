@@ -35,10 +35,10 @@ type ToolMessageFormatter = (event: ToolEvent) => string;
 // Tools without a formatter keep the generic, JSON-free fallback below.
 const toolCallFormatters: Record<string, ToolMessageFormatter> = {
   load_skill: ({ arguments: args }) => {
-    const loadArgs = args as { skillName?: unknown; document?: unknown } | undefined;
+    const loadArgs = args as { skillName?: unknown; path?: unknown } | undefined;
     const skillName = typeof loadArgs?.skillName === "string" ? loadArgs.skillName : "unknown";
-    const document = typeof loadArgs?.document === "string" ? loadArgs.document : undefined;
-    return document ? `Loaded skill: ${skillName} (${document})` : `Loaded skill: ${skillName}`;
+    const path = typeof loadArgs?.path === "string" ? loadArgs.path : undefined;
+    return path ? `Loaded skill: ${skillName} (${path})` : `Loaded skill: ${skillName}`;
   },
   browser_open: ({ arguments: args }) => {
     const url = (args as { url?: string } | undefined)?.url || "http://localhost:4000";

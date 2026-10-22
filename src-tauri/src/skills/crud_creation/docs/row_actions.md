@@ -243,61 +243,42 @@ finishing, compare the permission strings character-for-character.
 
 ## 7. Backend custom route
 
-Create the resource controller using `write_file` (never `write_controller`) and
-add the custom route to it.
+Create or patch the backend controller using `patch_file` or `write_file`, `patch_file` is preffered to avoid rewriting the whole document.
 
 ```javascript
-write_file({
+patch_file({
   shell: "backend",
-  path: "Controller/LeadController.php",
-  content: `<?php
-
-namespace App\Controller;
-
-use App\Entity\Lead;
-use App\Resource\ResourceController;
-use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
-use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
-use Symfony\Component\Routing\Attribute\Route;
-
-#[Route('/api/leads', name: 'leads.')]
-final class LeadController extends ResourceController
-{
-    protected function getEntityClass(): string
-    {
-        return Lead::class;
-    }
-
-    protected function getResourceName(): string
-    {
-        return 'leads';
-    }
-
-    #[Route('/{id}/contacted', name: 'contacted', requirements: ['id' => '\\d+'], methods: ['POST'])]
-    public function contacted(int $id): JsonResponse
-    {
-        $this->denyAccessUnlessGranted('leads.edit');
-
-        $record = $this->entityManager
-            ->getRepository($this->getEntityClass())
-            ->find($id);
-
-        if (!$record) {
-            throw new NotFoundHttpException('Record not found');
-        }
-
-        if ($record->status !== 'new') {
-            throw new BadRequestHttpException('Only new leads can be marked as contacted.');
-        }
-
-        $record->status = 'contacted';
-        $this->entityManager->flush();
-
-        return $this->json($record);
-    }
-}
-`
+  patch: `*** Begin Patch
+*** Update File: Controller/LeadController.php
+@@
+     protected function getResourceName(): string
+     {
+         return 'leads';
+     }
++
++    #[Route('/{id}/contacted', name: 'contacted', requirements: ['id' => '\\d+'], methods: ['POST'])]
++    public function contacted(int $id): JsonResponse
++    {
++        $this->denyAccessUnlessGranted('leads.edit');
++
++        $record = $this->entityManager
++            ->getRepository($this->getEntityClass())
++            ->find($id);
++
++        if (!$record) {
++            throw new NotFoundHttpException('Record not found');
++        }
++
++        if ($record->status !== 'new') {
++            throw new BadRequestHttpException('Only new leads can be marked as contacted.');
++        }
++
++        $record->status = 'contacted';
++        $this->entityManager->flush();
++
++        return $this->json($record);
++    }
+*** End Patch`
 })
 ```
 
@@ -329,71 +310,3 @@ This route checks the essential things:
 4. input validity (for form actions).
 
 Only then does it mutate state.
-
----
-
-## 8. State validation rule
-
-Every state-dependent row action should ask:
-
-> What must be true about the current record for this transition to be valid?
-
-Examples:
-
-- Mark Contacted → current status must be `new`;
-- Approve → current status must be `draft`;
-- Cancel → current status must be one of the cancellable states;
-- Reactivate → current status must be `inactive`.
-
-Mirror this state in the frontend expression for good UX, but enforce it again on
-the backend.
-
----
-
-## 9. Worked example: lead tracker actions
-
-```javascript
-actions: [
-  {
-    permission: "leads.edit",
-    actionExpression: "data.status == 'new' ? '/contacted' : null",
-    labelExpression: "data.status == 'new' ? 'Mark Contacted' : null",
-    confirm: true
-  },
-  {
-    permission: "leads.edit",
-    labelExpression: "'Log Call'",
-    form: {
-      title: "Log a Call",
-      endpoint: "/leads/{id}/calls",
-      successMessage: "Call logged",
-      fields: [
-        {
-          name: "outcome",
-          type: "select",
-          label: "Outcome",
-          options: { answered: "Answered", voicemail: "Voicemail", no_answer: "No Answer" },
-          required: true
-        },
-        { name: "notes", type: "textarea", label: "Notes" }
-      ]
-    }
-  }
-]
-```
-
-- The first action is a backend path action with a matching state check.
-- The second opens a reusable form dialog and POSTs the outcome to
-  `/api/leads/{id}/calls`.
-- Both declare the same `leads.edit` permission that the backend enforces.
-
----
-
-## Operating principles
-
-1. Prefer path actions for single backend transitions.
-2. Use handler actions only for genuinely client-side, multi-step behavior.
-3. Use form actions when user input is required before the backend call.
-4. Never treat frontend visibility as authorization — re-check on the backend.
-5. Keep action permissions identical to the backend route's permission check.
-6. Re-validate record state on the backend for every state-dependent action.

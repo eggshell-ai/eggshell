@@ -85,5 +85,6 @@ mod tests {
         let prompt = MaxPlannerApp.system_prompt();
         assert!(!prompt.contains("=== AVAILABLE SKILLS ==="));
         assert!(!prompt.contains("load_skill tool with the skill name"));
+        assert!(!prompt.contains("load them with the load_skill tool"));
     }
 }

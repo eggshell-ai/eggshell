@@ -1,3 +1,15 @@
+---
+name: qa_testing
+description: Teaches the agent how to test generated web applications using integrated browser tools, navigate routes, verify forms and CRUD features, and detect issues.
+category: quality_assurance
+tags:
+  - qa
+  - testing
+  - browser
+  - verification
+  - visual
+---
+
 # QA & Visual Verification Skill
 
 This skill teaches the agent how to run visual and functional QA testing on a generated Eggshell web application using the integrated browser tools (`browser_open`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_get_page_content`, `browser_get_console_errors`), `read_file`, and `read_schema`.

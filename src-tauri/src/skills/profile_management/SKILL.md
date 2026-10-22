@@ -1,3 +1,16 @@
+---
+name: profile_management
+description: Teaches the agent how to read user profile information and add additional fields to the profile resource using sync_schema.
+category: profile
+tags:
+  - profile
+  - user
+  - avatar
+  - sync_schema
+  - backend
+  - frontend
+---
+
 # User Profile Management Skill
 
 This skill explains how to read and manage the current user profile, and how to add additional fields to the `profile` resource using `sync_schema`.

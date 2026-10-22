@@ -107,8 +107,17 @@ description into real code:
 - Actions (including handler/form fields) are serialized back into the generated
   TS, so **declare actions through `sync_schema`** rather than hand-editing
   generated files (manual edits are overwritten on the next sync).
-- It runs migrations after generation.
+- In addition to full `resources` definitions, `sync_schema` accepts an
+  `operations` array for incremental edits to existing resources: `addField`,
+  `updateField` (with optional `rename`), `removeField`, `moveField`,
+  `updateResource`, and `removeResource`. Operations are applied in order to the
+  schema read from disk, only affected resources are regenerated, and a `null`
+  value in `changes` removes a property. See `apply_operation()`.
+- It runs migrations after generation (only when at least one resource was
+  created, replaced, or edited).
 - `read_schema` reads the written schema JSON (`schema_file_path`).
+- Persistence helpers: `read_schema_resources()` / `write_schema_resources()`;
+  `save_schemas()` is retained as a merge convenience.
 
 Relevant helpers: `pascal()`, `singular()`, `php_type()`, `save_schemas()`.
 

@@ -1,3 +1,15 @@
+---
+name: notification_creation
+description: Teaches the agent how to send in-app notifications to users, roles, or broadcast to all users via NotificationService in Symfony.
+category: notifications
+tags:
+  - notification
+  - backend
+  - symfony
+  - service
+  - alert
+---
+
 # Notification Creation Skill
 
 This skill explains how to send in-app notifications to users, roles, or broadcast across the application stack using `NotificationService` in Symfony.
