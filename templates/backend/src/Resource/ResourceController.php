@@ -19,6 +19,7 @@ use Symfony\Component\Validator\Validator\ValidatorInterface;
 use Symfony\Component\Validator\ConstraintViolationListInterface;
 use ReflectionClass;
 use App\Resource\Attribute\Relation;
+use App\Resource\Attribute\Computed;
 use App\Resource\Hook\ValidatesResource;
 use App\Resource\Hook\BeforeSavesResource;
 use App\Resource\Hook\AfterSavesResource;
@@ -397,6 +398,11 @@ abstract class ResourceController extends AbstractController
         $this->saveChildRelations($record, $data);
         $this->entityManager->flush();
 
+        // Calculate and update stored computed columns
+        $this->updateComputedFields($record);
+
+
+
         // Run after-save lifecycle hooks now that the record is persisted
         $this->runAfterSaveHooks($record, $data, 'store');
 
@@ -455,6 +461,10 @@ abstract class ResourceController extends AbstractController
 
         $this->saveChildRelations($record, $data);
         $this->entityManager->flush();
+
+        // Calculate and update stored computed columns
+        $this->updateComputedFields($record);
+
 
         // Run after-save lifecycle hooks now that the record is persisted
         $this->runAfterSaveHooks($record, $data, 'update');
@@ -837,6 +847,152 @@ abstract class ResourceController extends AbstractController
         return $name;
     }
 
+
+    /**
+     * Compute and update all fields marked with #[Computed] on this entity and its children.
+     * Child line relations are computed first so rollups on the parent have current child values.
+     */
+    protected function updateComputedFields(object $entity): void
+    {
+        $relations = $this->getChildRelations(get_class($entity));
+        $parentId = $entity->id ?? null;
+        $childChanged = false;
+
+        if ($parentId !== null && !empty($relations)) {
+            foreach ($relations as $propName => $config) {
+                $foreignKeyField = $config['field'];
+                $targetEntityClass = $config['targetEntity'];
+                $childRepo = $this->entityManager->getRepository($targetEntityClass);
+                $children = $childRepo->findBy([$foreignKeyField => $parentId]);
+
+                foreach ($children as $child) {
+                    if ($this->computeSingleEntityFields($child)) {
+                        $childChanged = true;
+                    }
+                }
+            }
+        }
+
+        if ($childChanged) {
+            $this->entityManager->flush();
+        }
+
+        $parentChanged = $this->computeSingleEntityFields($entity);
+        if ($parentChanged) {
+            $this->entityManager->flush();
+        }
+    }
+
+    /**
+     * Inspect an entity's properties for #[Computed] attributes and evaluate their values.
+     * Returns true if any computed field value changed.
+     */
+    protected function computeSingleEntityFields(object $entity): bool
+    {
+        if (!isset($entity->id) || $entity->id === null) {
+            return false;
+        }
+
+        $reflection = new ReflectionClass(get_class($entity));
+        $changed = false;
+
+        foreach ($reflection->getProperties() as $property) {
+            $attributes = $property->getAttributes(Computed::class);
+            if (empty($attributes)) {
+                continue;
+            }
+
+            /** @var Computed $computed */
+            $computed = $attributes[0]->newInstance();
+            $propName = $property->getName();
+            $sqlExpr = $computed->sqlExpression;
+
+            if ($sqlExpr === null || trim($sqlExpr) === '') {
+                continue;
+            }
+
+            $normalizedDql = $this->normalizeComputedDql($sqlExpr);
+            $entityClass = get_class($entity);
+
+            try {
+                $dql = "SELECT {$normalizedDql} FROM {$entityClass} e WHERE e.id = :id";
+                $rawResult = $this->entityManager
+                    ->createQuery($dql)
+                    ->setParameter('id', $entity->id)
+                    ->getSingleScalarResult();
+
+                $coerced = $this->coerceComputedValue($property, $rawResult);
+                if ($property->getValue($entity) !== $coerced) {
+                    $property->setValue($entity, $coerced);
+                    $changed = true;
+                }
+            } catch (\Throwable $e) {
+                // If computation fails during save, do not crash the request; log or allow fallback
+            }
+        }
+
+        return $changed;
+    }
+
+    /**
+     * Coerce computed query result according to the property's declared type.
+     */
+    private function coerceComputedValue(\ReflectionProperty $property, mixed $raw): mixed
+    {
+        if ($raw === null) {
+            return null;
+        }
+
+        $type = $property->getType();
+        $typeName = $type instanceof \ReflectionNamedType ? $type->getName() : null;
+
+        if ($typeName === 'int') {
+            return (int) $raw;
+        }
+        if ($typeName === 'float') {
+            return (float) $raw;
+        }
+        if ($typeName === 'bool') {
+            return (bool) $raw;
+        }
+        if ($typeName === 'string') {
+            // Check if column is decimal with scale
+            $colAttrs = $property->getAttributes(\Doctrine\ORM\Mapping\Column::class);
+            if (!empty($colAttrs)) {
+                /** @var \Doctrine\ORM\Mapping\Column $col */
+                $col = $colAttrs[0]->newInstance();
+                if ($col->scale !== null) {
+                    return number_format((float) $raw, $col->scale, '.', '');
+                }
+            }
+            return (string) $raw;
+        }
+
+        return $raw;
+    }
+
+    /**
+     * Normalize SQL/DQL expressions for subselects in SELECT clause.
+     */
+    private function normalizeComputedDql(string $expr): string
+    {
+        $trimmed = trim($expr);
+
+        // COALESCE((SELECT inner FROM rest), fallback) -> (SELECT COALESCE(inner, fallback) FROM rest)
+        if (preg_match('/^COALESCE\s*\(\s*\(\s*SELECT\s+(.+?)\s+FROM\s+(.+?)\)\s*,\s*([^)]+?)\)$/is', $trimmed, $m)) {
+            $inner = trim($m[1]);
+            $fromRest = trim($m[2]);
+            $fallback = trim($m[3]);
+            return "(SELECT COALESCE({$inner}, {$fallback}) FROM {$fromRest})";
+        }
+
+        // Wrap bare subquery if needed
+        if (stripos($trimmed, 'SELECT ') === 0) {
+            return "({$trimmed})";
+        }
+
+        return $trimmed;
+    }
 
     protected function validationErrorResponse(ConstraintViolationListInterface $violations): JsonResponse
     {

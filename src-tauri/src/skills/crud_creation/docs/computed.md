@@ -1,6 +1,8 @@
-# Computed (Virtual) Fields
+# Computed Fields (Stored & Automatically Evaluated)
 
-Use `computed: true` with `computeExpression` when a value is derived from other fields (such as `unitPrice * quantityInStock`) and should not be physically stored in the database.
+Use `computed: true` with `computeExpression` and `sqlExpression` when a value is derived from other fields (such as `unitPrice * quantityInStock` or a child line rollup).
+
+Computed fields are **physically stored in the database** as ORM columns and are automatically evaluated and saved by `ResourceController` after every `store` and `update` action. Because they are stored columns, you can freely query, filter, sort, and aggregate them in Doctrine ORM / DQL (for example, `SELECT COALESCE(SUM(s.totalAmount), 0)` in analytics aggregators).
 
 Example:
 
@@ -20,10 +22,11 @@ Example:
 ```
 
 Behavior:
-- `computed: true` ensures no ORM database column is generated;
-- `computeExpression` calculates the value dynamically in tables and detail views;
-- `sqlExpression` (optional) allows server-side sorting or filtering if needed.
-- In the form, computed values are `readonly` and user won't be able to enter them manually
+- `computed: true` generates a typed database column with `#[ORM\Column(..., nullable: true)]` and a `#[Computed(sqlExpression: '...')]` attribute on the PHP entity.
+- The backend `ResourceController` automatically executes the `sqlExpression` after flushing the entity (child line items are computed first, followed by the parent record) and persists the computed value.
+- `computeExpression` calculates the value client-side in forms, tables, and detail views for instantaneous UX feedback.
+- In the form, computed fields are read-only so users cannot manually overwrite them.
+- In analytics aggregators, you can directly reference computed columns (e.g. `SUM(s.totalAmount)`) without complex correlated subqueries or ad-hoc recalculations.
 
 It is also possible to perform computation over child tables.
 

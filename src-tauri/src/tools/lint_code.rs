@@ -426,6 +426,70 @@ fn lint_php_shell(backend_dir: &Path, relative_filter: Option<&str>) -> LlmResul
         }
     }
 
+    // Run Analytics / Reporting verification command if TestReportsCommand exists
+    let test_reports_cmd = backend_dir
+        .join("src")
+        .join("Command")
+        .join("TestReportsCommand.php");
+    if console_bin.is_file() && vendor_dir.is_dir() && test_reports_cmd.is_file() {
+        let mut cmd = crate::llm::symfony::new_php_command();
+        cmd.args(["bin/console", "app:analytics:test", "--json", "--no-interaction"])
+            .current_dir(backend_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        if let Ok(output) = cmd.output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(parsed) = serde_json::from_str::<Value>(stdout.trim()) {
+                if let Some(reports) = parsed.get("reports").and_then(Value::as_array) {
+                    for report in reports {
+                        let status = report.get("status").and_then(Value::as_str).unwrap_or("");
+                        if status == "failed" {
+                            let file = report
+                                .get("file")
+                                .and_then(Value::as_str)
+                                .unwrap_or("src/Service/Analytics");
+                            let line = report.get("line").and_then(Value::as_u64).unwrap_or(1);
+                            let err_msg = report
+                                .get("error")
+                                .and_then(Value::as_str)
+                                .unwrap_or("Analytics aggregator failed during test execution");
+
+                            issues.push(json!({
+                                "shell": "backend",
+                                "file": file,
+                                "line": line,
+                                "column": null,
+                                "message": err_msg,
+                                "severity": "error",
+                                "source": "app:analytics:test"
+                            }));
+                        }
+                    }
+                }
+            } else if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let combined = format!("{}\n{}", stdout, stderr);
+                issues.push(json!({
+                    "shell": "backend",
+                    "file": "src/Command/TestReportsCommand.php",
+                    "line": 1,
+                    "column": null,
+                    "message": format!("Analytics test command failed: {}", combined.trim()),
+                    "severity": "error",
+                    "source": "app:analytics:test"
+                }));
+            }
+        }
+    }
+
     Ok(issues)
 }
 

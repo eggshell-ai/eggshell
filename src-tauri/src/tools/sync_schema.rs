@@ -982,6 +982,10 @@ fn field_js(f: &Field) -> String {
 }
 
 fn backend_code(r: &Resource, class: &str) -> String {
+    let has_computed_fields = r
+        .fields
+        .iter()
+        .any(|f| f.computed.unwrap_or(false) || f.sql_expression.is_some());
     let mut import_lines = vec![
         "use Doctrine\\ORM\\Mapping as ORM;".to_string(),
         "use Doctrine\\DBAL\\Types\\Types;".to_string(),
@@ -1005,6 +1009,10 @@ fn backend_code(r: &Resource, class: &str) -> String {
         import_lines.push("use App\\Resource\\MapField;".to_string());
     }
 
+    if has_computed_fields {
+        import_lines.push("use App\\Resource\\Attribute\\Computed;".to_string());
+    }
+
     let mut imported_entities = std::collections::BTreeSet::new();
     for f in &r.fields {
         if f.field_type == "table" {
@@ -1025,9 +1033,47 @@ fn backend_code(r: &Resource, class: &str) -> String {
         .iter()
         .map(|f| {
             if f.computed.unwrap_or(false) {
+                let mut computed_args = Vec::new();
+                if let Some(ref expr) = f.sql_expression {
+                    let escaped = expr.replace('\\', "\\\\").replace('\'', "\\'");
+                    computed_args.push(format!("sqlExpression: '{}'", escaped));
+                }
+                if let Some(ref expr) = f.compute_expression {
+                    let escaped = expr.replace('\\', "\\\\").replace('\'', "\\'");
+                    computed_args.push(format!("computeExpression: '{}'", escaped));
+                }
+                let computed_annotation = if computed_args.is_empty() {
+                    "    #[Computed]\n".to_string()
+                } else {
+                    format!("    #[Computed({})]\n", computed_args.join(", "))
+                };
+
+                let is_decimal = f.field_type == "decimal";
+                let column_opts = {
+                    let mut options = Vec::new();
+                    if is_decimal {
+                        options.push("type: Types::DECIMAL".to_string());
+                        let precision = f.precision.unwrap_or(10);
+                        let scale = f.scale.unwrap_or(2);
+                        options.push(format!("precision: {}", precision));
+                        options.push(format!("scale: {}", scale));
+                    }
+                    options.push("nullable: true".to_string());
+                    format!("({})", options.join(", "))
+                };
+
                 return format!(
-                    "    #[Form(type: '{}')]\n    public mixed ${} = null;",
-                    f.field_type, f.name
+                    "{}{}    #[Form(type: '{}')]\n    #[ORM\\Column{}]\n    public ?{} ${} = null;",
+                    computed_annotation,
+                    if f.phone.unwrap_or(false) || f.field_type == "phone" {
+                        "    #[PhoneAttribute]\n"
+                    } else {
+                        ""
+                    },
+                    f.field_type,
+                    column_opts,
+                    php_type(&f.field_type),
+                    f.name
                 );
             }
             if f.field_type == "table" {
@@ -1532,5 +1578,29 @@ mod tests {
         assert_eq!(singular("statuses"), "status");
         assert_eq!(singular("status"), "status");
         assert_eq!(singular("address"), "address");
+    }
+
+    #[test]
+    fn generates_stored_computed_column_with_attribute() {
+        let resource: Resource = serde_json::from_value(json!({
+            "name": "sales",
+            "endpoint": "/sales",
+            "fields": [
+                {
+                    "name": "totalAmount",
+                    "type": "decimal",
+                    "scale": 2,
+                    "computed": true,
+                    "sqlExpression": "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SaleItem i WHERE i.saleId = e.id)"
+                }
+            ]
+        }))
+        .unwrap();
+
+        let code = backend_code(&resource, "Sale");
+        assert!(code.contains("use App\\Resource\\Attribute\\Computed;"));
+        assert!(code.contains("#[Computed(sqlExpression: '(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\\\Entity\\\\SaleItem i WHERE i.saleId = e.id)')]"));
+        assert!(code.contains("#[ORM\\Column(type: Types::DECIMAL, precision: 10, scale: 2, nullable: true)]"));
+        assert!(code.contains("public ?string $totalAmount = null;"));
     }
 }

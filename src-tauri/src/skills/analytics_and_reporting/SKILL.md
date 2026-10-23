@@ -104,6 +104,21 @@ class CustomerCountAggregator implements AnalyticsAggregatorInterface
   - **Never use 3 or more segments with slashes**: e.g., `'products/lowStock/count'` ❌ will cause a **404 Not Found** because the backend analytics routing matches `/analytics/{resource}/{metric}`.
   - For specific or compound metrics, use camelCase for the second segment instead (e.g., `'products/lowStock'` or `'products/lowStockCount'` ✅).
 - `getValue()`: Calculates and returns the aggregate metric value (e.g., total count, sum, average, or array of objects).
+- **Computed columns are stored in the database**: You can query computed fields directly in DQL (e.g. `COALESCE(SUM(s.totalAmount), 0)` or `WHERE s.totalAmount > 100`). They are automatically updated and persisted by `ResourceController` during store/update.
+- **Automated Report Testing (`#[ReportTest]`)**:
+  - All analytics reports are automatically executed and verified during linting (`lint_code` tool) via `php bin/console app:analytics:test`.
+  - Use the `#[ReportTest]` attribute on your aggregator class to supply default query parameters for testing or skip testing if external dependencies prevent it:
+    ```php
+    use App\Service\Analytics\ReportTest;
+
+    // Provide default query parameters for test execution:
+    #[ReportTest(params: ['filters' => ['status' => 'confirmed']])]
+    class SalesByStatusAggregator implements AnalyticsAggregatorInterface { ... }
+
+    // Or completely skip automated test execution if needed:
+    #[ReportTest(skip: true)]
+    class ExternalSyncedReportAggregator implements AnalyticsAggregatorInterface { ... }
+    ```
 
 ---
 
@@ -483,11 +498,10 @@ class OrderReportAggregator implements AnalyticsAggregatorInterface
                  c.name AS customerName,
                  o.orderDate AS orderDate,
                  o.status AS status,
-                 COALESCE(SUM(i.quantity * i.unitPrice), 0) AS totalAmount'
+                 o.totalAmount AS totalAmount'
             )
             ->from(Order::class, 'o')
-            ->innerJoin(Customer::class, 'c', Join::WITH, 'o.customerId = c.id')
-            ->leftJoin('o.items', 'i');
+            ->innerJoin(Customer::class, 'c', Join::WITH, 'o.customerId = c.id');
 
         // Handle date range filter: filters[dateRange][0] and filters[dateRange][1]
         if (!empty($filters['dateRange'][0])) {
@@ -668,7 +682,7 @@ patch_file({
          ->where('o.orderDate >= :startDate')
          ->andWhere('o.status != :cancelled');
      ```
-9. **Never use correlated subqueries inside `select()`**:
-   - DQL does not reliably support scalar subqueries in `select()` (e.g. `COALESCE((SELECT SUM(...) FROM App\Entity\OrderItem ...), 0)` ❌).
-   - Instead, always join the related entity (e.g. `->leftJoin('o.items', 'i')` or `->leftJoin(OrderItem::class, 'i', Join::WITH, 'i.orderId = o.id')`), use `COALESCE(SUM(...), 0)`, and group by the primary identifier (`->groupBy('o.id')` ✅).
+9. **Computed Columns in Aggregators & Reports**:
+   - Because computed columns are stored physically in the database and automatically updated on save, you can directly aggregate or select them (e.g. `SUM(o.totalAmount)` or `o.totalAmount AS totalAmount`) without querying child tables or writing correlated subqueries.
+   - If you ever need to perform manual joins between parent and child tables (such as grouping by individual items), always use explicit `Join::WITH` syntax (`innerJoin(OrderItem::class, 'i', Join::WITH, 'i.orderId = o.id')`). Do not use unmapped property paths like `'o.items'`.
 
