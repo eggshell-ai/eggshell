@@ -86,7 +86,7 @@ class TestReportsCommand extends Command
                 } catch (\Throwable $e) {
                     $issues[] = [
                         'file' => $entityFilePath,
-                        'line' => $property->getStartLine() ?? $reflection->getStartLine() ?? 1,
+                        'line' => $this->getPropertyLine($reflection, $property->getName()),
                         'column' => null,
                         'message' => sprintf(
                             'Computed column "%s::$%s" has invalid sqlExpression DQL: %s',
@@ -207,6 +207,23 @@ class TestReportsCommand extends Command
         }
 
         return count($issues) === 0 ? Command::SUCCESS : Command::FAILURE;
+    }
+
+    private function getPropertyLine(ReflectionClass $reflection, string $propertyName): int
+    {
+        $fileName = $reflection->getFileName();
+        if ($fileName && file_exists($fileName)) {
+            $lines = file($fileName);
+            if ($lines !== false) {
+                $pattern = '/\$(?:' . preg_quote($propertyName, '/') . ')\b/';
+                foreach ($lines as $i => $line) {
+                    if (preg_match($pattern, $line)) {
+                        return $i + 1;
+                    }
+                }
+            }
+        }
+        return $reflection->getStartLine() ?: 1;
     }
 
     private function getRelativePath(?string $fullPath, string $projectDir): string
