@@ -23,6 +23,7 @@ type SetupState = {
   mysql?: MysqlSummary;
   telemetry_enabled?: boolean;
   installation_id?: string;
+  auto_update_enabled?: boolean;
 };
 
 type SettingsPopupProps = { isOpen: boolean; onClose: () => void };
@@ -63,6 +64,7 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
 
   // About state
   const [appVersion, setAppVersion] = useState<string>("");
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState<boolean>(true);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -74,7 +76,7 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
     setPrivacySuccess("");
     setLoading(true);
     void invoke<SetupState>("load_setup_state")
-      .then(({ providers: loaded, available_types: types, mysql, telemetry_enabled, installation_id }) => {
+      .then(({ providers: loaded, available_types: types, mysql, telemetry_enabled, installation_id, auto_update_enabled }) => {
         setProviders(loaded);
         if (types && types.length > 0) {
           setAvailableTypes(types);
@@ -97,11 +99,24 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
         if (installation_id) {
           setInstallationId(installation_id);
         }
+        if (auto_update_enabled !== undefined) {
+          setAutoUpdateEnabled(Boolean(auto_update_enabled));
+        }
       })
       .catch((reason: unknown) => console.error("[SettingsPopup] load_setup_state rejected", { reason }))
       .finally(() => setLoading(false));
     void getVersion().then(setAppVersion).catch(() => setAppVersion("unknown"));
   }, [isOpen]);
+
+  async function handleToggleAutoUpdate(enabled: boolean) {
+    setAutoUpdateEnabled(enabled);
+    try {
+      await invoke("save_auto_update_setting", { enabled });
+    } catch (reason) {
+      console.error("[SettingsPopup] save_auto_update_setting rejected", { reason });
+      setAutoUpdateEnabled(!enabled);
+    }
+  }
 
   async function saveMysqlSettings() {
     setMysqlError("");
@@ -347,7 +362,22 @@ export default function SettingsPopup({ isOpen, onClose }: SettingsPopupProps) {
                   />
                 </label>
 
-                <div style={{ marginTop: "8px" }}>
+                <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontWeight: 600 }}>
+                    <input
+                      type="checkbox"
+                      checked={autoUpdateEnabled}
+                      onChange={(e) => void handleToggleAutoUpdate(e.target.checked)}
+                      style={{ width: "auto", margin: 0 }}
+                    />
+                    <span>Automatically check for updates</span>
+                  </label>
+                  <p style={{ margin: 0, fontSize: "0.85rem", color: "#6e6b7b", paddingLeft: "24px" }}>
+                    When enabled, Eggshell checks for updates on startup and notifies you when a new release is available.
+                  </p>
+                </div>
+
+                <div style={{ marginTop: "16px" }}>
                   <strong style={{ display: "block", marginBottom: "4px" }}>Links</strong>
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                     <button

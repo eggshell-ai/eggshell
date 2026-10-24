@@ -8,43 +8,29 @@ use std::sync::Arc;
 
 use crate::progress::ProgressLog;
 
-use crate::tools::{
-    LintCodeTool, LoadSkillTool, MoveFileTool, PatchFileTool, ReadFileTool, ReadSchemaTool,
-    SyncSchemaTool, WriteFileTool,
-};
-
 #[path = "symfony.rs"]
 pub(crate) mod symfony;
 
 #[path = "react.rs"]
 mod react;
 
+pub use crate::apps::{AdminPanel, AdminPanelApp, MaxPlannerApp, PlanningApp, QaApp};
+
+/// The shells every to-be-built admin-panel project needs: the Symfony backend
+/// and the React frontend.
+pub(crate) fn project_shells() -> Vec<Box<dyn Shell>> {
+    vec![
+        Box::new(symfony::SymfonyShell::new()),
+        Box::new(react::ReactShell::new()),
+    ]
+}
+
 #[path = "agent.rs"]
 mod agent;
 pub use agent::{AgentArtifact, AgentRunResult, AgentService};
 
-#[path = "skill_markdown.rs"]
-mod skill_markdown;
-
-#[path = "crud_creation.rs"]
-mod crud_creation;
-pub use crud_creation::CrudCreationSkill;
-
-#[path = "analytics_and_reporting.rs"]
-mod analytics_and_reporting;
-pub use analytics_and_reporting::AnalyticsAndReportingSkill;
-
-#[path = "customization_branding.rs"]
-mod customization_branding;
-pub use customization_branding::CustomizationBrandingSkill;
-
-#[path = "notification_creation.rs"]
-mod notification_creation;
-pub use notification_creation::NotificationCreationSkill;
-
-#[path = "profile_management.rs"]
-mod profile_management;
-pub use profile_management::ProfileManagementSkill;
+#[path = "skill_loader.rs"]
+mod skill_loader;
 
 #[path = "mock_llm.rs"]
 mod mock_llm;
@@ -77,6 +63,10 @@ pub struct AgentOptions {
     pub log_conversation: bool,
     pub log_dir: Option<String>,
     pub cancellation_token: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Skills advertised in the prompt for this run. `None` uses the agent's
+    /// default catalogue; `Some(Vec::new())` appends no skills section at all,
+    /// which is how mode-specific agents opt out (e.g. the Max planner).
+    pub skills: Option<Vec<Box<dyn Skill>>>,
 }
 
 impl Default for AgentOptions {
@@ -90,133 +80,10 @@ impl Default for AgentOptions {
             log_conversation: true,
             log_dir: None,
             cancellation_token: None,
+            skills: None,
         }
     }
 }
-
-/// The application definition used for new projects.
-pub struct AdminPanelApp;
-
-/// Compatibility name for callers that used the original application name.
-pub type AdminPanel = AdminPanelApp;
-
-impl App for AdminPanelApp {
-    fn shells(&self) -> Vec<Box<dyn Shell>> {
-        vec![
-            Box::new(symfony::SymfonyShell::new()),
-            Box::new(react::ReactShell::new()),
-        ]
-    }
-
-    fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![
-            Box::new(LoadSkillTool::new(default_skills())),
-            Box::new(ReadFileTool::new()),
-            Box::new(WriteFileTool::new()),
-            Box::new(PatchFileTool::new()),
-            Box::new(MoveFileTool::new()),
-            Box::new(SyncSchemaTool::new()),
-            Box::new(ReadSchemaTool::new()),
-            Box::new(LintCodeTool::new()),
-        ]
-    }
-
-    fn skills(&self) -> Vec<Box<dyn Skill>> {
-        Vec::new()
-    }
-
-    fn system_prompt(&self) -> String {
-        "You are a development agent with access to a variety of tools to build powerful admin-panel applications.
-You can only build standard admin-panel web applications consisting of dashboards, reports, forms and a sidebar.
-If the user asks for something else, politely explain the limitations and suggest building an admin panel app, or checking
-back later to see if an update adds it.
-
-If a user requests something that's not possible from the tools provided to you, explain the situation and tell them that they can
-create an issue report or feature request. Ask them to click the Purple icon in the bottom right, select either \"Report a Bug\" or
-\"Request a Feature\" and share their feedback with the developer.
-
-Do not attempt to read and analyze the underlying framework, instead, rely on the skills to tell you what is available and
-provide instructions.
-
-You have access to the `lint_code` tool to lint and detect syntax or lint errors in the frontend (JS/JSX/TS/TSX and `menu-items/menu.json`) and backend (PHP) code.
-Always run `lint_code` after making changes to verify everything is valid and there are no syntax, lint, or schema errors.
-
-### Frontend Routing and Page Architecture
-All file-modifying and inspection tools (`write_file`, `patch_file`, `read_file`) operate within the shell's `src/` directory.
-
-1. **Page Creation & File Paths**:
-   - The frontend uses Next.js App Router.
-   - All dashboard pages are located under `app/(dashboard)/<route>/page.tsx` relative to `frontend/src/`.
-   - Examples:
-     - Route `/customers` -> file path `app/(dashboard)/customers/page.tsx`
-     - Route `/inventory/products` -> file path `app/(dashboard)/inventory/products/page.tsx`
-     - Route `/reports/orders` -> file path `app/(dashboard)/reports/orders/page.tsx`
-   - Every page component must begin with `'use client';`.
-   - Standard CRUD pages render the declarative `<ResourcePage resource={...} />` component.
-   - Custom reporting/analytics pages render `<DataTable ... />` or custom React views.
-   - Always create new page files using `write_file` with `shell: \"frontend\"`.
-
-2. **Sidebar Navigation Menu**:
-   - Navigation items are defined in `menu-items/menu.json` relative to `frontend/src/`.
-   - Each item in the array has the structure:
-     ```json
-     {
-       \"name\": \"<Group>.<ItemTitle>\",
-       \"route\": \"/<route>\",
-       \"icon\": \"<AntDesignIconName>\",
-       \"permission\": \"<optional_permission_key>\"
-     }
-     ```
-   - The `name` must be dot-delimited: the part before the dot defines the sidebar group header (e.g. `CRM`, `Inventory`, `Reports`), and the part after defines the item label (e.g. `Leads`, `Products`, `OrderReport`).
-   - The `route` must match the page's route URL exactly.
-   - The `icon` should be a standard Ant Design icon (e.g. `DashboardOutlined`, `UserOutlined`, `TeamOutlined`, `ShoppingOutlined`, `ShoppingCartOutlined`, `BarChartOutlined`, `AppstoreOutlined`, `SettingOutlined`, `TableOutlined`, `TagsOutlined`).
-   - Use `patch_file` (or `write_file`) with `shell: \"frontend\"` on `menu-items/menu.json` to insert or update navigation entries.
-".to_string()
-    }
-}
-
-/// The planning agent definition used to design entities, reports, requirements,
-/// and implementation approach without performing file writes or mutations.
-pub struct PlanningApp;
-
-impl App for PlanningApp {
-    fn shells(&self) -> Vec<Box<dyn Shell>> {
-        vec![
-            Box::new(symfony::SymfonyShell::new()),
-            Box::new(react::ReactShell::new()),
-        ]
-    }
-
-    fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![
-            Box::new(LoadSkillTool::new(default_skills())),
-            Box::new(ReadFileTool::new()),
-            Box::new(ReadSchemaTool::new()),
-        ]
-    }
-
-    fn skills(&self) -> Vec<Box<dyn Skill>> {
-        Vec::new()
-    }
-
-    fn system_prompt(&self) -> String {
-        "You are an expert software architect and planning agent for admin-panel web applications.
-Your job is to analyze the user's requirements and produce a structured, thorough implementation plan in Markdown.
-
-In this mode, all file-modifying tools (write_file, move_file, patch_file, sync_schema) are DISABLED.
-You only have read access to inspect the project if needed. DO NOT attempt to write or execute code changes.
-
-Your plan MUST be formatted with clear Markdown headings and cover:
-1. **Overview & Requirements**: Summary of the requested app/feature and key user workflows.
-2. **Entities & Database Schema**: Detailed entities, their fields (types, constraints), and relationships (One-to-Many, Many-to-Many).
-3. **Reports & Dashboards**: Summary metrics, aggregations, charts, and report views needed.
-4. **Navigation & Menu Structure**: Sidebar menu items, routes, and page layout.
-5. **Implementation Steps & Approach**: Logical step-by-step breakdown of backend controllers, frontend pages, and schema migrations to execute once the user proceeds.
-
-Be concise yet comprehensive, structured, and ready for execution.".to_string()
-    }
-}
-
 
 /// Creates the selected project directory and runs the initial agent setup.
 ///
@@ -326,11 +193,13 @@ pub trait LLMService: Send + Sync {
     }
 }
 
-/// Defines the shells, tools, skills, and system prompt available to the LLM.
+/// Defines the shells, tools, and system prompt available to the LLM.
+///
+/// Skills are not part of a mode's definition: a run selects them through
+/// [`AgentOptions::skills`] so a mode can opt out of the catalogue entirely.
 pub trait App: Send + Sync {
     fn shells(&self) -> Vec<Box<dyn Shell>>;
     fn tools(&self) -> Vec<Box<dyn Tool>>;
-    fn skills(&self) -> Vec<Box<dyn Skill>>;
     fn system_prompt(&self) -> String;
 }
 
@@ -353,23 +222,36 @@ pub trait Shell: Send + Sync {
 }
 
 /// Metadata describing a skill available to the LLM.
+///
+/// A skill is a folder containing a `SKILL.md` file. Its metadata comes from
+/// the YAML frontmatter of that file, and any other bundled file in the folder
+/// can be read on demand through [`Skill::read`].
 pub trait Skill: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn content(&self) -> &str;
     fn category(&self) -> Option<&str>;
     fn tags(&self) -> &[String];
+
+    /// Reads a bundled file inside the skill directory, such as
+    /// `docs/row_actions.md`. Returns `None` for unknown or escaping paths.
+    fn read(&self, _path: &str) -> Option<&str> {
+        None
+    }
+
+    /// Every bundled file in the skill directory, relative to it (e.g.
+    /// `SKILL.md`, `docs/row_actions.md`), sorted.
+    fn files(&self) -> &[String] {
+        &[]
+    }
 }
 
 /// Returns the skills bundled with the application by default.
+///
+/// Skills are discovered from `src/skills/`: every direct subdirectory that
+/// contains a `SKILL.md` becomes a skill, sorted by name.
 pub fn default_skills() -> Vec<Box<dyn Skill>> {
-    vec![
-        Box::new(CrudCreationSkill::default()),
-        Box::new(AnalyticsAndReportingSkill::default()),
-        Box::new(CustomizationBrandingSkill::default()),
-        Box::new(NotificationCreationSkill::default()),
-        Box::new(ProfileManagementSkill::default()),
-    ]
+    skill_loader::load_all()
 }
 
 /// A tool available to the LLM, including its parameter schema and executor.

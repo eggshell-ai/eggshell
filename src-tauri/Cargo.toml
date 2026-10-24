@@ -1,6 +1,6 @@
 [package]
 name = "Eggshell"
-version = "1.0.6"
+version = "1.0.7"
 description = "Egg Shell - Platform-guided AI app builder"
 authors = ["Faheem Anis"]
 edition = "2021"
@@ -26,6 +26,7 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+include_dir = "0.7"
 semver = "1"
 thiserror = "2"
 async-trait = "0.1"
@@ -36,3 +37,6 @@ tokio-stream = "0.1"
 eventsource-stream = "0.2"
 sentry = "0.49.3"
 uuid = { version = "1", features = ["v4"] }
+tokio-tungstenite = "0.30.0"
+lazy_static = "1.5.1"
+futures-util = "0.3.34"

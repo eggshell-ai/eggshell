@@ -7,15 +7,24 @@ import "./App.css";
 import SetupPage from "./SetupPage";
 import SettingsPopup from "./SettingsPopup";
 import ProjectLogPanel, { ProgressLine } from "./ProjectLogPanel";
-import Chat, { ChatMessage, eventContent } from "./Chat";
+import Chat, { ChatMessage, ChatUser, eventContent } from "./Chat";
 import ReportMenu from "./ReportMenu";
+import UpdatePrompt from "./UpdatePrompt";
+import { MaxTask } from "./MaxTasksCard";
 
 type Project = { id: number; title: string; slug: string; path: string };
 type ProjectForm = { title: string; slug: string; path: string };
-type Session = { id: number; title: string; conversation_history: string };
+type Session = {
+  id: number;
+  title: string;
+  conversation_history: string;
+  token_usage?: number;
+  compacted_summary?: string | null;
+};
 type SetupState = {
   setup_completed: boolean;
   providers: { id?: string; key: string; name: string; models: string[]; api_key_set?: boolean }[];
+  auto_update_enabled?: boolean;
 };
 const emptyProject: ProjectForm = { title: "", slug: "", path: "" };
 
@@ -34,6 +43,7 @@ function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [users, setUsers] = useState<ChatUser[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [draft, setDraft] = useState("");
   const [pendingPrompt, setPendingPrompt] = useState("");
@@ -41,15 +51,22 @@ function App() {
   const [isSending, setIsSending] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [mode, setMode] = useState<"implement" | "plan">("implement");
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(true);
+  const [mode, setMode] = useState<"implement" | "plan" | "qa" | "iterate" | "max">("implement");
+  const [isWrappingUp, setIsWrappingUp] = useState(false);
+  const [iterateStatus, setIterateStatus] = useState<{ loop?: number; stage?: string; phase?: string } | null>(null);
+  const [maxTasks, setMaxTasks] = useState<MaxTask[]>([]);
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
 
   async function syncSetupState() {
     try {
-      const { setup_completed, providers } = await invoke<SetupState>("load_setup_state");
+      const { setup_completed, providers, auto_update_enabled } = await invoke<SetupState>("load_setup_state");
       setIsSetupComplete(setup_completed);
+      if (auto_update_enabled !== undefined) {
+        setAutoUpdateEnabled(Boolean(auto_update_enabled));
+      }
       const configured = providers.find((p) => p.models.length > 0 && (p.api_key_set ?? true))
         || providers.find((p) => p.models.length > 0)
         || providers.find((p) => p.api_key_set);
@@ -121,6 +138,92 @@ function App() {
         });
         return;
       }
+      if (type === "token_usage") {
+        const totalTokens = (data as { total_tokens?: number })?.total_tokens ?? 0;
+        if (totalTokens > 0) {
+          setActiveSession((current) => current ? { ...current, token_usage: totalTokens } : current);
+          setSessions((current) => current.map((s) => s.id === activeSession?.id ? { ...s, token_usage: totalTokens } : s));
+        }
+        return;
+      }
+      if (type === "iterate_loop_start") {
+        const loopData = data as { loop?: number; isWrapUp?: boolean };
+        setIterateStatus((prev) => ({ ...prev, loop: loopData.loop, stage: "planner" }));
+        if (loopData.isWrapUp) setIsWrappingUp(true);
+        return;
+      }
+      if (type === "iterate_stage_start") {
+        const stageData = data as { loop?: number; stage?: string };
+        setIterateStatus((prev) => ({ ...prev, loop: stageData.loop, stage: stageData.stage }));
+        return;
+      }
+      if (type === "iterate_status") {
+        const statusData = data as { phase?: string };
+        if (statusData.phase === "wrapping_up") {
+          setIsWrappingUp(true);
+        } else if (statusData.phase === "completed" || statusData.phase === "force_stopped") {
+          setIsWrappingUp(false);
+          setIterateStatus(null);
+        }
+        return;
+      }
+      if (type === "iterate_loop_complete") {
+        const loopPayload = data as { loop?: number; plan?: string; implementation?: string; qaReport?: string; tokenUsage?: number };
+        if (loopPayload.tokenUsage) {
+          setActiveSession((current) => current ? { ...current, token_usage: loopPayload.tokenUsage } : current);
+          setSessions((current) => current.map((s) => s.id === activeSession?.id ? { ...s, token_usage: loopPayload.tokenUsage } : s));
+        }
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_breakdown_complete") {
+        const breakdown = data as { tasks?: MaxTask[] };
+        if (breakdown.tasks) setMaxTasks(breakdown.tasks);
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_execution_start") {
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_task_start") {
+        const started = data as { taskId?: number };
+        if (started.taskId) {
+          setMaxTasks((current) => current.map((task) => task.id === started.taskId ? { ...task, status: "running" } : task));
+        }
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_task_complete") {
+        const done = data as { taskId?: number; summary?: string };
+        if (done.taskId) {
+          setMaxTasks((current) => current.map((task) => task.id === done.taskId ? { ...task, status: "completed", result_summary: done.summary ?? task.result_summary } : task));
+        }
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_task_failed") {
+        const failed = data as { taskId?: number; error?: string };
+        if (failed.taskId) {
+          setMaxTasks((current) => current.map((task) => task.id === failed.taskId ? { ...task, status: "failed", result_summary: failed.error ?? task.result_summary } : task));
+        }
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_execution_complete") {
+        const finished = data as { tasks?: MaxTask[] };
+        if (finished.tasks) setMaxTasks(finished.tasks);
+        setStreamedMessages([]);
+        return;
+      }
+      if (type === "max_status") {
+        const status = data as { phase?: string };
+        if (status.phase === "completed" || status.phase === "stopped" || status.phase === "halted") {
+          setMaxTasks((current) => current.map((task) => task.status === "running" ? { ...task, status: "pending" } : task));
+        }
+        setStreamedMessages([]);
+        return;
+      }
       setStreamedMessages((current) => [...current, {
         role: type as ChatMessage["role"],
         content: eventContent(type, data),
@@ -128,7 +231,7 @@ function App() {
       }]);
     }).then((stop) => { unlisten = stop; });
     return () => unlisten?.();
-  }, [activeProject?.id]);
+  }, [activeProject?.id, activeSession?.id]);
   // Registered at mount rather than when a create starts: `listen` resolves
   // asynchronously, and the first commands would have run before it was ready.
   // That is also why this needs no history command, unlike the setup log.
@@ -142,11 +245,22 @@ function App() {
     return () => { stopped = true; unlisten?.(); };
   }, []);
 
+  // Max mode task lists live in the database, so reload them whenever the
+  // active session changes (including switching into a session picked from the
+  // sidebar, or back into one after a restart).
+  useEffect(() => {
+    if (activeProject && activeSession) {
+      void loadMaxTasks(activeProject.id, activeSession.id);
+    } else {
+      setMaxTasks([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject?.id, activeSession?.id]);
+
   async function loadProjects() {
     try { setProjects(await invoke<Project[]>("list_projects")); }
     catch (reason) { setError(String(reason)); }
   }
-
   async function chooseFolder() {
     const selection = await open({ directory: true, multiple: false, title: "Choose project folder" });
     if (typeof selection === "string") {
@@ -185,6 +299,12 @@ function App() {
       }
     }
     catch (reason) { setError(String(reason)); }
+    void loadUsers(project.id);
+  }
+
+  async function loadUsers(projectId: number) {
+    try { setUsers(await invoke<ChatUser[]>("list_users", { projectId })); }
+    catch (reason) { console.error("[App] list_users failed", { reason }); }
   }
   async function removeSession(session: Session) {
     if (!activeProject || !window.confirm(`Delete “${session.title}”? This cannot be undone.`)) return;
@@ -222,7 +342,7 @@ function App() {
       });
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); setPendingPrompt(""); }
+    finally { setIsSending(false); setPendingPrompt(""); void loadUsers(activeProject.id); }
   }
 
   async function proceedToImplement() {
@@ -247,9 +367,52 @@ function App() {
   async function stopChat() {
     if (!activeProject) return;
     try {
-      await invoke("stop_chat", { projectId: activeProject.id });
+      if (mode === "iterate" && !isWrappingUp) {
+        setIsWrappingUp(true);
+        await invoke("wrap_up_chat", { projectId: activeProject.id });
+      } else {
+        await invoke("stop_chat", { projectId: activeProject.id });
+      }
     } catch (reason) {
       setError(String(reason));
+    }
+  }
+
+  async function loadMaxTasks(projectId: number, sessionId: number) {
+    try { setMaxTasks(await invoke<MaxTask[]>("list_max_tasks", { projectId, sessionId })); }
+    catch (reason) { console.error("[App] list_max_tasks failed", { reason }); }
+  }
+
+  async function runMaxTasks(retryFailed: boolean) {
+    if (!activeProject || !activeSession || isSending) return;
+    setError(""); setIsSending(true); setStreamedMessages([]); setMode("max");
+    setPendingPrompt(retryFailed ? "Retrying failed tasks…" : "Running Max tasks…");
+    try {
+      const session = await invoke<Session>("run_max_tasks", {
+        projectId: activeProject.id,
+        sessionId: activeSession.id,
+        retryFailed,
+      });
+      setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]);
+      await loadMaxTasks(activeProject.id, session.id);
+    } catch (reason) { setError(String(reason)); }
+    finally { setIsSending(false); setPendingPrompt(""); void loadUsers(activeProject.id); }
+  }
+
+  async function compactSession() {
+    if (!activeProject || !activeSession || isSending) return;
+    setError(""); setIsSending(true);
+    try {
+      const compacted = await invoke<Session>("compact_session", {
+        projectId: activeProject.id,
+        sessionId: activeSession.id,
+      });
+      setActiveSession(compacted);
+      setSessions((current) => current.map((s) => s.id === compacted.id ? compacted : s));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setIsSending(false);
     }
   }
 
@@ -285,8 +448,22 @@ function App() {
   // open, so the lines and the reason belong together.
   const showCreateLog = isSaving || createLog.length > 0;
   if (isSetupComplete === null) return null; // loading config
-  if (!isSetupComplete) return <SetupPage onComplete={() => { setIsSetupComplete(true); void syncSetupState(); }} />;
-  if (activeProject) return <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} messages={visibleMessages} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} />;
+  if (!isSetupComplete) {
+    return (
+      <>
+        <SetupPage onComplete={() => { setIsSetupComplete(true); void syncSetupState(); }} />
+        <UpdatePrompt autoCheck={autoUpdateEnabled} />
+      </>
+    );
+  }
+  if (activeProject) {
+    return (
+      <>
+        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} maxTasks={maxTasks} onRunMaxTasks={() => void runMaxTasks(false)} onRetryMaxTasks={() => void runMaxTasks(true)} />
+        <UpdatePrompt autoCheck={autoUpdateEnabled} />
+      </>
+    );
+  }
 
   return (
     <main className="home">
@@ -320,6 +497,7 @@ function App() {
       </section>
       <ReportMenu screenName="Home" />
       <SettingsPopup isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); void syncSetupState(); }} />
+      <UpdatePrompt autoCheck={autoUpdateEnabled} />
     </main>
   );
 }

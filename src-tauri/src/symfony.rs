@@ -493,3 +493,47 @@ fn run_php_blocking(
     }
     Ok(())
 }
+
+/// Runs `php bin/console <args>` in `cwd` and returns the captured stdout.
+///
+/// Unlike [`run_php_blocking`], this does not stream output into a progress log;
+/// it is meant for console commands whose JSON output the caller needs to read.
+pub(crate) async fn run_php_capture(args: &[String], cwd: &Path) -> LlmResult<String> {
+    let args = args.to_vec();
+    let cwd = cwd.to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || run_php_capture_blocking(&args, &cwd))
+        .await
+        .map_err(|error| io::Error::other(format!("command task failed: {error}")))?
+}
+
+fn run_php_capture_blocking(args: &[String], cwd: &Path) -> LlmResult<String> {
+    let display_command = format!("php {}", args.join(" "));
+    crate::logger::Logger::global().info(format!("SymfonyShell: $ {display_command}"), false);
+
+    let mut process = new_php_command();
+    process
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        process.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = process.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let details = if stderr.trim().is_empty() { stdout } else { stderr };
+        return Err(io::Error::other(format!(
+            "command failed with {}: {display_command}\n{details}",
+            output.status
+        ))
+        .into());
+    }
+    Ok(stdout)
+}

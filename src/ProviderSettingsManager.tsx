@@ -13,6 +13,8 @@ export type RegisteredProvider = {
   base_url?: string | null;
   api_key_set: boolean;
   models: string[];
+  context_limits?: Record<string, number>;
+  default_context_limit?: number;
 };
 
 type SetupState = {
@@ -80,6 +82,13 @@ export default function ProviderSettingsManager({
     return [];
   });
 
+  const [contextLimits, setContextLimits] = useState<Record<string, number>>(() => {
+    if (mode === "setup" && providers.length > 0) {
+      return { ...(providers[0].context_limits || {}) };
+    }
+    return {};
+  });
+
   const [draftModel, setDraftModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState("");
@@ -98,6 +107,7 @@ export default function ProviderSettingsManager({
     setTitle("");
     setBaseUrl("");
     setModels([]);
+    setContextLimits({});
     setDraftModel("");
     setApiKey("");
     setError("");
@@ -108,12 +118,33 @@ export default function ProviderSettingsManager({
     const value = draftModel.trim();
     if (!value) return;
     setModels((current) => (current.includes(value) ? current : [...current, value]));
+    setContextLimits((current) => ({
+      ...current,
+      [value]: current[value] ?? (currentType === "ollama" ? 32768 : 128000),
+    }));
     setDraftModel("");
     setError("");
   }
 
   function renameModel(index: number, value: string) {
+    const oldName = models[index];
     setModels((current) => current.map((model, position) => (position === index ? value : model)));
+    if (oldName && oldName !== value && contextLimits[oldName]) {
+      setContextLimits((current) => {
+        const next = { ...current };
+        const val = next[oldName];
+        delete next[oldName];
+        if (value.trim()) next[value.trim()] = val;
+        return next;
+      });
+    }
+  }
+
+  function updateContextLimit(modelName: string, limitVal: number) {
+    setContextLimits((current) => ({
+      ...current,
+      [modelName]: limitVal,
+    }));
   }
 
   function commitModel(index: number) {
@@ -125,7 +156,15 @@ export default function ProviderSettingsManager({
   }
 
   function removeModel(index: number) {
+    const target = models[index];
     setModels((current) => current.filter((_, position) => position !== index));
+    if (target) {
+      setContextLimits((current) => {
+        const next = { ...current };
+        delete next[target];
+        return next;
+      });
+    }
   }
 
   function editProvider(provider: RegisteredProvider) {
@@ -134,6 +173,7 @@ export default function ProviderSettingsManager({
     setTitle(provider.title || provider.name);
     setBaseUrl(provider.base_url || "");
     setModels([...provider.models]);
+    setContextLimits({ ...(provider.context_limits || {}) });
     setDraftModel("");
     setApiKey("");
     setError("");
@@ -253,6 +293,8 @@ export default function ProviderSettingsManager({
         baseUrl: baseUrl.trim() || null,
         models: modelList,
         apiKey,
+        contextLimits: Object.keys(contextLimits).length > 0 ? contextLimits : null,
+        defaultContextLimit: typeToUse === "ollama" ? 32768 : 128000,
       });
       const state = await invoke<SetupState>("load_setup_state");
       setProviders(state.providers);
@@ -418,6 +460,18 @@ export default function ProviderSettingsManager({
                     onChange={(event) => renameModel(index, event.target.value)}
                     onBlur={() => commitModel(index)}
                   />
+                  <div className="model-context-limit-wrapper" title="Model context window limit in tokens">
+                    <span className="model-context-limit-label">Limit:</span>
+                    <input
+                      type="number"
+                      className="model-context-limit-input"
+                      value={contextLimits[model] ?? (currentType === "ollama" ? 32768 : 128000)}
+                      step={1000}
+                      min={1000}
+                      aria-label={`${model} Context Limit`}
+                      onChange={(e) => updateContextLimit(model, Number(e.target.value) || 0)}
+                    />
+                  </div>
                   <button
                     className="model-remove"
                     type="button"

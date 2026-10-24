@@ -35,7 +35,7 @@ export default function FeedbackPopup({
   const [attachPromptHistory, setAttachPromptHistory] = useState(true);
   const [step, setStep] = useState<"form" | "review">("form");
   const [isSending, setIsSending] = useState(false);
-  const [appVersion, setAppVersion] = useState("1.0.6");
+  const [appVersion, setAppVersion] = useState("1.0.7");
   const [error, setError] = useState("");
 
   useEffect(() => {

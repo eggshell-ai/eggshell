@@ -5,11 +5,22 @@ import remarkGfm from "remark-gfm";
 import ReportMenu from "./ReportMenu";
 import SettingsPopup from "./SettingsPopup";
 import FeedbackPopup from "./FeedbackPopup";
+import IterationLoopCard, { IterationLoopData } from "./IterationLoopCard";
+import MaxTasksCard, { MaxPlanData, MaxTask } from "./MaxTasksCard";
 
 export type ChatMessage = {
   role: "user" | "assistant" | "thought" | "tool_call" | "tool_result";
   content: string;
   data?: unknown;
+};
+
+/** A sign-in account for the active project (mirrored from the Symfony backend). */
+export type ChatUser = {
+  id: number;
+  project_id: number;
+  email: string;
+  role: string;
+  password: string;
 };
 
 type ToolEvent = {
@@ -24,9 +35,29 @@ type ToolMessageFormatter = (event: ToolEvent) => string;
 // Tools without a formatter keep the generic, JSON-free fallback below.
 const toolCallFormatters: Record<string, ToolMessageFormatter> = {
   load_skill: ({ arguments: args }) => {
-    const skillName = (args as { skillName?: unknown } | undefined)?.skillName;
-    return `Loaded skill: ${typeof skillName === "string" ? skillName : "unknown"}`;
+    const loadArgs = args as { skillName?: unknown; path?: unknown } | undefined;
+    const skillName = typeof loadArgs?.skillName === "string" ? loadArgs.skillName : "unknown";
+    const path = typeof loadArgs?.path === "string" ? loadArgs.path : undefined;
+    return path ? `Loaded skill: ${skillName} (${path})` : `Loaded skill: ${skillName}`;
   },
+  browser_open: ({ arguments: args }) => {
+    const url = (args as { url?: string } | undefined)?.url || "http://localhost:4000";
+    return `Opening browser at ${url}`;
+  },
+  browser_navigate: ({ arguments: args }) => {
+    const url = (args as { url?: string } | undefined)?.url || "";
+    return `Navigating to ${url}`;
+  },
+  browser_click: ({ arguments: args }) => {
+    const selector = (args as { selector?: string } | undefined)?.selector || "";
+    return `Clicking element: ${selector}`;
+  },
+  browser_fill: ({ arguments: args }) => {
+    const selector = (args as { selector?: string } | undefined)?.selector || "";
+    return `Filling input: ${selector}`;
+  },
+  browser_get_page_content: () => "Inspecting page content & tables",
+  browser_get_console_errors: () => "Checking browser errors",
 };
 
 function formatToolMessage(event: ToolEvent) {
@@ -59,9 +90,7 @@ function MessageContent({ content }: { content: string }) {
   </div>;
 }
 
-type ToolRunProps = { call: ChatMessage; result?: ChatMessage };
-
-function ThinkingBlock({ content, isRunning }: { content: string; isRunning: boolean }) {
+type ToolRunProps = { call: ChatMessage; result?: ChatMessage };function ThinkingBlock({ content, isRunning }: { content: string; isRunning: boolean }) {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
@@ -111,9 +140,54 @@ function ToolRun({ call, result }: ToolRunProps) {
   </article>;
 }
 
+function UsersList({ users }: { users: ChatUser[] }) {
+  const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
+
+  async function copyCredentials(user: ChatUser) {
+    try {
+      await navigator.clipboard.writeText(`${user.email} / ${user.password}`);
+      setCopiedEmail(user.email);
+      setTimeout(() => setCopiedEmail((current) => (current === user.email ? null : current)), 2000);
+    } catch (reason) {
+      console.error("[Chat] clipboard write failed", { reason });
+    }
+  }
+
+  return (
+    <aside className="login-details" aria-label="Project login details">
+      <p className="eyebrow">Sign-in accounts</p>
+      {users.length === 0 ? (
+        <p className="users-empty">No users yet. The admin account appears once the project is created.</p>
+      ) : (
+        <ul className="user-list">
+          {users.map((user) => (
+            <li className={`user-item ${user.role === "ROLE_ADMIN" ? "is-admin" : ""}`} key={`${user.project_id}-${user.email}`}>
+              <div className="user-item-header">
+                <span className="user-email" title={user.email}>{user.email}</span>
+                <button
+                  className="user-copy-button"
+                  type="button"
+                  aria-label={`Copy credentials for ${user.email}`}
+                  title="Copy email and password"
+                  onClick={() => void copyCredentials(user)}
+                >
+                  {copiedEmail === user.email ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <div className="user-item-meta">
+                <span className="user-role">{user.role === "ROLE_ADMIN" ? "Admin" : user.role.replace(/^ROLE_/, "")}</span>
+                <span className="user-password" title="Password">{user.password || "—"}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </aside>
+  );
+}
+
 // Mirrors `providers::ProviderSummary` as returned by `load_setup_state`.
-type ProviderSummary = {
-  id: string;
+type ProviderSummary = {  id: string;
   key: string;
   provider_type: string;
   name: string;
@@ -122,6 +196,8 @@ type ProviderSummary = {
   api_key_set: boolean;
   models: string[];
   reasoning?: string | null;
+  context_limits?: Record<string, number>;
+  default_context_limit?: number;
 };
 
 export const REASONING_MODES = [
@@ -138,11 +214,13 @@ type ChatProps = {
   sessionTitle?: string;
   sessions: { id: number; title: string }[];
   activeSessionId?: number;
+  sessionTokenUsage?: number;
   messages: ChatMessage[];
   draft: string;
   isSending: boolean;
   isStarting: boolean;
   error: string;
+  users: ChatUser[];
   onBack: () => void;
   onStart: () => void;
   onNewSession: () => void;
@@ -158,13 +236,20 @@ type ChatProps = {
   /** The first model in the active provider's list is the backend's current default. */
   activeModel: string;
   onModelChange: (provider: string, model: string, reasoning?: string) => void;
-  mode: "implement" | "plan";
-  onModeChange: (mode: "implement" | "plan") => void;
+  mode: "implement" | "plan" | "qa" | "iterate" | "max";
+  onModeChange: (mode: "implement" | "plan" | "qa" | "iterate" | "max") => void;
   onProceedToImplement: () => void;
   onStop?: () => void;
+  onCompact?: () => void;
+  isWrappingUp?: boolean;
+  iterateStatus?: { loop?: number; stage?: string; phase?: string } | null;
+  /** Current Max mode task list for the session, if any. */
+  maxTasks?: MaxTask[];
+  onRunMaxTasks?: () => void;
+  onRetryMaxTasks?: () => void;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, messages, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, users, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null, maxTasks = [], onRunMaxTasks, onRetryMaxTasks }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -247,6 +332,31 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
   useEffect(() => { void refreshModels(); }, []);
 
   const selectableProviders = providers.filter(({ models }) => models.length > 0);
+
+  // Determine active model context limit
+  const activeProviderObj = selectableProviders.find((p) => (p.id || p.key) === activeProvider);
+  const activeContextLimit = activeProviderObj?.context_limits?.[activeModel]
+    ?? activeProviderObj?.default_context_limit
+    ?? (activeProviderObj?.provider_type === "ollama" ? 32768 : 128000);
+
+  const contextPercent = Math.min(100, Math.round((sessionTokenUsage / activeContextLimit) * 100));
+  const isContextWarning = contextPercent >= 70 && contextPercent < 85;
+  const isContextCritical = contextPercent >= 85;
+
+  // Auto-compaction at 85% of context limit
+  const hasAutoCompactedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (
+      isContextCritical &&
+      onCompact &&
+      !isSending &&
+      activeSessionId &&
+      hasAutoCompactedRef.current !== activeSessionId
+    ) {
+      hasAutoCompactedRef.current = activeSessionId;
+      onCompact();
+    }
+  }, [isContextCritical, onCompact, isSending, activeSessionId]);
 
   // Models only reach the picker once a fetch has populated them, which happens
   // after App.tsx reads its initial defaults. Ensure the active provider and model
@@ -410,6 +520,32 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
       );
       continue;
     }
+    const isIterationLoop = (message.data as IterationLoopData | undefined)?.isIterationLoop;
+    if (isIterationLoop) {
+      const loopData = message.data as IterationLoopData;
+      renderedMessages.push(
+        <IterationLoopCard
+          key={`iteration-loop-${index}`}
+          data={loopData}
+          isCurrent={false}
+        />
+      );
+      continue;
+    }
+    const isMaxPlan = (message.data as MaxPlanData | undefined)?.isMaxPlan;
+    if (isMaxPlan) {
+      renderedMessages.push(
+        <MaxTasksCard
+          key={`max-plan-${index}`}
+          data={message.data as MaxPlanData}
+          tasks={maxTasks}
+          isSending={isSending}
+          onRun={onRunMaxTasks ?? (() => undefined)}
+          onRetryFailed={onRetryMaxTasks ?? (() => undefined)}
+        />
+      );
+      continue;
+    }
     const isPlan = (message.data as { isPlan?: boolean } | undefined)?.isPlan;
     const planPath = (message.data as { planPath?: string } | undefined)?.planPath;
     if (isPlan) {
@@ -451,7 +587,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     renderedMessages.push(<article className={`message ${message.role}`} key={`${message.role}-${index}`}><span>{message.role === "user" ? "You" : "Eggshell"}</span><MessageContent content={message.content} /></article>);
   }
   return <main className="chat-layout">
-    <aside className="chat-sidebar"><button className="back-button" type="button" onClick={onBack}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{projectTitle}</h2></div><button className="start-button" type="button" onClick={onStart} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><aside className="login-details" aria-label="Admin login details"><p className="eyebrow">Admin login</p><dl><div><dt>Username</dt><dd>admin@dummy-project.com</dd></div><div><dt>Password</dt><dd>12345678</dd></div></dl></aside><button className="new-chat-button" type="button" onClick={onNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSessionId === session.id ? "session-row active" : "session-row"} key={session.id}><button className={activeSessionId === session.id ? "session-item active" : "session-item"} type="button" onClick={() => onSelectSession(session.id)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => onDeleteSession(session.id)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
+    <aside className="chat-sidebar"><button className="back-button" type="button" onClick={onBack}>← Projects</button><div className="project-name"><p className="eyebrow">Project</p><h2>{projectTitle}</h2></div><button className="start-button" type="button" onClick={onStart} disabled={isStarting}>{isStarting ? "Starting…" : "Start"}</button><UsersList users={users} /><button className="new-chat-button" type="button" onClick={onNewSession}>+ New session</button><nav className="session-list" aria-label="Chat sessions">{sessions.map((session) => <div className={activeSessionId === session.id ? "session-row active" : "session-row"} key={session.id}><button className={activeSessionId === session.id ? "session-item active" : "session-item"} type="button" onClick={() => onSelectSession(session.id)}>{session.title}</button><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} onClick={() => onDeleteSession(session.id)}>×</button></div>)}{!sessions.length && <p className="sessions-empty">Your first message will create a session.</p>}</nav></aside>
     <section className="chat-panel">
       <header className="chat-header">
         <div className="chat-heading">
@@ -459,6 +595,35 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
           <p>{sessionTitle ? "Dummy assistant" : "Start a conversation"}</p>
         </div>
         <div className="chat-header-actions">
+          <div
+            className={`context-pie-widget ${isContextCritical ? "critical" : isContextWarning ? "warning" : ""}`}
+            title={`Context usage: ${sessionTokenUsage.toLocaleString()} / ${activeContextLimit.toLocaleString()} tokens (${contextPercent}%)`}
+          >
+            <svg className="context-pie-svg" viewBox="0 0 36 36" aria-hidden="true">
+              <path
+                className="context-pie-bg"
+                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+              />
+              <path
+                className="context-pie-fill"
+                strokeDasharray={`${contextPercent}, 100`}
+                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+              />
+            </svg>
+            <span className="context-pie-percent">{contextPercent}%</span>
+          </div>
+          {onCompact && (
+            <button
+              className="compact-button"
+              type="button"
+              onClick={onCompact}
+              disabled={isSending || messages.length <= 1}
+              title="Compact conversation into a structured status and task checkpoint"
+            >
+              <span className="compact-icon" aria-hidden="true">🗜️</span>
+              <span>Compact</span>
+            </button>
+          )}
           <button className="icon-button settings-button" type="button" aria-label="Settings" onClick={() => setIsSettingsOpen(true)}>⚙</button>
         </div>
       </header>
@@ -489,13 +654,36 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
               ))}
             </ul>
           )}
+          {isSending && mode === "iterate" && (
+            <div className="iterate-hud-banner">
+              <div className="iterate-hud-info">
+                <span className="iterate-hud-loop">Loop #{iterateStatus?.loop ?? 1}</span>
+                <span className="iterate-hud-stepper">
+                  <span className={`hud-step ${iterateStatus?.stage === "planner" ? "active" : "done"}`}>
+                    📋 Planner
+                  </span>
+                  <span className="hud-arrow">➔</span>
+                  <span className={`hud-step ${iterateStatus?.stage === "implementer" ? "active" : iterateStatus?.stage === "qa" ? "done" : ""}`}>
+                    ⚙️ Implementer
+                  </span>
+                  <span className="hud-arrow">➔</span>
+                  <span className={`hud-step ${iterateStatus?.stage === "qa" ? "active" : ""}`}>
+                    🧪 QA Testing
+                  </span>
+                </span>
+              </div>
+              {isWrappingUp && (
+                <span className="iterate-hud-pill">Wrapping up after QA…</span>
+              )}
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             className="composer-textarea"
             value={draft}
             onChange={(e: ChangeEvent<HTMLTextAreaElement>) => onDraftChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message… (Press Enter to send, Shift+Enter for new line)"
+            placeholder={mode === "iterate" ? "Describe your application goal to begin autonomous iteration… (Press Enter)" : mode === "max" ? "Describe the large application you want to build. Max will break it into tasks… (Press Enter)" : "Type a message… (Press Enter to send, Shift+Enter for new line)"}
             rows={1}
             aria-label="Message"
           />
@@ -512,18 +700,21 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
                 <span className="composer-attach-icon">📎</span>
                 <span className="composer-attach-label">Attach</span>
               </button>
-              <div className={`composer-mode-picker ${mode === "plan" ? "plan-active" : ""}`}>
-                <span className="composer-mode-icon">{mode === "plan" ? "📋" : "⚙️"}</span>
+              <div className={`composer-mode-picker ${mode === "plan" ? "plan-active" : mode === "qa" ? "qa-active" : mode === "iterate" ? "iterate-active" : mode === "max" ? "max-active" : ""}`}>
+                <span className="composer-mode-icon">{mode === "plan" ? "📋" : mode === "qa" ? "🧪" : mode === "iterate" ? "🔄" : mode === "max" ? "🚀" : "⚙️"}</span>
                 <span className="composer-mode-label">Mode:</span>
                 <select
                   className="composer-mode-select"
                   value={mode}
                   aria-label="Mode Selection"
                   disabled={isSending}
-                  onChange={({ target }) => onModeChange(target.value as "implement" | "plan")}
+                  onChange={({ target }) => onModeChange(target.value as "implement" | "plan" | "qa" | "iterate" | "max")}
                 >
                   <option value="implement">Implement</option>
                   <option value="plan">Plan</option>
+                  <option value="qa">QA / Test</option>
+                  <option value="iterate">Iterate (Autonomous)</option>
+                  <option value="max">Max (Large App)</option>
                 </select>
               </div>
               {selectableProviders.length > 0 && (
@@ -586,16 +777,31 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
             </div>
             {isSending ? (
               <button
-                className="composer-stop-btn"
+                className={`composer-stop-btn ${mode === "iterate" ? (isWrappingUp ? "force-stop" : "wrap-up") : ""}`}
                 type="button"
                 onClick={onStop}
-                aria-label="Stop generation"
+                aria-label={mode === "iterate" ? (isWrappingUp ? "Force Stop immediately" : "Wrap Up after QA") : "Stop generation"}
+                title={mode === "iterate" ? (isWrappingUp ? "Force stop immediately" : "Wrap up: stops after current loop's QA") : "Stop"}
               >
-                <span className="composer-stop-icon" aria-hidden="true">■</span> Stop
+                {mode === "iterate" ? (
+                  isWrappingUp ? (
+                    <>
+                      <span className="composer-stop-icon" aria-hidden="true">⚡</span> Force Stop
+                    </>
+                  ) : (
+                    <>
+                      <span className="composer-stop-icon" aria-hidden="true">🛑</span> Wrap Up
+                    </>
+                  )
+                ) : (
+                  <>
+                    <span className="composer-stop-icon" aria-hidden="true">■</span> Stop
+                  </>
+                )}
               </button>
             ) : (
               <button className="composer-send-btn" disabled={!draft.trim()} type="submit">
-                Send
+                {mode === "iterate" ? "Start Iteration" : "Send"}
               </button>
             )}
           </div>

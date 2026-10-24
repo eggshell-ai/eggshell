@@ -1,7 +1,11 @@
+mod apps;
 pub mod config;
 mod db;
 pub mod dependencies;
+pub mod iterate;
+pub mod max;
 pub mod llm;
+use llm::LLMService;
 pub mod providers;
 pub mod logger;
 pub mod migrations;
@@ -14,7 +18,7 @@ pub use dependencies::{
     add_managed_tools_to_process_path, managed_bin_dir, managed_composer_present, managed_mysqld,
 };
 
-use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository};
+use db::{NewProject, Project, ProjectsRepository, Session, SessionsRepository, User, UsersRepository};
 use progress::ProgressLog;
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -27,6 +31,8 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 type ActiveGenerationMap = Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>;
+type ActiveIterationMap = Arc<Mutex<HashMap<i64, Arc<iterate::IterationControl>>>>;
+type ActiveMaxMap = Arc<Mutex<HashMap<i64, Arc<max::MaxControl>>>>;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -122,6 +128,7 @@ struct SetupState {
     mysql: MysqlSummary,
     telemetry_enabled: bool,
     installation_id: String,
+    auto_update_enabled: bool,
 }
 
 #[tauri::command]
@@ -150,6 +157,7 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
                 mysql,
                 telemetry_enabled: config.telemetry_enabled,
                 installation_id: config.installation_id.unwrap_or_default(),
+                auto_update_enabled: config.auto_update_enabled,
             }
         }
         // A first launch has no configuration to read yet, which is exactly when
@@ -172,6 +180,7 @@ fn load_setup_state(app: tauri::AppHandle, log: tauri::State<'_, ProgressLog>) -
                 mysql,
                 telemetry_enabled: false,
                 installation_id: String::new(),
+                auto_update_enabled: true,
             }
         }
     }
@@ -199,6 +208,15 @@ fn save_privacy_settings(app: tauri::AppHandle, enabled: bool) -> Result<(), Str
     } else {
         telemetry::clear_scope();
     }
+    Ok(())
+}
+
+/// Updates the user's automatic update checking preference in config.yaml.
+#[tauri::command]
+fn save_auto_update_setting(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mut config = config::ConfigService::load_default(&app).unwrap_or_default();
+    config.auto_update_enabled = enabled;
+    config::ConfigService::save_default(&app, &config).map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -344,6 +362,8 @@ async fn test_provider_config(
         api_key: resolved_api_key,
         models: Vec::new(),
         reasoning: None,
+        context_limits: None,
+        default_context_limit: None,
     };
 
     let service = providers::build_service(&provider_config).map_err(|error| error.to_string())?;
@@ -393,6 +413,8 @@ async fn save_provider_config(
     base_url: Option<String>,
     models: Vec<String>,
     api_key: String,
+    context_limits: Option<std::collections::HashMap<String, u64>>,
+    default_context_limit: Option<u64>,
     app: tauri::AppHandle,
     log: tauri::State<'_, ProgressLog>,
     hub: tauri::State<'_, Arc<providers::ProviderHub>>,
@@ -474,6 +496,9 @@ async fn save_provider_config(
         .filter(|url| !url.trim().is_empty())
         .or_else(|| existing.and_then(|idx| config.providers[idx].base_url.clone()));
 
+    let merged_context_limits = context_limits.or_else(|| existing.and_then(|idx| config.providers[idx].context_limits.clone()));
+    let merged_default_context_limit = default_context_limit.or_else(|| existing.and_then(|idx| config.providers[idx].default_context_limit));
+
     let mut provider_config = config::ProviderConfig {
         id: Some(final_id.clone()),
         name: kind.to_string(),
@@ -483,6 +508,8 @@ async fn save_provider_config(
         api_key: resolved_api_key,
         models,
         reasoning,
+        context_limits: merged_context_limits,
+        default_context_limit: merged_default_context_limit,
     };
 
     // Test the provider connection before saving
@@ -634,7 +661,30 @@ async fn list_projects(pool: tauri::State<'_, SqlitePool>) -> Result<Vec<Project
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn list_users(
+    project_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<User>, String> {
+    UsersRepository::list(pool.inner(), project_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 fn bundled_template_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    #[cfg(debug_assertions)]
+    {
+        let dev_templates = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("templates"));
+
+        if let Some(dev_path) = dev_templates {
+            if dev_path.is_dir() {
+                return Ok(dev_path);
+            }
+        }
+    }
+
     let resource_dir = app
         .path()
         .resource_dir()
@@ -738,6 +788,7 @@ async fn send_message(
     pool: tauri::State<'_, SqlitePool>,
     agent: tauri::State<'_, llm::AgentService>,
     active_generations: tauri::State<'_, ActiveGenerationMap>,
+    active_iterations: tauri::State<'_, ActiveIterationMap>,
 ) -> Result<Session, String> {
     let message = message.trim().to_string();
     if message.is_empty() {
@@ -767,10 +818,21 @@ async fn send_message(
         }
     });
 
+    let is_iterate = mode.as_deref() == Some("iterate");
     let cancel_flag = Arc::new(AtomicBool::new(false));
+    let iteration_ctrl = if is_iterate {
+        Some(Arc::new(iterate::IterationControl::new()))
+    } else {
+        None
+    };
+
     {
         let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
         map.insert(project_id, cancel_flag.clone());
+    }
+    if let Some(ref ctrl) = iteration_ctrl {
+        let mut iter_map = active_iterations.lock().unwrap_or_else(|p| p.into_inner());
+        iter_map.insert(project_id, ctrl.clone());
     }
 
     let result = SessionsRepository::save_exchange(
@@ -784,6 +846,7 @@ async fn send_message(
         mode,
         Some(&app),
         Some(cancel_flag),
+        iteration_ctrl,
     )
     .await;
 
@@ -791,20 +854,260 @@ async fn send_message(
         let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
         map.remove(&project_id);
     }
+    if is_iterate {
+        let mut iter_map = active_iterations.lock().unwrap_or_else(|p| p.into_inner());
+        iter_map.remove(&project_id);
+    }
 
     result.map_err(|error| error.to_string())
+}
+
+/// Lists the persisted Max mode task list for a session.
+#[tauri::command]
+async fn list_max_tasks(
+    project_id: i64,
+    session_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<db::MaxTask>, String> {
+    db::MaxTasksRepository::list(pool.inner(), project_id, session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Runs Phase 2 of Max mode: execute the stored task list sequentially.
+#[tauri::command]
+async fn run_max_tasks(
+    project_id: i64,
+    session_id: i64,
+    retry_failed: Option<bool>,
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, SqlitePool>,
+    agent: tauri::State<'_, llm::AgentService>,
+    active_generations: tauri::State<'_, ActiveGenerationMap>,
+    active_max: tauri::State<'_, ActiveMaxMap>,
+) -> Result<Session, String> {
+    if retry_failed.unwrap_or(false) {
+        db::MaxTasksRepository::reset_failed(pool.inner(), project_id, session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+
+    let event_sink = Arc::new({
+        let app = app.clone();
+        move |payload| {
+            let _ = app.emit("agent-event", payload);
+        }
+    });
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let max_ctrl = Arc::new(max::MaxControl::new());
+
+    {
+        let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        map.insert(project_id, cancel_flag.clone());
+    }
+    {
+        let mut map = active_max.lock().unwrap_or_else(|p| p.into_inner());
+        map.insert(project_id, max_ctrl.clone());
+    }
+
+    let result = max::run_max_execution(
+        pool.inner(),
+        project_id,
+        session_id,
+        agent.inner(),
+        event_sink,
+        Some(&app),
+        max_ctrl.clone(),
+    )
+    .await;
+
+    {
+        let mut map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(&project_id);
+    }
+    {
+        let mut map = active_max.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(&project_id);
+    }
+
+    result.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn wrap_up_chat(
+    project_id: i64,
+    active_iterations: tauri::State<'_, ActiveIterationMap>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let map = active_iterations.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(ctrl) = map.get(&project_id) {
+        ctrl.wrap_up.store(true, Ordering::Relaxed);
+        let _ = app.emit("agent-event", serde_json::json!({
+            "projectId": project_id,
+            "event": {
+                "type": "iterate_status",
+                "data": { "phase": "wrapping_up" }
+            }
+        }));
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn stop_chat(
     project_id: i64,
     active_generations: tauri::State<'_, ActiveGenerationMap>,
+    active_iterations: tauri::State<'_, ActiveIterationMap>,
+    active_max: tauri::State<'_, ActiveMaxMap>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // A Max mode run has no wrap-up phase: stopping aborts the current task and
+    // leaves the rest resumable.
+    let max_control = {
+        let map = active_max.lock().unwrap_or_else(|p| p.into_inner());
+        map.get(&project_id).cloned()
+    };
+    if let Some(ctrl) = max_control {
+        ctrl.force_stop.store(true, Ordering::Relaxed);
+        let map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(flag) = map.get(&project_id) {
+            flag.store(true, Ordering::Relaxed);
+        }
+        let _ = app.emit("agent-event", serde_json::json!({
+            "projectId": project_id,
+            "event": {
+                "type": "max_status",
+                "data": { "phase": "stopped" }
+            }
+        }));
+        return Ok(());
+    }
+
+    // Check if an iteration is active
+    let iter_control = {
+        let map = active_iterations.lock().unwrap_or_else(|p| p.into_inner());
+        map.get(&project_id).cloned()
+    };
+
+    if let Some(ctrl) = iter_control {
+        if !ctrl.wrap_up.load(Ordering::Relaxed) {
+            // First stop click: enter wrap-up phase
+            ctrl.wrap_up.store(true, Ordering::Relaxed);
+            let _ = app.emit("agent-event", serde_json::json!({
+                "projectId": project_id,
+                "event": {
+                    "type": "iterate_status",
+                    "data": { "phase": "wrapping_up" }
+                }
+            }));
+            return Ok(());
+        } else {
+            // Second stop click: force stop immediately
+            ctrl.force_stop.store(true, Ordering::Relaxed);
+            let map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(flag) = map.get(&project_id) {
+                flag.store(true, Ordering::Relaxed);
+            }
+            let _ = app.emit("agent-event", serde_json::json!({
+                "projectId": project_id,
+                "event": {
+                    "type": "iterate_status",
+                    "data": { "phase": "force_stopped" }
+                }
+            }));
+            return Ok(());
+        }
+    }
+
+    // Default regular mode stop
     let map = active_generations.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(flag) = map.get(&project_id) {
         flag.store(true, Ordering::Relaxed);
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn compact_session(
+    project_id: i64,
+    session_id: i64,
+    pool: tauri::State<'_, SqlitePool>,
+    hub: tauri::State<'_, Arc<providers::ProviderHub>>,
+) -> Result<db::Session, String> {
+    let session = db::SessionsRepository::get(pool.inner(), project_id, session_id)
+        .await
+        .map_err(|e| format!("Failed to fetch session: {e}"))?;
+
+    let messages: Vec<db::ChatMessage> = serde_json::from_str(&session.conversation_history).unwrap_or_default();
+    if messages.is_empty() {
+        return Ok(session);
+    }
+
+    // Build compaction conversation prompt
+    let conversation_text = messages
+        .iter()
+        .map(|msg| format!("{}: {}", msg.role.to_uppercase(), msg.content))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let prompt = format!(
+        "You are an expert AI development assistant and task context summarizer.
+Your job is to condense and compact the following ongoing development conversation into a clean, structured state checkpoint so that the chat context can be trimmed while retaining full situational awareness.
+
+Provide your summary in Markdown with EXACTLY these three headings:
+
+### Current Status
+Summarize the current progress, outcomes achieved, architectural decisions, and key files touched.
+
+### To-Do List
+Provide a markdown checklist (- [ ] or - [x]) of remaining work and completed tasks based on the discussion.
+
+### Plan Summary
+If a plan, design, or schema was formulated or approved during the conversation, summarize its key steps and architecture. If none, state 'No plan active.'
+
+Here is the conversation history to compact:
+---
+{}
+---",
+        conversation_text
+    );
+
+    let summary = hub
+        .execute_prompt(&prompt, None)
+        .await
+        .map_err(|e| format!("Compaction model error: {e}"))?;
+
+    // Create a condensed checkpoint message history:
+    let compacted_messages = vec![
+        db::ChatMessage {
+            role: "user".to_string(),
+            content: "Please summarize the current task status, todo list, and active plan to compact our context.".to_string(),
+            data: None,
+        },
+        db::ChatMessage {
+            role: "assistant".to_string(),
+            content: summary.clone(),
+            data: Some(serde_json::json!({ "isCompactedCheckpoint": true })),
+        },
+    ];
+
+    let compacted_history = serde_json::to_string(&compacted_messages)
+        .map_err(|e| format!("Serialization error: {e}"))?;
+
+    // Estimate initial token usage of the compacted message (approx 4 chars per token)
+    let estimated_tokens = (summary.len() / 4 + 30) as i64;
+
+    db::SessionsRepository::compact_session(
+        pool.inner(),
+        project_id,
+        session_id,
+        compacted_history,
+        summary,
+        estimated_tokens,
+    )
+    .await
+    .map_err(|e| format!("Failed to save compacted session: {e}"))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1086,6 +1389,10 @@ pub fn run() {
             app.manage(hub);
             let active_generations: ActiveGenerationMap = Arc::new(Mutex::new(HashMap::new()));
             app.manage(active_generations);
+            let active_iterations: ActiveIterationMap = Arc::new(Mutex::new(HashMap::new()));
+            app.manage(active_iterations);
+            let active_max: ActiveMaxMap = Arc::new(Mutex::new(HashMap::new()));
+            app.manage(active_max);
 
             // Probing the port and waiting for the daemon both block, and the
             // window should not wait on a database it does not use itself.
@@ -1101,6 +1408,7 @@ pub fn run() {
             read_logs,
             load_setup_state,
             save_privacy_settings,
+            save_auto_update_setting,
             config::save_mysql_config,
             config::save_mysql_settings,
             save_provider_config,
@@ -1112,10 +1420,15 @@ pub fn run() {
             create_project,
             delete_project,
             start_project,
+            list_users,
             list_sessions,
             delete_session,
             send_message,
+            wrap_up_chat,
             stop_chat,
+            list_max_tasks,
+            run_max_tasks,
+            compact_session,
             submit_feedback,
             get_app_version
         ])

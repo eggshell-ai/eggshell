@@ -10,6 +10,29 @@ use crate::progress::ProgressLog;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+/// Admin credentials seeded into every project by `app:init`
+/// (`templates/backend/src/Command/InitCommand.php`). Mirrored into the local
+/// `users` table when a project is created.
+pub const ADMIN_EMAIL: &str = "admin@dummy-project.com";
+pub const ADMIN_PASSWORD: &str = "12345678";
+
+/// Process-wide handle to the SQLite pool.
+///
+/// Tauri commands receive the pool through managed state, but agent tools are
+/// constructed without it. Mirroring [`crate::logger::Logger::global`], this
+/// lets any code that runs after startup reach the database.
+static POOL: std::sync::OnceLock<SqlitePool> = std::sync::OnceLock::new();
+
+/// Stores the pool for process-wide access. Called once from [`initialize`].
+pub fn set_pool(pool: SqlitePool) {
+    let _ = POOL.set(pool);
+}
+
+/// Returns the process-wide pool, if [`initialize`] has run.
+pub fn pool() -> Option<&'static SqlitePool> {
+    POOL.get()
+}
+
 #[derive(Debug, Serialize, FromRow)]
 pub struct Project {
     pub id: i64,
@@ -30,6 +53,9 @@ pub struct Session {
     pub id: i64,
     pub title: String,
     pub conversation_history: String,
+    #[serde(default)]
+    pub token_usage: i64,
+    pub compacted_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -38,6 +64,54 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+}
+
+/// A sign-in account mirrored from the project's Symfony backend.
+///
+/// The authoritative record lives in the project's MySQL `user` table; this is
+/// the local copy the desktop UI lists (see `0004_create_users.sql`). The
+/// password is stored in plain text so it can be shown in the chat sidebar.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct User {
+    #[serde(default)]
+    pub id: i64,
+    pub project_id: i64,
+    pub email: String,
+    #[serde(default = "default_user_role")]
+    pub role: String,
+    #[serde(default)]
+    pub password: String,
+}
+
+fn default_user_role() -> String {
+    "ROLE_USER".to_string()
+}
+
+/// One task in a Max mode build.
+///
+/// Max mode first breaks a requirement into a list of business-oriented tasks
+/// (a screen, CRUD, or report each) and then runs one sequential agent per
+/// task. These rows persist that list so a long build can be resumed after a
+/// restart or interruption. See `0005_create_max_tasks.sql`.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct MaxTask {
+    #[serde(default)]
+    pub id: i64,
+    pub project_id: i64,
+    pub session_id: i64,
+    pub task_index: i64,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// One of: `pending`, `running`, `completed`, `failed`, `skipped`.
+    #[serde(default = "default_task_status")]
+    pub status: String,
+    #[serde(default)]
+    pub result_summary: Option<String>,
+}
+
+fn default_task_status() -> String {
+    "pending".to_string()
 }
 
 /// Data-access layer for the `projects` table.
@@ -77,6 +151,21 @@ impl ProjectsRepository {
             .execute(pool)
             .await?
             .last_insert_rowid();
+
+        // Mirror the admin account `app:init` seeds into the project's Symfony
+        // backend, so the chat login list shows it alongside any users created
+        // later.
+        UsersRepository::upsert(
+            pool,
+            &User {
+                id: 0,
+                project_id: id,
+                email: ADMIN_EMAIL.to_string(),
+                role: "ROLE_ADMIN".to_string(),
+                password: ADMIN_PASSWORD.to_string(),
+            },
+        )
+        .await?;
 
         Ok(Project {
             id,
@@ -125,12 +214,194 @@ impl ProjectsRepository {
     }
 }
 
+/// Data-access layer for the `users` table (project sign-in accounts).
+pub struct UsersRepository;
+
+impl UsersRepository {
+    pub async fn list(pool: &SqlitePool, project_id: i64) -> Result<Vec<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>(
+            "SELECT id, project_id, email, role, password FROM users WHERE project_id = ? ORDER BY (role = 'ROLE_ADMIN') DESC, email ASC",
+        )
+        .bind(project_id)
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Inserts a user, or updates the existing row when the email already
+    /// exists for the project (matching on `(project_id, email)`).
+    pub async fn upsert(pool: &SqlitePool, user: &User) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO users (project_id, email, role, password) VALUES (?, ?, ?, ?)
+             ON CONFLICT (project_id, email) DO UPDATE SET role = excluded.role, password = excluded.password",
+        )
+        .bind(user.project_id)
+        .bind(&user.email)
+        .bind(&user.role)
+        .bind(&user.password)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete(
+        pool: &SqlitePool,
+        project_id: i64,
+        email: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM users WHERE project_id = ? AND email = ?")
+            .bind(project_id)
+            .bind(email)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Resolves the owning project id from a project directory path.
+    pub async fn project_id_for_path(
+        pool: &SqlitePool,
+        path: &str,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        sqlx::query_scalar::<_, i64>("SELECT id FROM projects WHERE path = ?")
+            .bind(path)
+            .fetch_optional(pool)
+            .await
+    }
+}
+
+/// Data-access layer for the `max_tasks` table (Max mode task lists).
+pub struct MaxTasksRepository;
+
+impl MaxTasksRepository {
+    /// Replaces the stored task list for a session with a freshly generated one.
+    ///
+    /// Any previous tasks for the session are dropped first, so re-running the
+    /// breakdown phase always starts from a clean slate.
+    pub async fn replace_for_session(
+        pool: &SqlitePool,
+        project_id: i64,
+        session_id: i64,
+        tasks: &[(String, String)],
+    ) -> Result<Vec<MaxTask>, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM max_tasks WHERE project_id = ? AND session_id = ?")
+            .bind(project_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        for (index, (title, description)) in tasks.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO max_tasks (project_id, session_id, task_index, title, description, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+            )
+            .bind(project_id)
+            .bind(session_id)
+            .bind(index as i64)
+            .bind(title)
+            .bind(description)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Self::list(pool, project_id, session_id).await
+    }
+
+    /// Lists the tasks for a session in execution order.
+    pub async fn list(
+        pool: &SqlitePool,
+        project_id: i64,
+        session_id: i64,
+    ) -> Result<Vec<MaxTask>, sqlx::Error> {
+        sqlx::query_as::<_, MaxTask>(
+            "SELECT id, project_id, session_id, task_index, title, description, status, result_summary FROM max_tasks WHERE project_id = ? AND session_id = ? ORDER BY task_index ASC",
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Returns the first task that still needs to run (pending or failed), if any.
+    pub async fn next_unfinished(
+        pool: &SqlitePool,
+        project_id: i64,
+        session_id: i64,
+    ) -> Result<Option<MaxTask>, sqlx::Error> {
+        sqlx::query_as::<_, MaxTask>(
+            "SELECT id, project_id, session_id, task_index, title, description, status, result_summary FROM max_tasks WHERE project_id = ? AND session_id = ? AND status IN ('pending', 'failed') ORDER BY task_index ASC LIMIT 1",
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+    }
+
+    /// Updates the status (and optionally the result summary) of a single task.
+    pub async fn set_status(
+        pool: &SqlitePool,
+        id: i64,
+        status: &str,
+        result_summary: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE max_tasks SET status = ?, result_summary = COALESCE(?, result_summary), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(status)
+        .bind(result_summary)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Marks every failed task back to pending so the sequence can be retried.
+    pub async fn reset_failed(
+        pool: &SqlitePool,
+        project_id: i64,
+        session_id: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE max_tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE project_id = ? AND session_id = ? AND status = 'failed'",
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}
+
 pub struct SessionsRepository;
 
 impl SessionsRepository {
     pub async fn list(pool: &SqlitePool, project_id: i64) -> Result<Vec<Session>, sqlx::Error> {
-        sqlx::query_as::<_, Session>("SELECT id, title, conversation_history FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC")
+        sqlx::query_as::<_, Session>("SELECT id, title, conversation_history, token_usage, compacted_summary FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC")
             .bind(project_id).fetch_all(pool).await
+    }
+
+    pub async fn get(pool: &SqlitePool, project_id: i64, id: i64) -> Result<Session, sqlx::Error> {
+        sqlx::query_as::<_, Session>("SELECT id, title, conversation_history, token_usage, compacted_summary FROM sessions WHERE id = ? AND project_id = ?")
+            .bind(id)
+            .bind(project_id)
+            .fetch_one(pool)
+            .await
+    }
+
+    pub async fn compact_session(
+        pool: &SqlitePool,
+        project_id: i64,
+        id: i64,
+        compacted_history: String,
+        compacted_summary: String,
+        token_usage: i64,
+    ) -> Result<Session, sqlx::Error> {
+        sqlx::query("UPDATE sessions SET conversation_history = ?, compacted_summary = ?, token_usage = ? WHERE id = ? AND project_id = ?")
+            .bind(&compacted_history)
+            .bind(&compacted_summary)
+            .bind(token_usage)
+            .bind(id)
+            .bind(project_id)
+            .execute(pool)
+            .await?;
+        Self::get(pool, project_id, id).await
     }
 
     pub async fn delete(pool: &SqlitePool, project_id: i64, id: i64) -> Result<(), sqlx::Error> {
@@ -153,6 +424,7 @@ impl SessionsRepository {
         mode: Option<String>,
         app_handle: Option<&AppHandle>,
         cancel_token: Option<Arc<std::sync::atomic::AtomicBool>>,
+        iteration_control: Option<Arc<crate::iterate::IterationControl>>,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
         let is_plan_mode = mode.as_deref() == Some("plan");
         let existing_history = match session_id {
@@ -188,8 +460,45 @@ impl SessionsRepository {
             }
         };
 
+        let is_qa_mode = mode.as_deref() == Some("qa");
+        let is_iterate_mode = mode.as_deref() == Some("iterate");
+        let is_max_mode = mode.as_deref() == Some("max");
+
+        if is_iterate_mode {
+            let control = iteration_control.unwrap_or_else(|| Arc::new(crate::iterate::IterationControl::new()));
+            return crate::iterate::run_iterate_loop(
+                pool,
+                project_id,
+                id,
+                user_message,
+                artifacts,
+                agent,
+                event_sink,
+                app_handle,
+                control,
+            )
+            .await;
+        }
+
+        if is_max_mode {
+            return crate::max::run_max_breakdown(
+                pool,
+                project_id,
+                id,
+                user_message,
+                artifacts,
+                agent,
+                event_sink,
+                app_handle,
+            )
+            .await;
+        }
+
         let (system_prompt, tools) = if is_plan_mode {
             let app = llm::PlanningApp;
+            (app.system_prompt(), app.tools())
+        } else if is_qa_mode {
+            let app = llm::QaApp;
             (app.system_prompt(), app.tools())
         } else {
             let app = llm::AdminPanelApp;
@@ -278,12 +587,29 @@ impl SessionsRepository {
             .map(|message| message.content.chars().take(48).collect::<String>())
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| "New chat".to_string());
-        sqlx::query("UPDATE sessions SET title = ?, conversation_history = ? WHERE id = ? AND project_id = ?")
-            .bind(&title).bind(&history).bind(id).bind(project_id).execute(pool).await?;
+        let token_usage_val = result.token_usage.unwrap_or(0) as i64;
+        let mut update_query = "UPDATE sessions SET title = ?, conversation_history = ?".to_string();
+        if token_usage_val > 0 {
+            update_query.push_str(", token_usage = ?");
+            sqlx::query(&format!("{update_query} WHERE id = ? AND project_id = ?"))
+                .bind(&title).bind(&history).bind(token_usage_val).bind(id).bind(project_id).execute(pool).await?;
+        } else {
+            sqlx::query(&format!("{update_query} WHERE id = ? AND project_id = ?"))
+                .bind(&title).bind(&history).bind(id).bind(project_id).execute(pool).await?;
+        }
+        let (current_token_usage, current_compacted): (i64, Option<String>) = sqlx::query_as("SELECT token_usage, compacted_summary FROM sessions WHERE id = ? AND project_id = ?")
+            .bind(id)
+            .bind(project_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or((token_usage_val, None));
+
         Ok(Session {
             id,
             title,
             conversation_history: history,
+            token_usage: current_token_usage,
+            compacted_summary: current_compacted,
         })
     }
 }
@@ -460,5 +786,16 @@ pub async fn initialize(app: &AppHandle) -> Result<SqlitePool, Box<dyn std::erro
     let pool = SqlitePool::connect_with(options).await?;
 
     MIGRATOR.run(&pool).await?;
+
+    // Defensive check: ensure newly added columns exist in older SQLite databases
+    let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN token_usage INTEGER NOT NULL DEFAULT 0")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN compacted_summary TEXT")
+        .execute(&pool)
+        .await;
+
+    set_pool(pool.clone());
+
     Ok(pool)
 }

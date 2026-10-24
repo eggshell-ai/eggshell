@@ -249,10 +249,24 @@ impl LLMService for OllamaService {
                 }
             }
         }
+        let prompt_tokens = response.get("prompt_eval_count").and_then(Value::as_u64).unwrap_or(0);
+        let completion_tokens = response.get("eval_count").and_then(Value::as_u64).unwrap_or(0);
+        let total_tokens = prompt_tokens + completion_tokens;
+        let usage = if total_tokens > 0 {
+            Some(serde_json::json!({
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            }))
+        } else {
+            None
+        };
+
         Ok(serde_json::json!({
             "content": raw_content,
             "thought": if thought.is_empty() { Value::Null } else { Value::String(thought) },
             "tool_calls": calls,
+            "usage": usage,
         }))
     }
 

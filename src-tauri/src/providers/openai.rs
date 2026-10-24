@@ -251,6 +251,7 @@ impl LLMService for OpenAiService {
             "messages": openai_messages,
             "tools": tool_definitions,
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
         if let Some(reasoning) = &settings.reasoning {
             let reasoning = reasoning.to_lowercase();
@@ -288,6 +289,7 @@ impl LLMService for OpenAiService {
         let mut raw_content = String::new();
         let mut thought = String::new();
         let mut tool_calls_map: std::collections::BTreeMap<usize, (Option<String>, String, String)> = std::collections::BTreeMap::new();
+        let mut usage: Option<Value> = None;
 
         while let Some(event_result) = event_stream.next().await {
             if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
@@ -304,6 +306,12 @@ impl LLMService for OpenAiService {
                 Ok(val) => val,
                 Err(_) => continue,
             };
+
+            if let Some(u) = chunk.get("usage") {
+                if !u.is_null() {
+                    usage = Some(u.clone());
+                }
+            }
 
             let Some(choices) = chunk.get("choices").and_then(Value::as_array) else {
                 continue;
@@ -386,6 +394,7 @@ impl LLMService for OpenAiService {
             "content": raw_content,
             "thought": if thought.is_empty() { Value::Null } else { Value::String(thought) },
             "tool_calls": calls,
+            "usage": usage,
         }))
     }
 

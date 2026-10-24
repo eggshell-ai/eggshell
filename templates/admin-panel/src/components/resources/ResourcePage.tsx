@@ -294,6 +294,7 @@ const ResourcePage: React.FC<ResourcePageProps> = ({ resource }) => {
         fields={resource.fields}
         actions={resource.actions}
         endpoint={resource.endpoint}
+        resourceName={resource.name}
         columns={
           permissions.canEdit || permissions.canDelete || hasDetailFields ? [actionsColumn] : undefined
         }

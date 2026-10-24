@@ -14,7 +14,6 @@ export default function LogoMain() {
 
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
       <Box
         component="img"
         src={`/assets/images/${customization.logo}`}
