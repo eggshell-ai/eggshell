@@ -14,6 +14,23 @@ use crate::llm::{LlmResult, Tool};
 
 const DEFAULT_CDP_PORT: u16 = 9222;
 
+/// Looks up an executable by name in the directories listed in `PATH`.
+///
+/// This avoids pulling in the `which` crate for a single call site.
+#[allow(dead_code)]
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
 /// Finds an installed browser executable on Windows or fallback systems.
 fn find_browser_executable() -> Option<PathBuf> {
     #[cfg(windows)]
@@ -52,7 +69,7 @@ fn find_browser_executable() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         for name in &["google-chrome", "google-chrome-stable", "chromium", "microsoft-edge"] {
-            if let Ok(path) = which::which(name) {
+            if let Some(path) = find_in_path(name) {
                 return Some(path);
             }
         }
