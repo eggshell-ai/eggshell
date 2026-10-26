@@ -97,3 +97,111 @@ Example:
 ```
 
 This transforms `" prod-123 "` into `"PROD-123"` automatically upon form submission.
+
+---
+
+# Auto-Increment / Serial Sequences (SI Numbers)
+
+For sequence numbers or serial codes (such as `1, 2, 3, ...` or date/month-wise formats like `20261001, 20261002, ...`), use a standard field definition in the resource schema paired with an auto-discovered `BeforeSavesResource` lifecycle hook.
+
+This approach keeps the declarative schema clean (without inventing custom attributes) and ensures sequence numbers are assigned safely on initial record creation (`$action === 'store'`), preventing values from inadvertently shifting during subsequent updates.
+
+### 1. Resource Field Schema
+
+Define the field without manual input on the form:
+
+```javascript
+{
+  name: "siNumber",
+  type: "text", // Use "number" with integer: true for pure numeric counters
+  label: "SI #",
+  form: false,  // Generated automatically on save; hidden from the create/edit form
+  table: true,
+  detail: true,
+  sortable: true,
+  searchable: true,
+  unique: true
+}
+```
+
+### 2. Auto-Discovered Hook (`Resource/Hooks/<resourceName>/<ClassName>.php`)
+
+Implement `App\Resource\Hook\BeforeSavesResource`. The hook generates and assigns the sequence before the entity is validated and persisted.
+
+#### Example A: Simple Sequential Auto-Increment (`1, 2, 3, ...`)
+
+```php
+<?php
+
+namespace App\Resource\Hooks\invoices;
+
+use App\Entity\Invoice;
+use App\Resource\Hook\BeforeSavesResource;
+use Doctrine\ORM\EntityManagerInterface;
+
+final class InvoiceSequenceHook implements BeforeSavesResource
+{
+    public function beforeSave(
+        object $entity,
+        array $data,
+        string $action,
+        EntityManagerInterface $entityManager
+    ): void {
+        // Only generate for new records if not already set
+        if ($action !== 'store' || !empty($entity->siNumber)) {
+            return;
+        }
+
+        $max = (int) $entityManager
+            ->createQuery('SELECT COALESCE(MAX(e.siNumber), 0) FROM ' . Invoice::class . ' e')
+            ->getSingleScalarResult();
+
+        $entity->siNumber = $max + 1;
+    }
+}
+```
+
+#### Example B: Month-Wise Auto-Increment (`20261001, 20261002, ...`)
+
+Generates serial numbers scoped by month (e.g. `YYYYMM` prefix followed by a zero-padded incremental sequence):
+
+```php
+<?php
+
+namespace App\Resource\Hooks\invoices;
+
+use App\Entity\Invoice;
+use App\Resource\Hook\BeforeSavesResource;
+use Doctrine\ORM\EntityManagerInterface;
+
+final class InvoiceSequenceHook implements BeforeSavesResource
+{
+    public function beforeSave(
+        object $entity,
+        array $data,
+        string $action,
+        EntityManagerInterface $entityManager
+    ): void {
+        if ($action !== 'store' || !empty($entity->siNumber)) {
+            return;
+        }
+
+        // Derive YYYYMM prefix from the record date or current date
+        $date = $entity->invoiceDate instanceof \DateTimeInterface
+            ? $entity->invoiceDate
+            : (isset($entity->invoiceDate) ? new \DateTimeImmutable($entity->invoiceDate) : new \DateTimeImmutable());
+        $prefix = $date->format('Ym'); // e.g. "202610"
+
+        $max = $entityManager->createQuery(
+            'SELECT MAX(e.siNumber) FROM ' . Invoice::class . ' e WHERE e.siNumber LIKE :prefix'
+        )
+            ->setParameter('prefix', $prefix . '%')
+            ->getSingleScalarResult();
+
+        $nextSeq = $max ? ((int) substr((string) $max, strlen($prefix))) + 1 : 1;
+
+        // Formats as 20261001, 20261002, etc.
+        $entity->siNumber = sprintf('%s%02d', $prefix, $nextSeq);
+    }
+}
+```

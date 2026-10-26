@@ -49,7 +49,7 @@ sync_schema({
       name: "orders",
       endpoint: "/orders",
       fields: [
-        { name: "orderNumber", type: "text", label: "Order #", required: true, unique: true, searchable: true },
+        { name: "orderNumber", type: "text", label: "Order #", form: false, unique: true, searchable: true, sortable: true }, // Auto-generated via OrderSequenceHook on create
         { name: "customerId", type: "select", label: "Customer", required: true, filterable: true, searchable: true, resource: "customers" },
         { name: "orderDate", type: "date", label: "Order Date", required: true, default: "today", filterable: true, sortable: true },
         {
@@ -213,7 +213,57 @@ final class OrderController extends ResourceController
 
 Similarly, it's possible to add buttons for cancelling, shipping, returning stock to products, etc.
 
-### Step 3 — Create Frontend Pages with `ResourcePage`
+### Step 3 — Auto-Generate Order Sequence Numbers (Hook)
+
+Use a `BeforeSavesResource` hook under `Resource/Hooks/orders/OrderSequenceHook.php` to assign sequential numbers automatically when the order is created (`store` action):
+
+```javascript
+write_file({
+  shell: "backend",
+  path: "Resource/Hooks/orders/OrderSequenceHook.php",
+  content: `<?php
+
+namespace App\Resource\Hooks\\orders;
+
+use App\Entity\\Order;
+use App\Resource\Hook\\BeforeSavesResource;
+use Doctrine\\ORM\\EntityManagerInterface;
+
+final class OrderSequenceHook implements BeforeSavesResource
+{
+    public function beforeSave(
+        object $entity,
+        array $data,
+        string $action,
+        EntityManagerInterface $entityManager
+    ): void {
+        // Only generate for new records on store
+        if ($action !== 'store' || !empty($entity->orderNumber)) {
+            return;
+        }
+
+        // Generate month-wise sequence, e.g. 20261001, 20261002, ...
+        $orderDate = $entity->orderDate instanceof \\DateTimeInterface
+            ? $entity->orderDate
+            : (isset($entity->orderDate) ? new \\DateTimeImmutable($entity->orderDate) : new \\DateTimeImmutable());
+        $prefix = $orderDate->format('Ym'); // e.g. "202610"
+
+        $max = $entityManager->createQuery(
+            'SELECT MAX(e.orderNumber) FROM ' . Order::class . ' e WHERE e.orderNumber LIKE :prefix'
+        )
+            ->setParameter('prefix', $prefix . '%')
+            ->getSingleScalarResult();
+
+        $nextSeq = $max ? ((int) substr((string) $max, strlen($prefix))) + 1 : 1;
+
+        $entity->orderNumber = sprintf('%s%02d', $prefix, $nextSeq);
+    }
+}
+`
+})
+```
+
+### Step 4 — Create Frontend Pages with `ResourcePage`
 
 Orders page:
 ```javascript
@@ -232,7 +282,7 @@ export default function OrdersPage() {
 })
 ```
 
-### Step 4 — Add Menu Items
+### Step 5 — Add Menu Items
 
 ```javascript
 patch_file({
