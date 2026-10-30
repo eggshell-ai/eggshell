@@ -1,0 +1,2 @@
+# Ensure SQL migrations always retain LF line endings across all platforms to prevent SQLx checksum mismatch
+src-tauri/migrations/*.sql text eol=lf
