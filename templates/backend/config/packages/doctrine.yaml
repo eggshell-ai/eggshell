@@ -8,6 +8,12 @@ doctrine:
 
         profiling_collect_backtrace: '%kernel.debug%'
     orm:
+        dql:
+            string_functions:
+                DATE_FORMAT: DoctrineExtensions\Query\Mysql\DateFormat
+            datetime_functions:
+                YEAR: DoctrineExtensions\Query\Mysql\Year
+                MONTH: DoctrineExtensions\Query\Mysql\Month
         validate_xml_mapping: true
         naming_strategy: doctrine.orm.naming_strategy.underscore
         identity_generation_preferences:
