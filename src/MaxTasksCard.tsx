@@ -23,6 +23,7 @@ type MaxTasksCardProps = {
   isSending?: boolean;
   onRun: () => void;
   onRetryFailed: () => void;
+  onStopTask?: (taskId: number) => void;
 };
 
 function statusLabel(status: string): string {
@@ -33,6 +34,8 @@ function statusLabel(status: string): string {
       return "Running…";
     case "failed":
       return "✕ Failed";
+    case "paused":
+      return "⏸ Turn limit reached";
     case "skipped":
       return "Skipped";
     default:
@@ -44,13 +47,15 @@ function statusLabel(status: string): string {
  * Renders the Max mode task list: the business-oriented breakdown produced in
  * Phase 1, with per-task status and a control to start/resume Phase 2.
  */
-export default function MaxTasksCard({ data, tasks, isSending = false, onRun, onRetryFailed }: MaxTasksCardProps) {
+export default function MaxTasksCard({ data, tasks, isSending = false, onRun, onRetryFailed, onStopTask }: MaxTasksCardProps) {
   const list = tasks && tasks.length > 0 ? tasks : data.maxTasks ?? [];
   const total = list.length || data.maxTaskCount || 0;
   const completed = list.filter((task) => task.status === "completed").length;
+  const pausedTask = list.find((task) => task.status === "paused");
+  const hasPaused = Boolean(pausedTask);
   const hasFailed = list.some((task) => task.status === "failed");
   const isRunning = list.some((task) => task.status === "running");
-  const hasPending = list.some((task) => task.status === "pending" || task.status === "failed");
+  const hasPending = list.some((task) => task.status === "pending" || task.status === "failed" || task.status === "paused");
   const allDone = total > 0 && completed === total;
 
   return (
@@ -65,6 +70,8 @@ export default function MaxTasksCard({ data, tasks, isSending = false, onRun, on
             </span>
           ) : allDone ? (
             <span className="max-status-pill completed">✓ All tasks complete</span>
+          ) : hasPaused ? (
+            <span className="max-status-pill paused">Paused — turn limit reached</span>
           ) : hasFailed ? (
             <span className="max-status-pill failed">Halted — a task failed</span>
           ) : (
@@ -82,6 +89,8 @@ export default function MaxTasksCard({ data, tasks, isSending = false, onRun, on
                 ? "✓"
                 : task.status === "failed"
                 ? "✕"
+                : task.status === "paused"
+                ? "⏸"
                 : task.status === "running"
                 ? "◐"
                 : "○"}
@@ -97,7 +106,23 @@ export default function MaxTasksCard({ data, tasks, isSending = false, onRun, on
       </ol>
 
       <div className="max-card-actions">
-        {hasFailed ? (
+        {hasPaused ? (
+          <>
+            <button className="max-run-btn" type="button" disabled={isSending} onClick={onRun}>
+              <span aria-hidden="true">▶</span> Continue Task
+            </button>
+            {onStopTask && pausedTask && (
+              <button
+                className="max-run-btn danger"
+                type="button"
+                disabled={isSending}
+                onClick={() => onStopTask(pausedTask.id)}
+              >
+                <span aria-hidden="true">■</span> Stop
+              </button>
+            )}
+          </>
+        ) : hasFailed ? (
           <>
             <button className="max-run-btn" type="button" disabled={isSending} onClick={onRetryFailed}>
               <span aria-hidden="true">↻</span> Retry failed task{list.filter((task) => task.status === "failed").length > 1 ? "s" : ""}

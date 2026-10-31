@@ -202,6 +202,14 @@ function App() {
         setStreamedMessages([]);
         return;
       }
+      if (type === "max_task_paused") {
+        const paused = data as { taskId?: number; summary?: string };
+        if (paused.taskId) {
+          setMaxTasks((current) => current.map((task) => task.id === paused.taskId ? { ...task, status: "paused", result_summary: paused.summary ?? task.result_summary } : task));
+        }
+        setStreamedMessages([]);
+        return;
+      }
       if (type === "max_task_failed") {
         const failed = data as { taskId?: number; error?: string };
         if (failed.taskId) {
@@ -399,6 +407,14 @@ function App() {
     finally { setIsSending(false); setPendingPrompt(""); void loadUsers(activeProject.id); }
   }
 
+  async function stopMaxTask(taskId: number) {
+    if (!activeProject || !activeSession) return;
+    try {
+      await invoke("update_max_task_status", { taskId, status: "failed" });
+      await loadMaxTasks(activeProject.id, activeSession.id);
+    } catch (reason) { setError(String(reason)); }
+  }
+
   async function compactSession() {
     if (!activeProject || !activeSession || isSending) return;
     setError(""); setIsSending(true);
@@ -459,7 +475,7 @@ function App() {
   if (activeProject) {
     return (
       <>
-        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} maxTasks={maxTasks} onRunMaxTasks={() => void runMaxTasks(false)} onRetryMaxTasks={() => void runMaxTasks(true)} />
+        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} maxTasks={maxTasks} onRunMaxTasks={() => void runMaxTasks(false)} onRetryMaxTasks={() => void runMaxTasks(true)} onStopMaxTask={(taskId) => void stopMaxTask(taskId)} />
         <UpdatePrompt autoCheck={autoUpdateEnabled} />
       </>
     );

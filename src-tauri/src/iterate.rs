@@ -307,7 +307,7 @@ pub async fn run_iterate_loop(
                         }));
                     })),
                     cancellation_token: Some(Arc::clone(&control.force_stop)),
-                    max_turns: Some(15),
+                    max_turns: Some(30),
                     ..Default::default()
                 },
             )
@@ -389,7 +389,7 @@ pub async fn run_iterate_loop(
                         }));
                     })),
                     cancellation_token: Some(Arc::clone(&control.force_stop)),
-                    max_turns: Some(15),
+                    max_turns: Some(30),
                     ..Default::default()
                 },
             )

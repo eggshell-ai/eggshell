@@ -59,7 +59,7 @@ The child resource owns the calculation: declare `computed: true` + `computeExpr
       scale: 2, // Store up to 2 decimal points
       computed: true,
       computeExpression: "Array.isArray(data.items) ? data.items.reduce((sum, item) => sum + (Number(item.quantity || 0) * Number(item.unitPrice || 0)), 0).toFixed(2) : '0.00'",
-      sqlExpression: "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\OrderItem i WHERE i.orderId = e.id)", // Use App\\Entity\\<EntityName>. The resource name will be converted being singularized and upper-camel-cased (e.g. order_items -> OrderItem)
+      sqlExpression: "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\OrderItem i WHERE i.orderId = e.id)", // Use App\Entity\<EntityName> (in JSON: "App\\Entity\\<EntityName>"). The resource name is singularized and UpperCamelCased (e.g. order_items -> OrderItem)
       form: true,
       table: true,
       sortable: true
@@ -67,6 +67,33 @@ The child resource owns the calculation: declare `computed: true` + `computeExpr
   ]
 }
 ```
+
+### DQL Rules for `sqlExpression`
+`sqlExpression` is compiled into a Doctrine DQL query (e.g. `SELECT <sqlExpression> FROM App\Entity\<Entity> e WHERE e.id = :id`) and executed server-side.
+
+Keep these rules in mind:
+1. **Never combine subqueries in arithmetic expressions (`(SELECT ...) - (SELECT ...)` is invalid)**:
+   - In Doctrine DQL, arithmetic operators (`+`, `-`, `*`, `/`) do **not** support subqueries as operands and will fail with `[Syntax Error] line 0, col X: Error: Expected Literal, got 'SELECT'`.
+   - Instead, compute child rollups into their own stored columns first (e.g. `totalAmount` and `receivedAmount`). Then reference those stored columns directly on the parent entity `e`:
+     ```javascript
+     // ❌ INVALID: DQL does not support subquery operands in arithmetic
+     sqlExpression: "((SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SaleItem i WHERE i.saleId = e.id) - (SELECT COALESCE(SUM(p.amount), 0) FROM App\\Entity\\Payment p WHERE p.saleId = e.id))"
+
+     // ✅ CORRECT: Reference existing computed columns directly
+     sqlExpression: "e.totalAmount - COALESCE(e.receivedAmount, 0)"
+     ```
+2. **Doctrine DQL, NOT raw MySQL**: Do not use database-specific functions such as `GREATEST()`, `LEAST()`, `IFNULL()`, or `IF()`.
+   - Use `COALESCE(field, fallback)` instead of `IFNULL(field, fallback)`.
+   - Use `CASE WHEN ... THEN ... ELSE ... END` instead of `GREATEST()` / `LEAST()`:
+     ```javascript
+     // Correct:
+     sqlExpression: "CASE WHEN e.totalAmount - COALESCE(e.receivedAmount, 0) > 0 THEN e.totalAmount - COALESCE(e.receivedAmount, 0) ELSE 0 END"
+     ```
+3. **Entity References in Subqueries**:
+   - In single subqueries, reference related entities with `App\Entity\<EntityName>` (or bare `<EntityName>`).
+   - Example: `(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\Entity\OrderItem i WHERE i.orderId = e.id)`
+4. **Escaping**:
+   - In JSON tool arguments, write `"App\\Entity\\<EntityName>"` (which decodes to `App\Entity\<EntityName>`). Do not double-escape into 4 backslashes.
 
 
 # Transforms

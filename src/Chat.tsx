@@ -247,9 +247,10 @@ type ChatProps = {
   maxTasks?: MaxTask[];
   onRunMaxTasks?: () => void;
   onRetryMaxTasks?: () => void;
+  onStopMaxTask?: (taskId: number) => void;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, users, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null, maxTasks = [], onRunMaxTasks, onRetryMaxTasks }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, users, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null, maxTasks = [], onRunMaxTasks, onRetryMaxTasks, onStopMaxTask }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -542,6 +543,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
           isSending={isSending}
           onRun={onRunMaxTasks ?? (() => undefined)}
           onRetryFailed={onRetryMaxTasks ?? (() => undefined)}
+          onStopTask={onStopMaxTask}
         />
       );
       continue;

@@ -85,11 +85,14 @@ sync_schema({
           scale: 2,
           computed: true,
           computeExpression: "Array.isArray(data.items) ? data.items.reduce((sum, item) => sum + (Number(item.quantity || 0) * Number(item.unitPrice || 0)), 0).toFixed(2) : '0.00'",
+          // sqlExpression uses Doctrine DQL: reference entities with App\Entity\<EntityName> (in JSON: "App\\Entity\\<EntityName>")
           sqlExpression: "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\OrderItem i WHERE i.orderId = e.id)",
           form: false,
           table: true,
           sortable: true
         }
+        // Note: For balance or remaining fields (e.g. outstandingBalance), reference stored computed columns directly
+        // (e.g. "e.totalAmount - COALESCE(e.receivedAmount, 0)") rather than nesting multiple subqueries in subtraction.
       ],
       actions: [
         {
@@ -223,11 +226,11 @@ write_file({
   path: "Resource/Hooks/orders/OrderSequenceHook.php",
   content: `<?php
 
-namespace App\Resource\Hooks\\orders;
+namespace App\Resource\Hooks\orders;
 
-use App\Entity\\Order;
-use App\Resource\Hook\\BeforeSavesResource;
-use Doctrine\\ORM\\EntityManagerInterface;
+use App\Entity\Order;
+use App\Resource\Hook\BeforeSavesResource;
+use Doctrine\ORM\EntityManagerInterface;
 
 final class OrderSequenceHook implements BeforeSavesResource
 {
@@ -243,9 +246,9 @@ final class OrderSequenceHook implements BeforeSavesResource
         }
 
         // Generate month-wise sequence, e.g. 20261001, 20261002, ...
-        $orderDate = $entity->orderDate instanceof \\DateTimeInterface
+        $orderDate = $entity->orderDate instanceof \DateTimeInterface
             ? $entity->orderDate
-            : (isset($entity->orderDate) ? new \\DateTimeImmutable($entity->orderDate) : new \\DateTimeImmutable());
+            : (isset($entity->orderDate) ? new \DateTimeImmutable($entity->orderDate) : new \DateTimeImmutable());
         $prefix = $orderDate->format('Ym'); // e.g. "202610"
 
         $max = $entityManager->createQuery(

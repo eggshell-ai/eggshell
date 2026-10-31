@@ -147,7 +147,7 @@ impl SyncSchemaTool {
                     "resources": {
                         "type": "array",
                         "description": "Full resource definitions to create or completely replace. Use this for new resources. For incremental changes to existing resources, prefer `operations` instead.",
-                        "items": { "type": "object" }
+                        "items": { "type": "object", "additionalProperties": true }
                     },
                     "operations": {
                         "type": "array",
@@ -176,6 +176,7 @@ impl SyncSchemaTool {
                                 },
                                 "changes": {
                                     "type": "object",
+                                    "additionalProperties": true,
                                     "description": "For `updateField` / `updateResource`: camelCase properties to set. A `null` value removes the property."
                                 },
                                 "rename": {
@@ -255,10 +256,18 @@ impl Tool for SyncSchemaTool {
         let mut removed: Vec<String> = Vec::new();
 
         for new_resource in &full_resources {
-            let name = resource_name(new_resource)
+            let mut normalized_res = new_resource.clone();
+            if let Some(fields) = normalized_res.get_mut("fields").and_then(Value::as_array_mut) {
+                for f in fields {
+                    if let Some(map) = f.as_object_mut() {
+                        normalize_field_json(map);
+                    }
+                }
+            }
+            let name = resource_name(&normalized_res)
                 .ok_or("Every resource in `resources` must have a non-empty `name`.")?
                 .to_string();
-            upsert_resource(&mut schema_resources, &name, new_resource.clone());
+            upsert_resource(&mut schema_resources, &name, normalized_res);
             push_unique(&mut affected, &name);
         }
 
@@ -541,10 +550,12 @@ fn apply_operation(
             if !field.is_object() {
                 return Err("`addField` expects `field` to be a field definition object".into());
             }
-            let name = field_name(field)
+            let mut field_map = field.as_object().unwrap().clone();
+            normalize_field_json(&mut field_map);
+            let name = field_name(&Value::Object(field_map.clone()))
                 .ok_or("`addField` requires `field.name`")?
                 .to_string();
-            if field.get("type").and_then(Value::as_str).is_none() {
+            if field_map.get("type").and_then(Value::as_str).is_none() {
                 return Err(format!("field '{name}' requires a `type`"));
             }
             if field_index(&resources[index], &name).is_some() {
@@ -554,30 +565,65 @@ fn apply_operation(
             }
             let fields = require_fields_mut(&mut resources[index])?;
             let position = resolve_insert_index(object, fields)?;
-            fields.insert(position, field.clone());
+            fields.insert(position, Value::Object(field_map));
         }
         "updateField" => {
-            let name = object
+            let name = if let Some(n) = object
                 .get("field")
                 .and_then(Value::as_str)
                 .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .ok_or("`updateField` requires `field` to be the existing field name")?
-                .to_string();
-            let changes = object
+                .filter(|n| !n.is_empty())
+            {
+                n.to_string()
+            } else if let Some(field_obj) = object.get("field").and_then(Value::as_object) {
+                field_obj
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .ok_or("`updateField` requires `field.name` when `field` is an object")?
+                    .to_string()
+            } else {
+                return Err("`updateField` requires `field` to be the existing field name or an object with `name`".into());
+            };
+
+            let mut changes = object
                 .get("changes")
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
+
+            if let Some(field_obj) = object.get("field").and_then(Value::as_object) {
+                for (k, v) in field_obj {
+                    if k != "name" && !changes.contains_key(k) {
+                        changes.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+
+            if changes.is_empty() {
+                const RESERVED_OP_KEYS: [&str; 8] = [
+                    "action", "resource", "field", "changes", "rename", "before", "after", "index",
+                ];
+                for (k, v) in object {
+                    if !RESERVED_OP_KEYS.contains(&k.as_str()) {
+                        changes.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+
+            normalize_field_json(&mut changes);
+
             let rename = object
                 .get("rename")
                 .and_then(Value::as_str)
                 .map(str::trim)
-                .filter(|value| !value.is_empty());
+                .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case(&name));
+
             if changes.is_empty() && rename.is_none() {
-                return Err(
-                    "`updateField` requires at least one of `changes` or `rename`".into(),
-                );
+                return Err(format!(
+                    "`updateField` on field '{name}' requires at least one property change in `changes` or a new name in `rename`"
+                ));
             }
             if changes.get("name").is_some_and(Value::is_null) {
                 return Err("`updateField` cannot remove `name`; use `rename` instead".into());
@@ -608,6 +654,7 @@ fn apply_operation(
                 .as_object_mut()
                 .ok_or_else(|| format!("field '{name}' must be a JSON object"))?;
             apply_changes(field, &changes);
+            normalize_field_json(field);
             if rename.is_some() {
                 field.insert("name".to_string(), Value::String(new_name));
             }
@@ -800,6 +847,273 @@ pub fn save_schemas(
     write_schema_resources(project, &existing_resources)
 }
 
+fn collapse_backslashes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut in_backslash = false;
+    for ch in s.chars() {
+        if ch == '\\' {
+            if !in_backslash {
+                result.push('\\');
+                in_backslash = true;
+            }
+        } else {
+            in_backslash = false;
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn split_function_args(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut prev_char = '\0';
+
+    for ch in s.chars() {
+        if in_single_quote {
+            current.push(ch);
+            if ch == '\'' && prev_char != '\\' {
+                in_single_quote = false;
+            }
+        } else if in_double_quote {
+            current.push(ch);
+            if ch == '"' && prev_char != '\\' {
+                in_double_quote = false;
+            }
+        } else {
+            match ch {
+                '\'' => {
+                    in_single_quote = true;
+                    current.push(ch);
+                }
+                '"' => {
+                    in_double_quote = true;
+                    current.push(ch);
+                }
+                '(' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                ')' => {
+                    if depth > 0 {
+                        depth -= 1;
+                    }
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    args.push(current.trim().to_string());
+                    current.clear();
+                }
+                _ => {
+                    current.push(ch);
+                }
+            }
+        }
+        prev_char = ch;
+    }
+    if !current.trim().is_empty() {
+        args.push(current.trim().to_string());
+    }
+    args
+}
+
+fn find_matching_paren(s: &str, start_after_open: usize) -> Option<usize> {
+    let mut depth = 1;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut prev_char = '\0';
+
+    for (idx, ch) in s[start_after_open..].char_indices() {
+        let abs_idx = start_after_open + idx;
+        if in_single_quote {
+            if ch == '\'' && prev_char != '\\' {
+                in_single_quote = false;
+            }
+        } else if in_double_quote {
+            if ch == '"' && prev_char != '\\' {
+                in_double_quote = false;
+            }
+        } else {
+            match ch {
+                '\'' => in_single_quote = true,
+                '"' => in_double_quote = true,
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(abs_idx);
+                    }
+                }
+                _ => {}
+            }
+        }
+        prev_char = ch;
+    }
+    None
+}
+
+fn rewrite_sql_functions(mut expr: String) -> String {
+    let targets = ["GREATEST", "LEAST", "IFNULL", "NVL", "IF"];
+    let mut changed = true;
+    let mut iterations = 0;
+
+    while changed && iterations < 50 {
+        changed = false;
+        iterations += 1;
+
+        let upper = expr.to_ascii_uppercase();
+        let mut earliest_match: Option<(usize, usize, &'static str)> = None;
+
+        for &target in &targets {
+            let mut search_from = 0;
+            while let Some(pos) = upper[search_from..].find(target) {
+                let abs_pos = search_from + pos;
+                search_from = abs_pos + target.len();
+
+                if abs_pos > 0 {
+                    let prev_char = expr[..abs_pos].chars().last().unwrap();
+                    if prev_char.is_alphanumeric() || prev_char == '_' || prev_char == '$' {
+                        continue;
+                    }
+                }
+
+                let after = &expr[abs_pos + target.len()..];
+                let trimmed_after = after.trim_start();
+                if trimmed_after.starts_with('(') {
+                    let open_paren = abs_pos + target.len() + (after.len() - trimmed_after.len());
+                    if earliest_match.map_or(true, |(earliest, _, _)| abs_pos < earliest) {
+                        earliest_match = Some((abs_pos, open_paren, target));
+                    }
+                    break;
+                }
+            }
+        }
+
+        if let Some((start_pos, open_paren, target)) = earliest_match {
+            if let Some(close_paren) = find_matching_paren(&expr, open_paren + 1) {
+                let args_str = &expr[open_paren + 1..close_paren];
+                let args = split_function_args(args_str);
+
+                let replacement = match target {
+                    "IFNULL" | "NVL" if args.len() == 2 => {
+                        format!("COALESCE({}, {})", args[0], args[1])
+                    }
+                    "IF" if args.len() == 3 => {
+                        format!("(CASE WHEN {} THEN ({}) ELSE ({}) END)", args[0], args[1], args[2])
+                    }
+                    "GREATEST" if args.len() >= 2 => {
+                        let mut res = format!("(CASE WHEN ({}) >= ({}) THEN ({}) ELSE ({}) END)", args[0], args[1], args[0], args[1]);
+                        for next_arg in &args[2..] {
+                            res = format!("(CASE WHEN ({}) >= ({}) THEN ({}) ELSE ({}) END)", res, next_arg, res, next_arg);
+                        }
+                        res
+                    }
+                    "LEAST" if args.len() >= 2 => {
+                        let mut res = format!("(CASE WHEN ({}) <= ({}) THEN ({}) ELSE ({}) END)", args[0], args[1], args[0], args[1]);
+                        for next_arg in &args[2..] {
+                            res = format!("(CASE WHEN ({}) <= ({}) THEN ({}) ELSE ({}) END)", res, next_arg, res, next_arg);
+                        }
+                        res
+                    }
+                    _ => {
+                        continue;
+                    }
+                };
+
+                expr.replace_range(start_pos..=close_paren, &replacement);
+                changed = true;
+            }
+        }
+    }
+
+    expr
+}
+
+fn qualify_bare_entity_names(expr: &str) -> String {
+    let mut result = String::with_capacity(expr.len() + 32);
+    let mut chars = expr.char_indices().peekable();
+
+    while let Some((i, ch)) = chars.next() {
+        result.push(ch);
+        let is_from = if (ch == 'F' || ch == 'f') && i + 4 <= expr.len() {
+            expr[i..].to_ascii_uppercase().starts_with("FROM")
+                && (i == 0 || !expr[..i].chars().last().unwrap().is_alphanumeric())
+        } else {
+            false
+        };
+        let is_join = if (ch == 'J' || ch == 'j') && i + 4 <= expr.len() {
+            expr[i..].to_ascii_uppercase().starts_with("JOIN")
+                && (i == 0 || !expr[..i].chars().last().unwrap().is_alphanumeric())
+        } else {
+            false
+        };
+
+        if is_from || is_join {
+            let kw_len = 4;
+            for _ in 0..kw_len - 1 {
+                if let Some((_, c)) = chars.next() {
+                    result.push(c);
+                }
+            }
+
+            let mut ws = String::new();
+            while let Some(&(_, c)) = chars.peek() {
+                if c.is_whitespace() {
+                    ws.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+
+            if ws.is_empty() {
+                continue;
+            }
+            result.push_str(&ws);
+
+            let mut ident = String::new();
+            while let Some(&(_, c)) = chars.peek() {
+                if c.is_alphanumeric() || c == '_' || c == '\\' || c == '.' {
+                    ident.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+
+            if !ident.is_empty() {
+                let first = ident.chars().next().unwrap();
+                let upper_ident = ident.to_ascii_uppercase();
+                let is_keyword = matches!(upper_ident.as_str(), "SELECT" | "INDEX" | "SET");
+                if first.is_ascii_uppercase() && !ident.contains('\\') && !ident.contains('.') && !is_keyword {
+                    result.push_str("App\\Entity\\");
+                }
+                result.push_str(&ident);
+            }
+        }
+    }
+
+    result
+}
+
+pub fn normalize_sql_expression(expr: &str) -> String {
+    let collapsed = collapse_backslashes(expr);
+    let qualified = qualify_bare_entity_names(&collapsed);
+    rewrite_sql_functions(qualified)
+}
+
+fn normalize_field_json(field: &mut Map<String, Value>) {
+    if let Some(val) = field.get("sqlExpression").and_then(Value::as_str) {
+        field.insert("sqlExpression".to_string(), Value::String(normalize_sql_expression(val)));
+    }
+    if let Some(val) = field.get("sql_expression").and_then(Value::as_str) {
+        field.insert("sql_expression".to_string(), Value::String(normalize_sql_expression(val)));
+    }
+}
+
 fn js(s: &str) -> String {
     serde_json::to_string(s).unwrap()
 }
@@ -966,8 +1280,9 @@ fn field_js(f: &Field) -> String {
     if let Some(v) = &f.display_rules {
         s.push_str(&format!("\n      .displayRules({})", serde_json::to_string(v).unwrap_or_default()));
     }
+    let normalized_sql = f.sql_expression.as_deref().map(normalize_sql_expression);
     call!("computeExpression", f.compute_expression.as_deref());
-    call!("sqlExpression", f.sql_expression.as_deref());
+    call!("sqlExpression", normalized_sql.as_deref());
     flag!("computed", f.computed);
     flag!("integer", f.integer);
     flag!("required", f.required);
@@ -1035,7 +1350,8 @@ fn backend_code(r: &Resource, class: &str) -> String {
             if f.computed.unwrap_or(false) {
                 let mut computed_args = Vec::new();
                 if let Some(ref expr) = f.sql_expression {
-                    let escaped = expr.replace('\\', "\\\\").replace('\'', "\\'");
+                    let normalized = normalize_sql_expression(expr);
+                    let escaped = normalized.replace('\\', "\\\\").replace('\'', "\\'");
                     computed_args.push(format!("sqlExpression: '{}'", escaped));
                 }
                 if let Some(ref expr) = f.compute_expression {
@@ -1603,4 +1919,97 @@ mod tests {
         assert!(code.contains("#[ORM\\Column(type: Types::DECIMAL, precision: 10, scale: 2, nullable: true)]"));
         assert!(code.contains("public ?string $totalAmount = null;"));
     }
+
+    #[test]
+    fn normalizes_over_escaped_backslashes_in_sql_expression() {
+        let double_escaped = "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\\\Entity\\\\SalesItem i WHERE i.saleId = e.id)";
+        assert_eq!(
+            normalize_sql_expression(double_escaped),
+            "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SalesItem i WHERE i.saleId = e.id)"
+        );
+
+        let resource: Resource = serde_json::from_value(json!({
+            "name": "sales",
+            "endpoint": "/sales",
+            "fields": [
+                {
+                    "name": "totalAmount",
+                    "type": "decimal",
+                    "scale": 2,
+                    "computed": true,
+                    "sqlExpression": "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\\\Entity\\\\SalesItem i WHERE i.saleId = e.id)"
+                }
+            ]
+        }))
+        .unwrap();
+
+        let code = backend_code(&resource, "Sale");
+        assert!(code.contains("#[Computed(sqlExpression: '(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\\\Entity\\\\SalesItem i WHERE i.saleId = e.id)')]"));
+    }
+
+    #[test]
+    fn qualifies_bare_entity_names_in_sql_expression() {
+        let bare = "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM SalesItem i WHERE i.saleId = e.id)";
+        assert_eq!(
+            normalize_sql_expression(bare),
+            "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SalesItem i WHERE i.saleId = e.id)"
+        );
+    }
+
+    #[test]
+    fn rewrites_mysql_functions_in_sql_expression_to_dql() {
+        let greatest_expr = "GREATEST(e.totalAmount - COALESCE(e.receivedAmount, 0), 0)";
+        assert_eq!(
+            normalize_sql_expression(greatest_expr),
+            "(CASE WHEN (e.totalAmount - COALESCE(e.receivedAmount, 0)) >= (0) THEN (e.totalAmount - COALESCE(e.receivedAmount, 0)) ELSE (0) END)"
+        );
+
+        let ifnull_expr = "IFNULL(e.receivedAmount, 0)";
+        assert_eq!(
+            normalize_sql_expression(ifnull_expr),
+            "COALESCE(e.receivedAmount, 0)"
+        );
+
+        let if_expr = "IF(e.totalAmount > 0, e.totalAmount, 0)";
+        assert_eq!(
+            normalize_sql_expression(if_expr),
+            "(CASE WHEN e.totalAmount > 0 THEN (e.totalAmount) ELSE (0) END)"
+        );
+    }
+
+    #[test]
+    fn rejects_noop_update_field_with_same_rename_and_accepts_inline_changes() {
+        let mut resources = schema_fixture();
+        let error = apply_operation(
+            &mut resources,
+            &json!({
+                "action": "updateField",
+                "resource": "products",
+                "field": "price",
+                "rename": "price"
+            }),
+        )
+        .unwrap_err();
+        assert!(error.contains("requires at least one property change"), "{error}");
+
+        // Updating with field object
+        apply_operation(
+            &mut resources,
+            &json!({
+                "action": "updateField",
+                "resource": "products",
+                "field": {
+                    "name": "price",
+                    "sqlExpression": "GREATEST(e.price, 0)"
+                }
+            }),
+        )
+        .unwrap();
+        let price_field = &resources[0]["fields"][1];
+        assert_eq!(
+            price_field["sqlExpression"],
+            json!("(CASE WHEN (e.price) >= (0) THEN (e.price) ELSE (0) END)")
+        );
+    }
+
 }

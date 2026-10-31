@@ -1251,6 +1251,11 @@
   color: #b91c1c;
 }
 
+.max-status-pill.paused {
+  background: #fef3c7;
+  color: #b45309;
+}
+
 .max-spinner {
   display: inline-block;
   width: 10px;
@@ -1359,6 +1364,11 @@
   color: #b91c1c;
 }
 
+.max-task-pill.paused {
+  background: #fef3c7;
+  color: #b45309;
+}
+
 .max-task-empty {
   padding: 12px;
   font-size: 0.82rem;
@@ -1397,6 +1407,15 @@
 
 .max-run-btn.secondary:hover:not(:disabled) {
   background: #ddd6fe;
+}
+
+.max-run-btn.danger {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.max-run-btn.danger:hover:not(:disabled) {
+  background: #dc2626;
 }
 
 .max-run-btn:disabled {

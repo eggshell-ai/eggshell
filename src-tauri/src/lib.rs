@@ -862,6 +862,18 @@ async fn send_message(
     result.map_err(|error| error.to_string())
 }
 
+/// Updates the status of a single Max task (e.g. mark stopped/failed from UI).
+#[tauri::command]
+async fn update_max_task_status(
+    task_id: i64,
+    status: String,
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<(), String> {
+    db::MaxTasksRepository::set_status(pool.inner(), task_id, &status, None)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Lists the persisted Max mode task list for a session.
 #[tauri::command]
 async fn list_max_tasks(
@@ -1427,6 +1439,7 @@ pub fn run() {
             wrap_up_chat,
             stop_chat,
             list_max_tasks,
+            update_max_task_status,
             run_max_tasks,
             compact_session,
             submit_feedback,

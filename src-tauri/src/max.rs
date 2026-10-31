@@ -292,7 +292,7 @@ pub async fn run_max_execution(
                         }));
                     })),
                     cancellation_token: Some(Arc::clone(&control.force_stop)),
-                    max_turns: Some(15),
+                    max_turns: Some(30),
                     ..Default::default()
                 },
             )
@@ -314,6 +314,63 @@ pub async fn run_max_execution(
                         "event": {
                             "type": "max_status",
                             "data": { "phase": "stopped" }
+                        }
+                    }));
+                    break;
+                }
+
+                if outcome.hit_max_turns {
+                    // Turn limit was reached before task concluded. Leave task resumable
+                    // and pause execution so the user can choose to Continue or Stop.
+                    MaxTasksRepository::set_status(
+                        pool,
+                        task.id,
+                        "paused",
+                        Some(&truncate(&outcome.content, 2000)),
+                    )
+                    .await?;
+
+                    messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: format!(
+                            "### Task {} of {} paused (turn limit reached): {}
+
+{}",
+                            task.task_index + 1,
+                            total,
+                            task.title,
+                            outcome.content
+                        ),
+                        data: Some(json!({
+                            "isMaxTaskResult": true,
+                            "taskId": task.id,
+                            "taskIndex": task.task_index,
+                            "title": task.title,
+                            "paused": true,
+                        })),
+                    });
+
+                    event_sink(json!({
+                        "projectId": project_id,
+                        "sessionId": session_id,
+                        "event": {
+                            "type": "max_task_paused",
+                            "data": {
+                                "taskId": task.id,
+                                "taskIndex": task.task_index,
+                                "title": task.title,
+                                "total": total,
+                                "summary": truncate(&outcome.content, 2000)
+                            }
+                        }
+                    }));
+
+                    event_sink(json!({
+                        "projectId": project_id,
+                        "sessionId": session_id,
+                        "event": {
+                            "type": "max_status",
+                            "data": { "phase": "halted" }
                         }
                     }));
                     break;

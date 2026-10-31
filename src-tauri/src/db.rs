@@ -326,7 +326,7 @@ impl MaxTasksRepository {
         session_id: i64,
     ) -> Result<Option<MaxTask>, sqlx::Error> {
         sqlx::query_as::<_, MaxTask>(
-            "SELECT id, project_id, session_id, task_index, title, description, status, result_summary FROM max_tasks WHERE project_id = ? AND session_id = ? AND status IN ('pending', 'failed') ORDER BY task_index ASC LIMIT 1",
+            "SELECT id, project_id, session_id, task_index, title, description, status, result_summary FROM max_tasks WHERE project_id = ? AND session_id = ? AND status IN ('pending', 'failed', 'paused') ORDER BY task_index ASC LIMIT 1",
         )
         .bind(project_id)
         .bind(session_id)

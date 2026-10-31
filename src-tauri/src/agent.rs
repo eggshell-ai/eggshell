@@ -24,6 +24,8 @@ pub struct AgentRunResult {
     pub content: String,
     pub tool_calls: Vec<Value>,
     pub token_usage: Option<u64>,
+    #[serde(default)]
+    pub hit_max_turns: bool,
 }
 
 /// Executes an LLM conversation until it produces a response without tool calls.
@@ -91,6 +93,7 @@ impl AgentService {
         let mut log = Vec::new();
         let mut final_content = String::new();
         let mut latest_token_usage: Option<u64> = None;
+        let mut hit_max_turns = false;
         let cancel_token = options.cancellation_token.clone();
 
         while turn < max_turns {
@@ -190,6 +193,11 @@ impl AgentService {
             if tool_calls.is_empty() {
                 break;
             }
+            if turn >= max_turns {
+                self.logger.warning(format!("agent reached maximum turns ({max_turns})"), true);
+                hit_max_turns = true;
+                break;
+            }
             all_tool_calls.extend(tool_calls.clone());
 
             let mut cancelled_during_tools = false;
@@ -261,6 +269,8 @@ impl AgentService {
         if final_content.trim().is_empty() {
             if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
                 final_content = "Response stopped by user.".to_string();
+            } else if hit_max_turns {
+                final_content = "Reached maximum allowed turns before completing all actions.".to_string();
             } else if !all_tool_calls.is_empty() {
                 final_content = "Completed requested actions.".to_string();
             }
@@ -270,6 +280,7 @@ impl AgentService {
             content: final_content,
             tool_calls: all_tool_calls,
             token_usage: latest_token_usage,
+            hit_max_turns,
         };
         emit(
             &options,
