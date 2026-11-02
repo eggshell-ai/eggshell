@@ -24,6 +24,8 @@ load_skill({ skillName: "crud_creation", document: "hooks_and_lifecycle" })
 ## 1. Create a Resource
 A resource is the schema / entity that's used to generate the forms, data grids, and APIs. In order to create a new resource, called `sync_schema` tool
 
+> Changing a resource that already exists? Use `sync_schema({ operations: [...] })` and load `docs/editing.md` first. Do not re-emit the whole resource, and never model the same foreign key twice.
+
 Example
 ```javascript
 sync_schema({
@@ -267,7 +269,7 @@ load_skill({
 
 - `docs/lookup.md`: Load data against a resource (e.g. automatically load price agaisnt a product for UX)
 
-- `docs/editing.md`: Edit an existing resource (e.g. add phone # to existing customer)
+- `docs/editing.md`: Edit an existing resource (e.g. add phone # to existing customer). **Load this first whenever you need to change a resource that already exists** — it covers `sync_schema` operations, how to change a field without renaming it, and the common mistakes that get rejected.
 
 - `docs/row_actions.md`: Explains row actions with custom popups and API format (e.g. Add a "Converted" button on each lead, add a quick "Activate / Deactivate" button)
 

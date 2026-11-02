@@ -97,6 +97,42 @@ sync_schema({
 })
 ```
 
+Convert a stored foreign-key field into a dropdown bound to another resource.
+This is the most common schema edit: the FK column already exists, it only needs
+to be presented as a `select` instead of a bare number input.
+
+```javascript
+sync_schema({
+  operations: [
+    {
+      action: "updateField",
+      resource: "payments",
+      field: "saleId",
+      changes: { type: "select", resource: "sales", required: true, form: true, table: true }
+    }
+  ]
+})
+```
+
+A field can only be modelled **once**. If the resource already has a display-only
+`select` field pointing at the same resource (for example `sale`) *and* the raw
+FK (`saleId`), keep one of them and remove the other, otherwise the generated
+entity gets two columns for one relationship:
+
+```javascript
+sync_schema({
+  operations: [
+    { action: "removeField", resource: "payments", field: "sale" },
+    {
+      action: "updateField",
+      resource: "payments",
+      field: "saleId",
+      changes: { type: "select", resource: "sales", required: true, form: true, table: true }
+    }
+  ]
+})
+```
+
 Remove a field and reorder another:
 
 ```javascript
@@ -154,6 +190,28 @@ sync_schema({
 - Do not rename resources through `updateResource`; create the new resource and
   remove the old one.
 - Do not use `changes` to add or remove fields; use the field actions.
+
+### Common mistakes
+
+Each of these produces a tool error instead of an edit. If you hit one, change the
+call — retrying the same shape will fail identically.
+
+| Mistake | Why it fails | Correct shape |
+|---|---|---|
+| `{ action: "updateField", resource: "x", field: "y", rename: "y" }` | `rename` equals the current name, so nothing would change | Put the new properties in `changes`; only use `rename` for a *different* name |
+| `{ action: "updateField", resource: "x", field: "y", label: "New" }` | Stray properties are folded into `changes`, but this form is only a fallback | Prefer the explicit `changes: { label: "New" }` |
+| `{ action: "updateResource", resource: "x" }` with no `changes` | `updateResource` always needs a `changes` object | `changes: { titleExpression: "data.name" }` |
+| `{ action: "updateField", ..., changes: { fields: [...] } }` | Field editing must go through the field actions | Use `addField` / `removeField` / `moveField` |
+| Two fields for one relationship (`sale` select + `saleId` number) | Generates two columns for the same FK | Keep one field and `removeField` the other |
+
+Operations run in order and the whole call is all-or-nothing: if operation #3
+fails, operations #1-#2 are **not** saved. Nothing is written to disk and no
+migration runs, so fixing the failing operation and resending the full
+`operations` array is always safe.
+
+`updateField` errors report the received operation, the current field
+definition, and the resource's field names, so you can usually correct the call
+without another `read_schema`.
 
 ### After editing
 

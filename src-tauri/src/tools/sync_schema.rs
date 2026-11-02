@@ -172,16 +172,16 @@ impl SyncSchemaTool {
                                     "description": "Name of the existing resource to edit."
                                 },
                                 "field": {
-                                    "description": "For `addField`: a full field definition object (name + type + properties). For `updateField`, `removeField`, and `moveField`: the existing field name as a string."
+                                    "description": "For `addField`: a full field definition object (name + type + properties). For `updateField`, `removeField`, and `moveField`: the existing field name as a string. To CHANGE an existing field, keep `field` as the current name and put every new property in `changes`."
                                 },
                                 "changes": {
                                     "type": "object",
                                     "additionalProperties": true,
-                                    "description": "For `updateField` / `updateResource`: camelCase properties to set. A `null` value removes the property."
+                                    "description": "For `updateField` / `updateResource`: camelCase properties to set. A `null` value removes the property. To convert a field to a different type (e.g. number -> select), set `type` plus the matching properties here. This is how you change a field; `rename` only changes the name."
                                 },
                                 "rename": {
                                     "type": "string",
-                                    "description": "For `updateField`: the new field name. Renaming drops and re-adds the database column."
+                                    "description": "For `updateField`: the NEW field name. Must differ from `field`; a `rename` equal to the current name is a no-op and is rejected. Renaming drops and re-adds the database column."
                                 },
                                 "before": {
                                     "type": "string",
@@ -271,17 +271,12 @@ impl Tool for SyncSchemaTool {
             push_unique(&mut affected, &name);
         }
 
-        for (position, operation) in operations.iter().enumerate() {
-            let outcome = apply_operation(&mut schema_resources, operation)
-                .map_err(|error| format!("Operation #{} failed: {}", position + 1, error))?;
-            match outcome {
-                OperationOutcome::Touched(name) => push_unique(&mut affected, &name),
-                OperationOutcome::Removed(name) => {
-                    affected.retain(|existing| !existing.eq_ignore_ascii_case(&name));
-                    push_unique(&mut removed, &name);
-                }
-            }
-        }
+        apply_operations(
+            &mut schema_resources,
+            &operations,
+            &mut affected,
+            &mut removed,
+        )?;
 
         let mut generated: Vec<Resource> = Vec::with_capacity(affected.len());
         for name in &affected {
@@ -431,6 +426,22 @@ fn field_name(field: &Value) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
+/// Lists a resource's field names for error messages so the model can correct
+/// a mistyped `field` without another `read_schema` round trip.
+fn list_field_names(resource: &Value) -> String {
+    resource
+        .get("fields")
+        .and_then(Value::as_array)
+        .map(|fields| {
+            fields
+                .iter()
+                .filter_map(field_name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
 fn field_index(resource: &Value, name: &str) -> Option<usize> {
     resource
         .get("fields")
@@ -512,6 +523,66 @@ fn resolve_insert_index(
     }
 
     Ok(fields.len())
+}
+
+/// Applies `operations` in order as one all-or-nothing unit.
+///
+/// `resources` is only mutated when every operation succeeds, so a bad
+/// operation can never leave a half-applied schema behind. The returned error
+/// states that nothing was applied and lists the resource's field names, which
+/// is usually enough for the caller to correct the operation without a
+/// `read_schema` round trip.
+fn apply_operations(
+    resources: &mut Vec<Value>,
+    operations: &[Value],
+    affected: &mut Vec<String>,
+    removed: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut working = resources.clone();
+    let mut working_affected = affected.clone();
+    let mut working_removed = removed.clone();
+
+    for (position, operation) in operations.iter().enumerate() {
+        let resource = operation
+            .get("resource")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let outcome = apply_operation(&mut working, operation).map_err(|error| {
+            // Operations run in order, so earlier ones have already been
+            // applied to `working`. Nothing reached disk, but say so: a
+            // partial edit silently discarded is what makes retries confusing.
+            let discarded = match position {
+                0 => String::new(),
+                1 => " Operation #1 was valid but was discarded.".to_string(),
+                n => format!(" Operations #1-#{n} were valid but were discarded."),
+            };
+            let available = find_resource_index(&working, &resource)
+                .map(|index| list_field_names(&working[index]))
+                .unwrap_or_default();
+            let hint = if available.is_empty() {
+                String::new()
+            } else {
+                format!(" Fields on '{resource}': {available}.")
+            };
+            format!(
+                "Operation #{} failed: {error}{discarded} No changes were applied.{hint}",
+                position + 1
+            )
+        })?;
+        match outcome {
+            OperationOutcome::Touched(name) => push_unique(&mut working_affected, &name),
+            OperationOutcome::Removed(name) => {
+                working_affected.retain(|existing| !existing.eq_ignore_ascii_case(&name));
+                push_unique(&mut working_removed, &name);
+            }
+        }
+    }
+
+    *resources = working;
+    *affected = working_affected;
+    *removed = working_removed;
+    Ok(())
 }
 
 /// Applies one incremental edit operation to the schema resource list.
@@ -614,15 +685,45 @@ fn apply_operation(
 
             normalize_field_json(&mut changes);
 
-            let rename = object
+            let requested_rename = object
                 .get("rename")
                 .and_then(Value::as_str)
                 .map(str::trim)
-                .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case(&name));
+                .filter(|value| !value.is_empty());
+            let rename = requested_rename.filter(|value| !value.eq_ignore_ascii_case(&name));
+
+            // A `rename` that repeats the current name is the single most common
+            // dead end: the model intends to "re-declare" the field with new
+            // properties but puts them nowhere, then retries the identical call.
+            // Say what went wrong, show the corrected shape for this exact
+            // resource/field, and echo what was received.
+            if changes.is_empty()
+                && rename.is_none()
+                && requested_rename.is_some_and(|value| value.eq_ignore_ascii_case(&name))
+            {
+                let current = field_index(&resources[index], &name)
+                    .map(|position| resources[index]["fields"][position].clone())
+                    .unwrap_or(Value::Null);
+                return Err(format!(
+                    "`updateField` on field '{name}' of resource '{resource_name}': `rename` is set to '{name}', \
+                     which is the field's current name, so the operation is a no-op. To change properties, put \
+                     them in `changes` instead, for example: \
+                     {{ \"action\": \"updateField\", \"resource\": \"{resource_name}\", \"field\": \"{name}\", \
+                     \"changes\": {{ \"required\": true }} }}. `rename` is only for giving the field a different name.\n\
+                     Received operation: {}\nCurrent field definition: {}",
+                    serde_json::to_string(operation).unwrap_or_default(),
+                    serde_json::to_string(&current).unwrap_or_default()
+                ));
+            }
 
             if changes.is_empty() && rename.is_none() {
                 return Err(format!(
-                    "`updateField` on field '{name}' requires at least one property change in `changes` or a new name in `rename`"
+                    "`updateField` on field '{name}' of resource '{resource_name}' requires at least one property \
+                     change in `changes` or a new name in `rename`. Put the properties to change in `changes`, for \
+                     example: {{ \"action\": \"updateField\", \"resource\": \"{resource_name}\", \"field\": \"{name}\", \
+                     \"changes\": {{ \"required\": true, \"table\": true }} }}.\n\
+                     Received operation: {}",
+                    serde_json::to_string(operation).unwrap_or_default()
                 ));
             }
             if changes.get("name").is_some_and(Value::is_null) {
@@ -1990,7 +2091,12 @@ mod tests {
             }),
         )
         .unwrap_err();
-        assert!(error.contains("requires at least one property change"), "{error}");
+        // A same-name rename gets the dedicated, self-correcting message.
+        assert!(error.contains("no-op"), "{error}");
+        assert!(error.contains("changes"), "{error}");
+        assert!(error.contains("\"required\": true"), "{error}");
+        assert!(error.contains("Received operation"), "{error}");
+        assert!(error.contains("Current field definition"), "{error}");
 
         // Updating with field object
         apply_operation(
@@ -2010,6 +2116,145 @@ mod tests {
             price_field["sqlExpression"],
             json!("(CASE WHEN (e.price) >= (0) THEN (e.price) ELSE (0) END)")
         );
+    }
+
+    /// A rename equal to the current name is the exact call the agent retried
+    /// three times in production. The error must name the mistake, echo the
+    /// received operation, and report the current field definition.
+    #[test]
+    fn noop_rename_error_reports_received_operation_and_current_field() {
+        let mut resources = schema_fixture();
+        let error = apply_operation(
+            &mut resources,
+            &json!({
+                "action": "updateField",
+                "resource": "products",
+                "field": "price",
+                "rename": "PRICE"
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("no-op"), "{error}");
+        assert!(error.contains("\"rename\""), "{error}");
+        assert!(error.contains("Current field definition"), "{error}");
+        assert!(error.contains("\"decimal\""), "{error}");
+        // Rename matching is case-insensitive, so the error explains itself.
+        assert!(error.contains("updateField"), "{error}");
+    }
+
+    /// Properties supplied at the top level (not in `changes`) still work, and
+    /// that fallback must not be mistaken for a no-op.
+    #[test]
+    fn inline_top_level_properties_change_the_field() {
+        let mut resources = schema_fixture();
+        apply_operation(
+            &mut resources,
+            &json!({
+                "action": "updateField",
+                "resource": "products",
+                "field": "price",
+                "required": true
+            }),
+        )
+        .unwrap();
+        assert_eq!(resources[0]["fields"][1]["required"], json!(true));
+    }
+
+    /// Converts a scalar FK into a resource-bound select — the edit that failed
+    /// in production because it was expressed as a no-op `rename`.
+    #[test]
+    fn converts_scalar_field_into_resource_select_via_changes() {
+        let mut resources = schema_fixture();
+        resources[0]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "name": "saleId", "type": "number", "label": "Sale" }));
+
+        apply_operation(
+            &mut resources,
+            &json!({
+                "action": "updateField",
+                "resource": "products",
+                "field": "saleId",
+                "changes": {
+                    "type": "select",
+                    "resource": "sales",
+                    "required": true,
+                    "form": true,
+                    "table": true
+                }
+            }),
+        )
+        .unwrap();
+
+        let sale_id = &resources[0]["fields"][2];
+        assert_eq!(sale_id["type"], json!("select"));
+        assert_eq!(sale_id["resource"], json!("sales"));
+        assert_eq!(sale_id["required"], json!(true));
+    }
+
+    /// A failing operation must roll back the ones before it, and the error must
+    /// say so. In production a valid `resources` payload plus one bad operation
+    /// was discarded with only "Operation #1 failed: ...".
+    #[test]
+    fn failed_operation_rolls_back_earlier_operations() {
+        let mut resources = schema_fixture();
+        let original = resources.clone();
+        let mut affected = Vec::new();
+        let mut removed = Vec::new();
+
+        let error = apply_operations(
+            &mut resources,
+            &[
+                json!({
+                    "action": "addField",
+                    "resource": "products",
+                    "field": { "name": "sku", "type": "text" }
+                }),
+                json!({
+                    "action": "updateField",
+                    "resource": "products",
+                    "field": "price",
+                    "rename": "price"
+                }),
+            ],
+            &mut affected,
+            &mut removed,
+        )
+        .unwrap_err();
+
+        assert_eq!(resources, original, "schema must be untouched");
+        assert!(affected.is_empty(), "no resource may be reported as touched");
+        assert!(error.contains("Operation #2 failed"), "{error}");
+        assert!(error.contains("Operation #1 was valid but was discarded"), "{error}");
+        assert!(error.contains("No changes were applied"), "{error}");
+        assert!(error.contains("Fields on 'products'"), "{error}");
+        assert!(error.contains("sku") || error.contains("price"), "{error}");
+    }
+
+    /// Successful operations still commit and report the touched resource.
+    #[test]
+    fn successful_operations_commit_and_report_touched_resource() {
+        let mut resources = schema_fixture();
+        let mut affected = Vec::new();
+        let mut removed = Vec::new();
+
+        apply_operations(
+            &mut resources,
+            &[json!({
+                "action": "addField",
+                "resource": "products",
+                "field": { "name": "sku", "type": "text" }
+            })],
+            &mut affected,
+            &mut removed,
+        )
+        .unwrap();
+
+        assert_eq!(field_names(&resources), ["name", "price", "sku"]);
+        assert_eq!(affected, vec!["products".to_string()]);
+        assert!(removed.is_empty());
     }
 
 }
