@@ -10,19 +10,21 @@ implementations that scaffold and run generated projects.
 |---|---|
 | `lib.rs` | Tauri entry + all `#[tauri::command]` handlers. `run()` builds the app, manages shared state, registers handlers. Helpers `initialize_project(...)`, `start_project(...)`, `start_managed_mysql`. |
 | `main.rs` | Initializes Sentry (telemetry-gated) and calls `eggshell_lib::run()`. |
-| `llm.rs` | Core traits: `App`, `Shell`, `Skill`, `Tool`, `LLMService`; `AgentOptions`, `StreamChunk`; app definitions `AdminPanelApp`, `PlanningApp`, `QaApp`; `default_skills()`. |
-| `agent.rs` | `AgentService` — the agent loop (`run_agent`), streaming, tool dispatch, conversation logging, `attach_skills_summary`, `attach_artifacts`. |
+| `llm.rs` | Core traits: `App`, `Shell`, `Skill`, `Tool`, `LLMService`; `AgentOptions`, `StreamChunk`; re-exports the app definitions from `apps/`; `default_skills()`. |
+| `apps/` | One module per agent mode: `admin_panel.rs` (`AdminPanelApp`), `planning.rs` (`PlanningApp`), `qa.rs` (`QaApp`), `max_planner.rs` (`MaxPlannerApp`); re-exported from `apps/mod.rs`. See [`planning-modes.md`](./planning-modes.md). |
+| `agent.rs` | `AgentService` — the agent loop (`run_agent`), streaming, tool dispatch, conversation logging, `attach_skills_summary`, `attach_artifacts`, repeated-failing-call guard (`fingerprint_tool_call`). |
 | `skill_loader.rs` | `MarkdownSkill` + `load_all()` — embeds `src/skills/**` with `include_dir!`, parses `SKILL.md` frontmatter, and serves bundled files by path. |
 | `skills/<skill>/SKILL.md` | One folder per runtime skill, with optional supporting files (e.g. `docs/*.md`) alongside it (see [`skill-system.md`](./skill-system.md)). |
 | `tools/` | Agent tools (see [`tools.md`](./tools.md)). |
 | `react.rs` / `symfony.rs` | `Shell` implementations that copy templates, install deps, and start dev servers. |
-| `db.rs` + `migrations/` | SQLite via `sqlx`; repositories `ProjectsRepository`, `SessionsRepository`, `UsersRepository`; SQL migrations in `src-tauri/migrations/`. |
+| `db.rs` + `migrations/` | SQLite via `sqlx`; repositories `ProjectsRepository`, `SessionsRepository`, `UsersRepository`, `MaxTasksRepository`; SQL migrations in `src-tauri/migrations/` (auto-applied at startup via `sqlx::migrate!`). |
 | `setup.rs`, `dependencies.rs` | Managed toolchain paths (PHP/Node/MySQL under `%APPDATA%/eggshell`), dependency detection/install. |
 | `config.rs` | `AppConfig` (version, providers, mysql, flags), `ConfigService`, `current_version()`. |
 | `telemetry.rs` | Enable/disable telemetry, scope config, record events. |
 | `logger.rs` | Central in-memory `Logger` with a broadcast channel and `global()` mirror. |
 | `progress.rs` | `ProgressLog` with multi-channel streaming (`LogLine`), emits `project-log`/`progress` events. |
 | `iterate.rs` | The Iterate auto-improvement loop (`run_iterate_loop`, `IterationControl`, planner/implementer/QA phases). |
+| `max.rs` | The Max two-phase orchestrator: `run_max_breakdown` (plan once, `parse_tasks`), `run_max_execution` (one `AdminPanelApp` run per task), `MaxControl`. See [`planning-modes.md`](./planning-modes.md). |
 | `providers/` | LLM providers: `mod.rs` (`ProviderHub`, `registered_providers`, `build_service`), `openai.rs` (`OpenAiService`), `ollama.rs` (`OllamaService`). |
 | `mock_llm.rs` | `MockLlmService` for tests. |
 
@@ -37,15 +39,20 @@ implementations that scaffold and run generated projects.
 
 ## App definitions
 
-Three `App` implementations define what an agent can do:
+Four `App` implementations define what an agent can do (see
+[`planning-modes.md`](./planning-modes.md) for the mode routing and orchestration):
 
 - **`AdminPanelApp`** (alias `AdminPanel`) — the builder. Shells
   `[SymfonyShell, ReactShell]`; tools include the full file/schema/lint/user set;
   a large `system_prompt()` describing Next.js App Router pages and
   `menu-items/menu.json`.
 - **`PlanningApp`** — read-only planner. Tools: `load_skill`, `read_file`,
-  `read_schema`. Produces structured Markdown plans, no writes.
+  `read_schema`. Produces a free-form Markdown plan (five required sections),
+  saved to `<app_data>/plans/` and tagged `{ isPlan, planPath }`.
 - **`QaApp`** — visual QA. Tools include the `browser_*` tools + `lint_code`.
+- **`MaxPlannerApp`** — phase 1 of Max mode. Tools: `read_file`, `read_schema`
+  only, and it runs with `skills: Some(Vec::new())` so no skills catalogue is
+  appended. Emits **one** sectioned Markdown plan that `max::parse_tasks` reads.
 
 ## Tauri commands (`lib.rs`)
 
@@ -55,6 +62,7 @@ Grouped roughly:
 - **Config/providers**: `load_setup_state`, `save_privacy_settings`, `save_auto_update_setting`, `config::save_mysql_config`, `config::save_mysql_settings`, `save_provider_config`, `test_provider_config`, `delete_provider`, `select_model`, `fetch_models`
 - **Projects**: `list_projects`, `create_project`, `delete_project`, `start_project`
 - **Users/sessions/chat**: `list_users`, `list_sessions`, `delete_session`, `send_message`, `wrap_up_chat`, `stop_chat`, `compact_session`
+- **Max mode**: `run_max_tasks`, `list_max_tasks`, `update_max_task_status`
 - **Misc**: `submit_feedback`, `get_app_version`
 
 The frontend calls these with Tauri `invoke("<command>", args)`.

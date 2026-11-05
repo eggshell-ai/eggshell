@@ -540,6 +540,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
           key={`max-plan-${index}`}
           data={message.data as MaxPlanData}
           tasks={maxTasks}
+          plan={message.content}
           isSending={isSending}
           onRun={onRunMaxTasks ?? (() => undefined)}
           onRetryFailed={onRetryMaxTasks ?? (() => undefined)}

@@ -34,8 +34,10 @@ impl Default for MaxControl {
     }
 }
 
-/// Runs Phase 1 of Max mode: break the user's requirement into a simple,
-/// business-oriented task list, persist it, and return the updated session.
+/// Runs Phase 1 of Max mode: break the user's requirement into a sectioned,
+/// skill-aligned plan (one `##` section per buildable chunk, each naming the
+/// entity, fields, screen/menu and build steps), persist it, and return the
+/// updated session.
 ///
 /// This does not execute any task. The frontend renders the task list and the
 /// user starts Phase 2 (execution) explicitly.
@@ -81,7 +83,9 @@ pub async fn run_max_breakdown(
         LLMMessage {
             role: LLMMessageRole::User,
             content: format!(
-                "Break the following requirement into a simple, business-oriented task list.\n\n{}",
+                "Break the following requirement into buildable sections. Give every section its \
+entity and fields, its screen and menu wiring, and its build steps, following the response \
+format in your instructions. Write the plan once, in Markdown only.\n\n{}",
                 user_message
             ),
             tool_call_id: None,
@@ -112,7 +116,7 @@ pub async fn run_max_breakdown(
                         "maxStage": "breakdown"
                     }));
                 })),
-                max_turns: Some(5),
+                max_turns: Some(8),
                 ..Default::default()
             },
         )
@@ -516,8 +520,9 @@ async fn persist_progress(
 /// Builds the per-task prompt for an implementer agent.
 ///
 /// Each agent gets the overall goal, the full ordered task list (so it knows
-/// where its chunk fits), and its single task. It is told to re-read the
-/// relevant skills and schema before implementing.
+/// where its chunk fits), and its single task section verbatim. That section
+/// already carries the entity, its fields and the screen/menu wiring the
+/// planner chose, so the agent should follow it rather than re-planning.
 fn task_agent_prompt(overall_goal: &str, all_titles: &[String], task: &MaxTask) -> String {
     let task_list = all_titles
         .iter()
@@ -539,6 +544,10 @@ fn task_agent_prompt(overall_goal: &str, all_titles: &[String], task: &MaxTask) 
 === YOUR TASK ===\n{}\n{}\n\n\
 === INSTRUCTIONS ===\n\
 - Implement ONLY your task above. Do not start or scaffold the other tasks.\n\
+- The task section lists the entity, fields, route, menu entry and build steps the planner \
+chose. Follow it: create the resource with `sync_schema` using exactly those fields and types, \
+then the screen, controller and menu entry it names. If the section is vague, load the \
+`crud_creation` skill and follow its standard flow instead.\n\
 - Before writing any code, inspect the existing project: read `frontend/src/menu-items/menu.json` and use `read_schema` to see the current database schema, so what you build matches what already exists.\n\
 - Keep your change small and self-contained: this task should be one screen, CRUD, report, or dashboard.\n\
 - Run `lint_code` after making changes to verify there are no syntax, lint, or schema errors.\n\
@@ -549,15 +558,88 @@ fn task_agent_prompt(overall_goal: &str, all_titles: &[String], task: &MaxTask) 
 
 /// Parses the Max planner's response into `(title, description)` pairs.
 ///
-/// Prefers the fenced JSON array the planner is instructed to emit; falls back
-/// to the numbered Markdown list when the JSON is missing or malformed.
+/// The canonical format is the sectioned Markdown plan the planner is told to
+/// emit: one `## N. Title` heading per task, with everything up to the next
+/// `##` heading becoming that task's description. The `## Overview` preamble
+/// and any empty sections are skipped.
+///
+/// The legacy fenced-JSON and numbered-line parsers are kept as defensive
+/// fallbacks for older sessions and for models that ignore the format, but the
+/// planner no longer emits them.
 pub fn parse_tasks(content: &str) -> Vec<(String, String)> {
+    let sections = parse_tasks_from_sections(content);
+    if !sections.is_empty() {
+        return sections;
+    }
     if let Some(tasks) = parse_tasks_from_json(content) {
         if !tasks.is_empty() {
             return tasks;
         }
     }
     parse_tasks_from_lines(content)
+}
+
+/// Extracts tasks from `##` Markdown sections.
+///
+/// A section with no body is ignored so stray headings do not become empty
+/// tasks, and container headings (`## Overview`, `## Tasks`, ...) are skipped
+/// so a preamble or a legacy numbered list is not mistaken for one task.
+fn parse_tasks_from_sections(content: &str) -> Vec<(String, String)> {
+    let mut tasks: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, Vec<&str>)> = None;
+
+    for line in content.lines() {
+        // `### ` does not match: the character after `##` is `#`, not a space.
+        if let Some(heading) = line.strip_prefix("## ") {
+            if let Some((title, body)) = current.take() {
+                push_section(&mut tasks, title, &body);
+            }
+            let title = clean_section_title(heading);
+            current = if title.is_empty() || is_container_heading(&title) {
+                None
+            } else {
+                Some((title, Vec::new()))
+            };
+            continue;
+        }
+        if let Some((_, body)) = current.as_mut() {
+            body.push(line);
+        }
+    }
+
+    if let Some((title, body)) = current.take() {
+        push_section(&mut tasks, title, &body);
+    }
+
+    tasks
+}
+
+/// Headings that introduce the document or a list rather than one buildable
+/// section. Their bodies are intentionally dropped.
+fn is_container_heading(title: &str) -> bool {
+    matches!(
+        title.to_ascii_lowercase().as_str(),
+        "overview" | "summary" | "tasks" | "task list" | "plan" | "plan overview"
+    )
+}
+
+/// Strips a leading `N.` / `N)` marker and surrounding whitespace from a
+/// section heading, leaving the human-readable title.
+fn clean_section_title(heading: &str) -> String {
+    let trimmed = heading.trim();
+    match strip_numbered_prefix(trimmed) {
+        Some(rest) => rest.trim().trim_start_matches(['*', '-', ' ']).trim().to_string(),
+        None => trimmed.trim_matches('*').trim().to_string(),
+    }
+}
+
+/// Records a section when it has a body, preserving the body's Markdown
+/// structure (sub-headings and bullets) as the task description.
+fn push_section(tasks: &mut Vec<(String, String)>, title: String, body: &[&str]) {
+    let description = body.join("\n").trim().to_string();
+    if !description.is_empty() {
+        tasks.push((title, description));
+    }
 }
 
 /// Extracts tasks from the first fenced ```json block that parses to an array
@@ -684,6 +766,56 @@ fn max_log_dir(app_handle: Option<&AppHandle>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_sectioned_markdown_plan() {
+        let content = "\
+## Overview
+Small CRM.
+
+## 1. Customer Management
+Create a customer entity, add a menu entry, and generate a CRUD screen.
+
+### Entity & Fields
+- Customer — `customers`
+- Name (text, required)
+- Phone (phone)
+
+### Screen & Menu
+- Route `/customers`, sidebar `CRM > Customers`
+
+## 2. Sales Report
+Show monthly revenue.
+
+### Build Steps
+- Add analytics endpoint, then a report page.
+";
+        let tasks = parse_tasks(content);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].0, "Customer Management");
+        assert!(tasks[0].1.contains("### Entity & Fields"));
+        assert!(tasks[0].1.contains("- Name (text, required)"));
+        assert!(!tasks[0].1.contains("Sales Report"));
+        assert_eq!(tasks[1].0, "Sales Report");
+        assert!(tasks[1].1.contains("### Build Steps"));
+    }
+
+    #[test]
+    fn section_parser_skips_overview_and_empty_sections() {
+        let content = "\
+## Overview
+Just prose, not a task.
+
+## Empty Section
+
+## 2) Real Task
+Body here.
+";
+        let tasks = parse_tasks(content);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].0, "Real Task");
+        assert_eq!(tasks[0].1, "Body here.");
+    }
 
     #[test]
     fn parses_fenced_json_tasks() {

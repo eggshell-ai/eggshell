@@ -20,11 +20,34 @@ type MaxTasksCardProps = {
   data: MaxPlanData;
   /** The task list currently stored for the session (overrides the snapshot). */
   tasks?: MaxTask[];
+  /** The planner's full Markdown plan, shown behind a disclosure toggle. */
+  plan?: string;
   isSending?: boolean;
   onRun: () => void;
   onRetryFailed: () => void;
   onStopTask?: (taskId: number) => void;
 };
+
+/**
+ * Splits a task description into its one-line summary and the remaining
+ * detail. The planner emits a short intro followed by `### Entity & Fields`,
+ * `### Screen & Menu` and `### Build Steps` bullets; the list stays compact by
+ * showing only the intro and hiding the rest behind a toggle.
+ */
+export function splitTaskDescription(description: string): { summary: string; details: string } {
+  const lines = description.split(/\r?\n/);
+  const summaryLines: string[] = [];
+  let index = 0;
+  for (; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line || line.startsWith("#") || line.startsWith("-") || line.startsWith("*")) break;
+    summaryLines.push(line);
+  }
+  return {
+    summary: summaryLines.join(" ").trim(),
+    details: lines.slice(index).join("\n").trim(),
+  };
+}
 
 function statusLabel(status: string): string {
   switch (status) {
@@ -44,10 +67,11 @@ function statusLabel(status: string): string {
 }
 
 /**
- * Renders the Max mode task list: the business-oriented breakdown produced in
- * Phase 1, with per-task status and a control to start/resume Phase 2.
+ * Renders the Max mode plan: the sectioned breakdown produced in Phase 1 —
+ * each task with its entity/fields/screen detail behind a disclosure — plus
+ * per-task status and a control to start/resume Phase 2.
  */
-export default function MaxTasksCard({ data, tasks, isSending = false, onRun, onRetryFailed, onStopTask }: MaxTasksCardProps) {
+export default function MaxTasksCard({ data, tasks, plan, isSending = false, onRun, onRetryFailed, onStopTask }: MaxTasksCardProps) {
   const list = tasks && tasks.length > 0 ? tasks : data.maxTasks ?? [];
   const total = list.length || data.maxTaskCount || 0;
   const completed = list.filter((task) => task.status === "completed").length;
@@ -82,28 +106,44 @@ export default function MaxTasksCard({ data, tasks, isSending = false, onRun, on
       </header>
 
       <ol className="max-task-list">
-        {list.map((task) => (
-          <li className={`max-task-item ${task.status}`} key={task.id}>
-            <span className="max-task-status" aria-label={task.status}>
-              {task.status === "completed"
-                ? "✓"
-                : task.status === "failed"
-                ? "✕"
-                : task.status === "paused"
-                ? "⏸"
-                : task.status === "running"
-                ? "◐"
-                : "○"}
-            </span>
-            <div className="max-task-text">
-              <span className="max-task-title">{task.title}</span>
-              {task.description && <span className="max-task-desc">{task.description}</span>}
-            </div>
-            <span className={`max-task-pill ${task.status}`}>{statusLabel(task.status)}</span>
-          </li>
-        ))}
+        {list.map((task) => {
+          const { summary, details } = splitTaskDescription(task.description);
+          return (
+            <li className={`max-task-item ${task.status}`} key={task.id}>
+              <span className="max-task-status" aria-label={task.status}>
+                {task.status === "completed"
+                  ? "✓"
+                  : task.status === "failed"
+                  ? "✕"
+                  : task.status === "paused"
+                  ? "⏸"
+                  : task.status === "running"
+                  ? "◐"
+                  : "○"}
+              </span>
+              <div className="max-task-text">
+                <span className="max-task-title">{task.title}</span>
+                {summary && <span className="max-task-desc">{summary}</span>}
+                {details && (
+                  <details className="max-task-details">
+                    <summary>Details</summary>
+                    <pre className="max-task-detail-body">{details}</pre>
+                  </details>
+                )}
+              </div>
+              <span className={`max-task-pill ${task.status}`}>{statusLabel(task.status)}</span>
+            </li>
+          );
+        })}
         {!list.length && <li className="max-task-empty">No tasks were generated.</li>}
       </ol>
+
+      {plan && (
+        <details className="max-plan-details">
+          <summary>View full plan</summary>
+          <pre className="max-plan-body">{plan}</pre>
+        </details>
+      )}
 
       <div className="max-card-actions">
         {hasPaused ? (

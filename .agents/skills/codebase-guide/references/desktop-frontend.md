@@ -11,8 +11,8 @@ Stack: Vite + React 19 + TypeScript. Entry `index.html` → `src/main.tsx`.
 | File | Role |
 |---|---|
 | `main.tsx` | React root mount. |
-| `App.tsx` | Main shell: project/session management, listens for `agent-event` and `project-log`, aggregates streamed messages, handles modes. Invokes `delete_project`, `delete_session`, `start_project`, `wrap_up_chat`, `stop_chat`, `select_model`. |
-| `Chat.tsx` | Chat view: messages, tool-run rendering, thinking blocks, model picker, users list. Maps tool names (e.g. `load_skill`, `browser_*`) to friendly labels. Invokes `fetch_models`, `submit_feedback`. |
+| `App.tsx` | Main shell: project/session management, listens for `agent-event` and `project-log`, aggregates streamed messages, handles modes (`implement` / `plan` / `qa` / `iterate` / `max`), holds `maxTasks` state. Invokes `delete_project`, `delete_session`, `start_project`, `wrap_up_chat`, `stop_chat`, `select_model`, `list_max_tasks`, `run_max_tasks`, `update_max_task_status`. |
+| `Chat.tsx` | Chat view: messages, tool-run rendering, thinking blocks, model picker, users list. Chooses the special card per message in this order: `isIterationLoop` → `IterationLoopCard`, `isMaxPlan` → `MaxTasksCard`, `isPlan` → Plan-mode card with **Proceed to Implement**. Maps tool names (e.g. `load_skill`, `browser_*`) to friendly labels. Invokes `fetch_models`, `submit_feedback`. |
 | `SetupPage.tsx` | First-run setup: dependency detection/install, provider setup, MySQL config. Listens for `dependency-detected`/`progress`. |
 | `ProviderSettingsManager.tsx` | Configure LLM providers (`save_provider_config`, `delete_provider`). |
 | `SettingsPopup.tsx` | Settings: Telemetry, auto-update, MySQL (`save_auto_update_setting`, `save_mysql_settings`, `save_privacy_settings`). |
@@ -20,6 +20,7 @@ Stack: Vite + React 19 + TypeScript. Entry `index.html` → `src/main.tsx`.
 | `ReportMenu.tsx` | Report/export menu; opens URLs via the opener plugin. |
 | `UpdatePrompt.tsx` | Updater prompt via `@tauri-apps/plugin-updater` `check` + `plugin-process` `relaunch`. |
 | `IterationLoopCard.tsx` | Renders iterate-mode iteration progress cards. |
+| `MaxTasksCard.tsx` | Renders the Max mode plan: task list with status pills, per-task **Details** disclosure, **View full plan** disclosure, and Run/Resume/Retry/Stop controls. Exports `splitTaskDescription()`. |
 | `ProjectLogPanel.tsx` | Displays streamed progress lines grouped by channel. |
 
 ## Talking to Rust

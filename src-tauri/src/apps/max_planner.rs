@@ -4,10 +4,16 @@ use crate::tools::{ReadFileTool, ReadSchemaTool};
 /// The Max mode planning agent.
 ///
 /// Max mode is a two-phase orchestrator for large applications. Phase 1 (this
-/// agent) breaks a requirement into a list of simple, business-oriented tasks
-/// — one screen, CRUD, report or dashboard each — with no technical detail.
-/// Phase 2 runs one sequential implementer agent per task. This app only has
-/// read-only tools; it never modifies the project.
+/// agent) breaks a requirement into a list of self-contained tasks — one
+/// screen, CRUD, report or dashboard each — and, for every task, records the
+/// entity, its fields, the screen/menu wiring and the build steps. Phase 2 runs
+/// one sequential implementer agent per task, using that section as its brief.
+/// This app only has read-only tools; it never modifies the project.
+///
+/// The planner writes the plan exactly once, as Markdown. Earlier revisions had
+/// it emit the same task list twice (prose + a fenced JSON array) which wasted
+/// output tokens and let the two copies drift apart, so the JSON contract is
+/// gone and `max::parse_tasks` reads the Markdown sections directly.
 ///
 /// The planner deliberately has no skills: it must not depend on the admin-panel
 /// framework guidance, and callers run it with an empty skills list so that no
@@ -25,46 +31,50 @@ impl App for MaxPlannerApp {
 
     fn system_prompt(&self) -> String {
         "You are a project planner for large admin-panel web applications.
-Your job is to break the user's requirement down into a list of individual screens, CRUD
-sections, reports, and dashboards that can each be built independently by a separate agent.
+Your job is to break the user's requirement down into a list of individual sections that can
+each be built independently by a separate implementation agent.
 
 Guidelines:
-- Keep the plan simple and business-oriented. Describe WHAT the user will see and do, not HOW.
-- Do NOT include technical detail: no entity field lists, no database columns, no file paths,
-  no framework names, no API design. Implementation agents figure those out themselves.
-- Each task must be a single, self-contained, bite-sized chunk (one screen, one CRUD, one report,
-  one dashboard). Never bundle several unrelated features into one task.
-- Order the tasks the way a human would build them: foundational lists first, then actions on
-  them, then reports and dashboards that summarise them.
-- Use short imperative titles, e.g. \"Create customer CRUD\", \"Add payment receipt on sales\",
-  \"Create sales report\", \"Create dashboard\".
+- Describe WHAT the user sees and does first, then just enough HOW to be actionable.
+- One section = one self-contained chunk: one CRUD screen, one report, one dashboard, or one
+  cross-cutting change. Never bundle unrelated features into the same section.
+- Order the sections the way a human would build them: foundational entities and lists first,
+  then actions on them, then reports and dashboards that summarise them.
+- Name entities and fields using clear business names. Infer sensible field types
+  (text, textarea, email, phone, number, decimal, boolean, date, select, file, tags, table)
+  and mark a field required/unique only when the business meaning demands it.
+- A CRUD section always covers four things: the entity/schema, the data grid screen,
+  the backend controller for its endpoint, and the sidebar menu entry.
 - You may inspect the project read-only to understand what already exists, but you do NOT have
   file-modifying tools.
 - You do NOT have any skills or skill documents available, and the load_skill tool is not
   available to you. Do not attempt to load skills; rely on the user's requirement.
+- Keep each field list short and complete. Do not invent fields nobody asked for, and do not
+  repeat the same foreign key twice.
 
-Respond with EXACTLY two parts and nothing else:
-
-First, a brief human-readable overview in Markdown:
+Respond with EXACTLY one Markdown document and nothing else. Emit the plan ONCE: do not repeat
+it as JSON, YAML, or any other machine-readable block.
 
 ## Overview
 One or two sentences describing the application being built.
 
-## Tasks
-1. <Task title> — <One-sentence business description>
-2. <Task title> — <One-sentence business description>
+## 1. <Section title>
+One sentence describing the business outcome of this section.
+
+### Entity & Fields
+- <Entity> — `<resource_name>`
+- <Field name> (<type>[, required][, unique])
+
+### Screen & Menu
+- Route `/<route>`, sidebar `<Group> > <Item>`, permission `<resource>.*`
+
+### Build Steps
+- <Short ordered steps: schema, screen, controller, menu, lint>
+
+## 2. <Section title>
 ...
-
-Second, a fenced JSON code block (```json) containing a JSON array with one object per task,
-in the same order, using exactly these keys:
-
-```json
-[
-  { \"title\": \"<Task title>\", \"description\": \"<One-sentence business description>\" }
-]
-```
-
-The numbered list and the JSON array MUST contain the same tasks in the same order.".to_string()
+"
+        .to_string()
     }
 }
 
@@ -86,5 +96,22 @@ mod tests {
         assert!(!prompt.contains("=== AVAILABLE SKILLS ==="));
         assert!(!prompt.contains("load_skill tool with the skill name"));
         assert!(!prompt.contains("load them with the load_skill tool"));
+    }
+
+    #[test]
+    fn planner_prompt_asks_for_skill_aligned_sections() {
+        let prompt = MaxPlannerApp.system_prompt();
+        assert!(prompt.contains("### Entity & Fields"));
+        assert!(prompt.contains("### Screen & Menu"));
+        assert!(prompt.contains("### Build Steps"));
+        assert!(prompt.contains("## 1. <Section title>"));
+    }
+
+    #[test]
+    fn planner_prompt_no_longer_requests_duplicate_json() {
+        let prompt = MaxPlannerApp.system_prompt();
+        assert!(!prompt.contains("```json"));
+        assert!(!prompt.contains("\"title\":"));
+        assert!(prompt.contains("Emit the plan ONCE"));
     }
 }
