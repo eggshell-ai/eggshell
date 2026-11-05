@@ -78,7 +78,7 @@ export default function DashboardDefault() {
     <Dashboard title="Dashboard">
       <KPICard
         title="Customers"
-        endpoint="/customers/count"
+        endpoint="/analytics/customers/count"
       />
     </Dashboard>
   );
@@ -112,6 +112,12 @@ Backend aggregators are similar for both types of reports, here's their detailed
 
 ### Structure
 - `getName(): string`: Returns a unique identifier for the current API path, must be in the format of `module/id`, and can contain two parts only (e.g. sales/default, sales/revenue, sales/customer-wise)
+
+> [!IMPORTANT]
+> The frontend endpoint for an aggregator is **always** `"/analytics/" + getName()`.
+> For example `getName()` returning `customers/count` is consumed as `endpoint="/analytics/customers/count"`.
+> The `/analytics` prefix is mandatory — the built-in `AnalyticsController` only serves `/api/analytics/{category}/{metric}`.
+> Never write `endpoint="/customers/count"` (it 404s), and never include `/api` in the endpoint (the frontend `apiService` already adds it).
 
 - `getValue(): mixed`: Must return a JSON serializable value (number, boolean, object, array of objects, strings, etc.). Prefer an empty array or `0` over `null` to indicate no data.
 

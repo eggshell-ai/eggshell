@@ -319,9 +319,16 @@ pub async fn run_max_execution(
                     break;
                 }
 
-                if outcome.hit_max_turns {
-                    // Turn limit was reached before task concluded. Leave task resumable
-                    // and pause execution so the user can choose to Continue or Stop.
+                if outcome.hit_max_turns || outcome.stalled {
+                    // The run stopped before the task concluded: either the turn
+                    // limit was reached or the model kept repeating a failing
+                    // tool call. Either way leave the task resumable and pause
+                    // execution so the user can choose to Continue or Stop.
+                    let reason = if outcome.stalled {
+                        "repeated a failing tool call"
+                    } else {
+                        "turn limit reached"
+                    };
                     MaxTasksRepository::set_status(
                         pool,
                         task.id,
@@ -333,11 +340,12 @@ pub async fn run_max_execution(
                     messages.push(ChatMessage {
                         role: "assistant".to_string(),
                         content: format!(
-                            "### Task {} of {} paused (turn limit reached): {}
+                            "### Task {} of {} paused ({}): {}
 
 {}",
                             task.task_index + 1,
                             total,
+                            reason,
                             task.title,
                             outcome.content
                         ),
@@ -347,6 +355,7 @@ pub async fn run_max_execution(
                             "taskIndex": task.task_index,
                             "title": task.title,
                             "paused": true,
+                            "reason": if outcome.stalled { "stalled" } else { "max_turns" },
                         })),
                     });
 
@@ -360,6 +369,7 @@ pub async fn run_max_execution(
                                 "taskIndex": task.task_index,
                                 "title": task.title,
                                 "total": total,
+                                "reason": if outcome.stalled { "stalled" } else { "max_turns" },
                                 "summary": truncate(&outcome.content, 2000)
                             }
                         }

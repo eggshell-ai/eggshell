@@ -154,9 +154,9 @@ The behavioral defaults are important. Do not assume that omission means `false`
 | `scale` | `2` (for `decimal`) | Number of decimal places |
 | `precision` | `10` (for `decimal`) | Total digits stored |
 | `integer` | `false` | Restrict numeric field to whole numbers |
-| `computed` | `false` | Virtual / calculated field not stored in the database |
-| `computeExpression` | unset | JavaScript expression evaluated against row `data` to compute virtual value |
-| `sqlExpression` | unset | SQL/DQL expression for server-side sorting/filtering of virtual fields |
+| `computed` | `false` | Stored calculated column: generates a real DB column and a `#[Computed]` attribute that `ResourceController` keeps up to date. Read the DQL rules below before writing `sqlExpression` |
+| `computeExpression` | unset | JavaScript expression evaluated against row `data` for instant client-side display of a computed field |
+| `sqlExpression` | unset | Doctrine DQL expression for the server-side stored value. A subquery may only be the **entire** expression, never an operand of `+ - * /` — to subtract, reference stored computed columns as `e.<name>` (see `docs/computed.md`) |
 | `displayRules` | unset | Conditional formatting rules (e.g. `[{ condition: "data.quantityInStock === 0", badge: { text: "Out of Stock", variant: "error" } }]`) |
 
 ## 2. Create the Frontend Page
@@ -259,7 +259,7 @@ load_skill({
 })
 ```
 
-- `docs/computed.md`: Create computed columns like total amount & full name (from first / last name) with support for sorting and filtering. Also explains how to perform calculation on stored fields before saving (e.g. uppercase SKU automatically)
+- `docs/computed.md`: Create computed (stored) columns like total amount & full name (from first / last name) with support for sorting and filtering. Also explains how to perform calculation on stored fields before saving (e.g. uppercase SKU automatically). **Contains the mandatory Doctrine DQL rules for `sqlExpression`** — read it before writing any computed field.
 
 - `docs/transaction_example.md`: Provides a complete example on how to build financial record CRUDs with multiple associated line items (e.g. vouchers, sales, etc.)
 

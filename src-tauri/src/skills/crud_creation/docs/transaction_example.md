@@ -91,8 +91,10 @@ sync_schema({
           table: true,
           sortable: true
         }
-        // Note: For balance or remaining fields (e.g. outstandingBalance), reference stored computed columns directly
-        // (e.g. "e.totalAmount - COALESCE(e.receivedAmount, 0)") rather than nesting multiple subqueries in subtraction.
+        // Note: A subquery may only be the WHOLE sqlExpression — never an arithmetic operand.
+        // For balance or remaining fields (e.g. outstandingBalance) reference stored computed
+        // columns directly (e.g. "e.totalAmount - COALESCE(e.receivedAmount, 0)") after declaring
+        // them as computed fields of their own. See docs/computed.md for the full DQL rules.
       ],
       actions: [
         {

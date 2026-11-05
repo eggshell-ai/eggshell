@@ -26,6 +26,11 @@ pub struct AgentRunResult {
     pub token_usage: Option<u64>,
     #[serde(default)]
     pub hit_max_turns: bool,
+    /// Set when the model repeated a tool call that had already failed twice
+    /// with identical arguments. The run stops instead of spending the rest of
+    /// the turn budget on a call that cannot succeed.
+    #[serde(default)]
+    pub stalled: bool,
 }
 
 /// Executes an LLM conversation until it produces a response without tool calls.
@@ -94,6 +99,10 @@ impl AgentService {
         let mut final_content = String::new();
         let mut latest_token_usage: Option<u64> = None;
         let mut hit_max_turns = false;
+        // Tracks a failing call so a byte-identical retry can be intercepted
+        // instead of being executed again. See `fingerprint_tool_call`.
+        let mut failed_call: Option<(String, u32)> = None;
+        let mut stalled = false;
         let cancel_token = options.cancellation_token.clone();
 
         while turn < max_turns {
@@ -221,6 +230,48 @@ impl AgentService {
                     .and_then(Value::as_str)
                     .map(str::to_owned);
                 let tool_args = with_project_path(args.clone(), options.project_path.as_deref());
+
+                // A byte-identical retry of a call that already failed cannot
+                // succeed. Intercept it instead of executing it again: on the
+                // second attempt, answer with a corrective tool result; on the
+                // third, stop the run so the remaining turn budget is not
+                // spent looping (see the sales-system computed-field incident).
+                let fingerprint = fingerprint_tool_call(name, &tool_args);
+                let repeat_count = match &failed_call {
+                    Some((failed, count)) if *failed == fingerprint => *count,
+                    _ => 0,
+                };
+                if repeat_count >= 2 {
+                    self.logger.warning(
+                        format!("agent stalled: tool {name} repeated an identical failing call {repeat_count} times"),
+                        true,
+                    );
+                    log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_repeat", "toolName": name, "attempts": repeat_count, "stalled": true }));
+                    stalled = true;
+                    break;
+                }
+                if repeat_count > 0 {
+                    let payload = json!({
+                        "success": false,
+                        "error": "This is an identical repeat of a tool call that already failed. It cannot succeed and was not executed again. Change the arguments before retrying - for `sync_schema` that usually means putting the new properties in `changes` instead of `rename`.",
+                        "repeatedCall": { "name": name, "arguments": tool_args },
+                        "attempt": repeat_count + 1,
+                    });
+                    self.logger.warning(
+                        format!("agent turn {turn} blocked identical retry of {name} (attempt {})", repeat_count + 1),
+                        true,
+                    );
+                    emit(
+                        &options,
+                        "tool_result",
+                        json!({ "id": call_id, "name": name, "result": payload }),
+                    );
+                    log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_repeat", "toolName": name, "attempts": repeat_count + 1, "stalled": false }));
+                    messages.push(tool_message(call_id, name, tool_args, payload));
+                    failed_call = Some((fingerprint, repeat_count + 1));
+                    continue;
+                }
+
                 self.logger.info(
                     format!("agent turn {turn} tool call {name}: {tool_args}"),
                     true,
@@ -244,11 +295,21 @@ impl AgentService {
                         );
                         log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_result", "toolName": name, "toolResult": result }));
                         messages.push(tool_message(call_id, name, tool_args, result));
+                        // Only clear the tracker if the call that just succeeded
+                        // is the one being tracked; an unrelated success in the
+                        // same turn must not mask a still-failing call.
+                        if failed_call
+                            .as_ref()
+                            .is_some_and(|(failed, _)| *failed == fingerprint)
+                        {
+                            failed_call = None;
+                        }
                     }
                     Err(error) => {
                         let error = error.to_string();
                         self.logger
                             .error(format!("agent turn {turn} tool {name} failed: {error}"), true);
+                        failed_call = Some((fingerprint, 1));
                         let result = json!({ "error": error });
                         emit(
                             &options,
@@ -264,11 +325,16 @@ impl AgentService {
                 self.logger.info("agent tool loop interrupted by user".to_string(), false);
                 break;
             }
+            if stalled {
+                break;
+            }
         }
 
         if final_content.trim().is_empty() {
             if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
                 final_content = "Response stopped by user.".to_string();
+            } else if stalled {
+                final_content = "Stopped: the same tool call kept failing with identical arguments. Change the approach or arguments before retrying.".to_string();
             } else if hit_max_turns {
                 final_content = "Reached maximum allowed turns before completing all actions.".to_string();
             } else if !all_tool_calls.is_empty() {
@@ -281,6 +347,7 @@ impl AgentService {
             tool_calls: all_tool_calls,
             token_usage: latest_token_usage,
             hit_max_turns,
+            stalled,
         };
         emit(
             &options,
@@ -289,6 +356,7 @@ impl AgentService {
                 "content": result.content,
                 "tool_calls": result.tool_calls,
                 "token_usage": result.token_usage,
+                "stalled": result.stalled,
             }),
         );
         if options.log_conversation {
@@ -428,6 +496,15 @@ fn tool_call_parts(call: &Value) -> (&str, Value) {
         .and_then(|text| serde_json::from_str(text).ok())
         .unwrap_or(raw_args);
     (name, args)
+}
+
+/// Stable identity for a tool call, used to detect an identical retry.
+///
+/// `serde_json::Map` is a `BTreeMap` in this build (the crate does not enable
+/// `preserve_order`), so object keys serialize in a deterministic order and two
+/// calls that differ only in key order still produce the same fingerprint.
+fn fingerprint_tool_call(name: &str, args: &Value) -> String {
+    format!("{name}:{}", serde_json::to_string(args).unwrap_or_default())
 }
 
 fn tool_message(id: Option<String>, name: &str, args: Value, result: Value) -> LLMMessage {
@@ -576,5 +653,120 @@ mod tests {
         ) -> LlmResult<Value> {
             Ok(Value::Null)
         }
+    }
+
+    /// Always emits the same `failing_tool` call with identical arguments.
+    struct RepeatingLlm;
+
+    #[async_trait]
+    impl LLMService for RepeatingLlm {
+        async fn execute_prompt(
+            &self,
+            _prompt: &str,
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<String> {
+            Ok(String::new())
+        }
+
+        async fn execute_prompt_with_tools(
+            &self,
+            _messages: &[LLMMessage],
+            _tools: &[Box<dyn Tool>],
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<Value> {
+            Ok(json!({
+                "content": "",
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "failing_tool",
+                        "arguments": { "projectPath": "/tmp/project", "value": 1 }
+                    }
+                }]
+            }))
+        }
+    }
+
+    struct FailingTool {
+        parameters: Map<String, Value>,
+    }
+
+    impl FailingTool {
+        fn new() -> Self {
+            Self {
+                parameters: Map::new(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for FailingTool {
+        fn name(&self) -> &str {
+            "failing_tool"
+        }
+        fn description(&self) -> &str {
+            "Always fails."
+        }
+        fn parameters(&self) -> &Map<String, Value> {
+            &self.parameters
+        }
+        async fn execute(&self, _args: Value) -> LlmResult<Value> {
+            Err("`rename` is a no-op; put properties in `changes`".into())
+        }
+    }
+
+    fn agent_options() -> AgentOptions {
+        AgentOptions {
+            project_path: Some("/tmp/project".to_string()),
+            log_conversation: false,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fingerprint_ignores_argument_key_order() {
+        let a = json!({ "b": 2, "a": 1 });
+        let b = json!({ "a": 1, "b": 2 });
+        assert_eq!(
+            fingerprint_tool_call("sync_schema", &a),
+            fingerprint_tool_call("sync_schema", &b)
+        );
+    }
+
+    /// The production failure mode: the model re-sent a byte-identical call that
+    /// had just failed. The second attempt must not be executed again, and the
+    /// third must stop the run instead of burning the turn budget.
+    #[tokio::test]
+    async fn identical_failing_tool_call_is_intercepted_and_then_stops_the_run() {
+        let agent = AgentService::with_skills(Arc::new(RepeatingLlm), Vec::new());
+
+        let result = agent
+            .run_agent(
+                vec![
+                    system_message("system"),
+                    LLMMessage {
+                        role: LLMMessageRole::User,
+                        content: "do the thing".to_string(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        tool_calls: None,
+                    },
+                ],
+                vec![Box::new(FailingTool::new())],
+                AgentOptions {
+                    max_turns: Some(30),
+                    ..agent_options()
+                },
+            )
+            .await
+            .expect("agent run");
+
+        assert!(result.stalled, "expected the run to be marked stalled");
+        assert!(!result.hit_max_turns);
+        assert!(result.content.contains("same tool call kept failing"));
+        // Executed once, intercepted once, stopped once.
+        assert_eq!(result.tool_calls.len(), 3);
     }
 }

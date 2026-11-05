@@ -45,6 +45,11 @@ The return value depends upon the type of widget you will use.
 - **KPI Cards**: Return a single number or string
 - **Charts / Tables**: Expects different formats depending upon the chart type
 
+> [!IMPORTANT]
+> **Every widget `endpoint` must start with `/analytics/`.**
+> The endpoint is `"/analytics/" + aggregator.getName()`, e.g. an aggregator returning `sales/revenue` from `getName()` is consumed as `endpoint="/analytics/sales/revenue"`.
+> Using `endpoint="/sales/revenue"` (no `/analytics` prefix) returns **404**, and using `"/api/analytics/..."` produces `/api/api/...` and also 404s.
+
 #### Format 1: Cartesian Charts (`LineChartCard`, `BarChartCard`)
 Expects the backend to return JSON data in the following format (multiple series supported):
 
@@ -112,7 +117,7 @@ patch_file({
 +    <Dashboard title="Dashboard">
 +      <KPICard
 +        title="Total Revenue"
-+        endpoint="/analytics/revenue/total"
++        endpoint="/analytics/sales/revenue"
 +        currency="$"
 +      />
  `
@@ -148,7 +153,7 @@ Tables support a `columns` attribute to customize their display
 ```jsx
 <TableCard
   title="Top Selling Products"
-  endpoint="/products/topSelling"
+  endpoint="/analytics/products/topSelling"
   maxRows={5}
   columns={[
     {

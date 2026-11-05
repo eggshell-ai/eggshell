@@ -72,27 +72,42 @@ The child resource owns the calculation: declare `computed: true` + `computeExpr
 `sqlExpression` is compiled into a Doctrine DQL query (e.g. `SELECT <sqlExpression> FROM App\Entity\<Entity> e WHERE e.id = :id`) and executed server-side.
 
 Keep these rules in mind:
-1. **Never combine subqueries in arithmetic expressions (`(SELECT ...) - (SELECT ...)` is invalid)**:
-   - In Doctrine DQL, arithmetic operators (`+`, `-`, `*`, `/`) do **not** support subqueries as operands and will fail with `[Syntax Error] line 0, col X: Error: Expected Literal, got 'SELECT'`.
-   - Instead, compute child rollups into their own stored columns first (e.g. `totalAmount` and `receivedAmount`). Then reference those stored columns directly on the parent entity `e`:
+1. **A subquery may only be the ENTIRE expression — never an operand**:
+   - Doctrine DQL does **not** allow a subquery as an operand of `+`, `-`, `*`, or `/`. This is invalid for *any* combination, not just subquery-minus-subquery:
      ```javascript
-     // ❌ INVALID: DQL does not support subquery operands in arithmetic
+     // ❌ INVALID: subquery minus a subquery
      sqlExpression: "((SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SaleItem i WHERE i.saleId = e.id) - (SELECT COALESCE(SUM(p.amount), 0) FROM App\\Entity\\Payment p WHERE p.saleId = e.id))"
 
-     // ✅ CORRECT: Reference existing computed columns directly
-     sqlExpression: "e.totalAmount - COALESCE(e.receivedAmount, 0)"
+     // ❌ ALSO INVALID: subquery minus a plain column
+     sqlExpression: "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SaleItem i WHERE i.saleId = e.id) - COALESCE(e.receivedAmount, 0)"
      ```
-2. **Doctrine DQL, NOT raw MySQL**: Do not use database-specific functions such as `GREATEST()`, `LEAST()`, `IFNULL()`, or `IF()`.
+   - Depending on where the subquery sits, the parser fails with one of these:
+     - `[Syntax Error] line 0, col X: Error: Expected TokenType::T_FROM, got '-'` — when the subquery starts the select list.
+     - `[Syntax Error] line 0, col X: Error: Expected Literal, got 'SELECT'` — when the subquery is a later operand.
+   - Only three shapes are valid. `sync_schema` rejects the others before writing anything, and `lint_code` re-checks them:
+     ```javascript
+     // ✅ 1. A single subquery is the whole expression
+     sqlExpression: "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\OrderItem i WHERE i.orderId = e.id)"
+
+     // ✅ 2. Arithmetic over columns already STORED on the entity
+     sqlExpression: "e.totalAmount - COALESCE(e.receivedAmount, 0)"
+
+     // ✅ 3. A subquery wrapped in COALESCE
+     sqlExpression: "COALESCE((SELECT SUM(p.amount) FROM App\\Entity\\Payment p WHERE p.saleId = e.id), 0)"
+     ```
+   - **To subtract, the operands must already be stored columns.** If a rollup lives in a subquery, declare it as its own `computed: true` field first (e.g. `totalAmount`, `receivedAmount`) — computed fields are real columns — and then reference both as `e.<name>` in the new expression.
+2. **`computed: true` is required whenever you set `sqlExpression`**: `sqlExpression` on a field that is not marked `computed: true` is ignored (and `sync_schema` rejects it). A computed field needs at least one of `sqlExpression` / `computeExpression`.
+3. **Doctrine DQL, NOT raw MySQL**: Do not use database-specific functions such as `GREATEST()`, `LEAST()`, `IFNULL()`, or `IF()`.
    - Use `COALESCE(field, fallback)` instead of `IFNULL(field, fallback)`.
    - Use `CASE WHEN ... THEN ... ELSE ... END` instead of `GREATEST()` / `LEAST()`:
      ```javascript
      // Correct:
      sqlExpression: "CASE WHEN e.totalAmount - COALESCE(e.receivedAmount, 0) > 0 THEN e.totalAmount - COALESCE(e.receivedAmount, 0) ELSE 0 END"
      ```
-3. **Entity References in Subqueries**:
+4. **Entity References in Subqueries**:
    - In single subqueries, reference related entities with `App\Entity\<EntityName>` (or bare `<EntityName>`).
    - Example: `(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\Entity\OrderItem i WHERE i.orderId = e.id)`
-4. **Escaping**:
+5. **Escaping**:
    - In JSON tool arguments, write `"App\\Entity\\<EntityName>"` (which decodes to `App\Entity\<EntityName>`). Do not double-escape into 4 backslashes.
 
 

@@ -304,6 +304,11 @@ impl Tool for SyncSchemaTool {
                     )
                     .into());
                 }
+                // Validate computed expressions here, before any generated file
+                // is written or a migration is run. Otherwise a bad expression
+                // reaches `schemas.json` and only surfaces later from
+                // `lint_code`, leaving the project in a broken state.
+                validate_computed_field(&resource, field)?;
             }
             generated.push(resource);
         }
@@ -704,12 +709,27 @@ fn apply_operation(
                 let current = field_index(&resources[index], &name)
                     .map(|position| resources[index]["fields"][position].clone())
                     .unwrap_or(Value::Null);
+                // Suggest a property this field actually has. A blanket
+                // `"required": true` example is useless when the caller needs
+                // to replace an `sqlExpression`, which is the most common case.
+                let suggestion = match &current {
+                    Value::Object(map) => {
+                        if map.contains_key("sqlExpression") {
+                            "{ \"sqlExpression\": \"e.totalAmount - COALESCE(e.receivedAmount, 0)\" }".to_string()
+                        } else if map.contains_key("computeExpression") {
+                            "{ \"computeExpression\": \"data.a - data.b\" }".to_string()
+                        } else {
+                            "{ \"required\": true }".to_string()
+                        }
+                    }
+                    _ => "{ \"required\": true }".to_string(),
+                };
                 return Err(format!(
                     "`updateField` on field '{name}' of resource '{resource_name}': `rename` is set to '{name}', \
                      which is the field's current name, so the operation is a no-op. To change properties, put \
                      them in `changes` instead, for example: \
                      {{ \"action\": \"updateField\", \"resource\": \"{resource_name}\", \"field\": \"{name}\", \
-                     \"changes\": {{ \"required\": true }} }}. `rename` is only for giving the field a different name.\n\
+                     \"changes\": {suggestion} }}. `rename` is only for giving the field a different name.\n\
                      Received operation: {}\nCurrent field definition: {}",
                     serde_json::to_string(operation).unwrap_or_default(),
                     serde_json::to_string(&current).unwrap_or_default()
@@ -1213,6 +1233,146 @@ fn normalize_field_json(field: &mut Map<String, Value>) {
     if let Some(val) = field.get("sql_expression").and_then(Value::as_str) {
         field.insert("sql_expression".to_string(), Value::String(normalize_sql_expression(val)));
     }
+}
+
+const DQL_SHAPES_HINT: &str = r#"Doctrine DQL only allows a subquery as the ENTIRE select expression. A subquery cannot
+be an operand of +, -, *, or / - the parser reports `Expected TokenType::T_FROM, got '-'`.
+Use one of these shapes instead:
+  1. a single subquery:
+       (SELECT COALESCE(SUM(i.amount), 0) FROM App\Entity\Item i WHERE i.parentId = e.id)
+  2. arithmetic over columns already stored on the entity:
+       {EXAMPLE}
+  3. a subquery wrapped in COALESCE:
+       COALESCE((SELECT SUM(i.amount) FROM App\Entity\Item i WHERE i.parentId = e.id), 0)"#;
+
+/// Finds a parenthesised `SELECT ...` used as an operand of `+ - * /`.
+///
+/// Doctrine DQL accepts a subselect only as the *entire* select expression: a
+/// leading `(SELECT ...)` makes the parser consume the subquery and then expect
+/// the outer `FROM`. String literals are skipped so quoted text is never
+/// mistaken for a subquery.
+fn subquery_operand_violation(expr: &str) -> Option<String> {
+    let is_arithmetic = |ch: char| matches!(ch, '+' | '-' | '*' | '/');
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+
+    for (index, ch) in expr.char_indices() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '(' if !in_single && !in_double => {
+                let rest = expr[index + 1..].trim_start();
+                let is_select = rest.len() >= 6
+                    && rest[..6].eq_ignore_ascii_case("SELECT")
+                    && rest
+                        .as_bytes()
+                        .get(6)
+                        .map_or(true, |byte| !byte.is_ascii_alphanumeric() && *byte != b'_');
+                if is_select {
+                    if let Some(close) = find_matching_paren(expr, index + 1) {
+                        ranges.push((index, close));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for (open, close) in ranges {
+        let trailing = expr[close + 1..].trim_start().chars().next();
+        let leading = expr[..open].trim_end().chars().next_back();
+        if trailing.is_some_and(is_arithmetic) || leading.is_some_and(is_arithmetic) {
+            return Some(expr[open..=close].to_string());
+        }
+    }
+
+    None
+}
+
+/// Names of columns already stored on the entity, i.e. fields usable as
+/// `e.<name>` from another field's `sqlExpression`.
+///
+/// Includes plain numeric/decimal columns (`receivedAmount`) as well as stored
+/// computed ones (`totalAmount`), since arithmetic over either is legal DQL.
+fn stored_column_names(resource: &Resource, exclude: &str) -> Vec<String> {
+    resource
+        .fields
+        .iter()
+        .filter(|field| {
+            !field.name.eq_ignore_ascii_case(exclude)
+                && field.field_type != "table"
+                && matches!(
+                    field.field_type.as_str(),
+                    "decimal" | "number" | "integer" | "currency" | "float"
+                )
+        })
+        .map(|field| field.name.clone())
+        .collect()
+}
+
+/// Rejects computed definitions that cannot work: an `sqlExpression` without
+/// `computed: true`, a computed field with nothing to compute from, and a
+/// subquery used as an arithmetic operand.
+fn validate_computed_field(resource: &Resource, field: &Field) -> Result<(), String> {
+    if !field.computed.unwrap_or(false) {
+        if field.sql_expression.is_some() {
+            return Err(format!(
+                "Field '{}' on resource '{}' sets `sqlExpression` but is not marked `computed: true`, so the expression would be ignored. Set `computed: true` as well, or remove `sqlExpression`.",
+                field.name, resource.name
+            ));
+        }
+        return Ok(());
+    }
+
+    if field.sql_expression.is_none() && field.compute_expression.is_none() {
+        return Err(format!(
+            "Computed field '{}' on resource '{}' has neither `sqlExpression` nor `computeExpression`, so it can never be populated. Add a `sqlExpression` (server-side stored column) and/or a `computeExpression` (frontend preview).",
+            field.name, resource.name
+        ));
+    }
+
+    let Some(expr) = field.sql_expression.as_deref().map(str::trim) else {
+        return Ok(());
+    };
+    if expr.is_empty() {
+        return Ok(());
+    }
+
+    let Some(offending) = subquery_operand_violation(expr) else {
+        return Ok(());
+    };
+
+    let stored = stored_column_names(resource, &field.name);
+    let stored_hint = if stored.is_empty() {
+        format!(
+            "Resource '{}' has no other numeric columns yet. Add the child rollup as its own computed field first, then reference it here as `e.<name>`.",
+            resource.name
+        )
+    } else {
+        format!(
+            "Numeric columns on '{}' you can reference directly as `e.<name>`: {}.",
+            resource.name,
+            stored.join(", ")
+        )
+    };
+    let example = if stored.len() >= 2 {
+        format!("e.{} - COALESCE(e.{}, 0)", stored[0], stored[1])
+    } else if let Some(only) = stored.first() {
+        format!("e.{} - COALESCE(e.<otherStoredColumn>, 0)", only)
+    } else {
+        "e.<storedColumn> - COALESCE(e.<otherStoredColumn>, 0)".to_string()
+    };
+
+    Err(format!(
+        "Computed field '{}' on resource '{}' has an invalid `sqlExpression`:\n  {}\n\nOffending fragment: {}\n\n{}\n\n{}",
+        field.name,
+        resource.name,
+        expr,
+        offending,
+        DQL_SHAPES_HINT.replace("{EXAMPLE}", &example),
+        stored_hint
+    ))
 }
 
 fn js(s: &str) -> String {
@@ -2076,6 +2236,146 @@ mod tests {
             normalize_sql_expression(if_expr),
             "(CASE WHEN e.totalAmount > 0 THEN (e.totalAmount) ELSE (0) END)"
         );
+    }
+
+    fn computed_resource(balance_expression: &str) -> Resource {
+        serde_json::from_value(json!({
+            "name": "sales",
+            "endpoint": "/sales",
+            "fields": [
+                {
+                    "name": "totalAmount",
+                    "type": "decimal",
+                    "computed": true,
+                    "sqlExpression": "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SaleItem i WHERE i.saleId = e.id)"
+                },
+                { "name": "receivedAmount", "type": "decimal" },
+                {
+                    "name": "balanceAmount",
+                    "type": "decimal",
+                    "computed": true,
+                    "sqlExpression": balance_expression
+                }
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn accepts_legal_computed_expressions() {
+        let legal = [
+            // Pure subquery is the whole expression.
+            "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SaleItem i WHERE i.saleId = e.id)",
+            // Arithmetic over stored columns.
+            "e.totalAmount - COALESCE(e.receivedAmount, 0)",
+            // CASE over stored columns.
+            "CASE WHEN e.totalAmount > 0 THEN e.totalAmount ELSE 0 END",
+            // Subquery wrapped in COALESCE.
+            "COALESCE((SELECT SUM(i.unitPrice) FROM App\\Entity\\SaleItem i WHERE i.saleId = e.id), 0)",
+        ];
+        for expression in legal {
+            let resource = computed_resource(expression);
+            let field = resource
+                .fields
+                .iter()
+                .find(|field| field.name == "balanceAmount")
+                .unwrap();
+            assert!(
+                validate_computed_field(&resource, field).is_ok(),
+                "expected {expression} to be accepted"
+            );
+        }
+    }
+
+    /// The exact expression from the production incident: a child rollup
+    /// subquery subtracted from a stored column. Doctrine parses the subquery as
+    /// the whole select expression and then expects the outer FROM.
+    #[test]
+    fn rejects_subquery_used_as_arithmetic_operand() {
+        let expression = "(SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SaleItem i WHERE i.saleId = e.id) - COALESCE(e.receivedAmount, 0)";
+        let resource = computed_resource(expression);
+        let field = resource
+            .fields
+            .iter()
+            .find(|field| field.name == "balanceAmount")
+            .unwrap();
+
+        let error = validate_computed_field(&resource, field).unwrap_err();
+        assert!(error.contains("balanceAmount"), "{error}");
+        assert!(error.contains("T_FROM"), "{error}");
+        // Self-correcting: names the stored columns it can reference instead.
+        assert!(error.contains("totalAmount"), "{error}");
+        assert!(error.contains("e.totalAmount - COALESCE(e.receivedAmount, 0)"), "{error}");
+    }
+
+    #[test]
+    fn rejects_two_subqueries_in_arithmetic() {
+        let expression = "((SELECT COALESCE(SUM(i.quantity * i.unitPrice), 0) FROM App\\Entity\\SaleItem i WHERE i.saleId = e.id) - (SELECT COALESCE(SUM(p.amount), 0) FROM App\\Entity\\Payment p WHERE p.saleId = e.id))";
+        assert!(subquery_operand_violation(expression).is_some());
+    }
+
+    #[test]
+    fn ignores_arithmetic_inside_string_literals() {
+        assert!(subquery_operand_violation("'a - b'").is_none());
+        assert!(subquery_operand_violation("CASE WHEN e.a > 0 THEN 'x - y' ELSE 'z' END").is_none());
+    }
+
+    #[test]
+    fn rejects_sql_expression_without_computed_flag() {
+        let resource: Resource = serde_json::from_value(json!({
+            "name": "sales",
+            "endpoint": "/sales",
+            "fields": [
+                { "name": "totalAmount", "type": "decimal", "sqlExpression": "e.a + e.b" }
+            ]
+        }))
+        .unwrap();
+        let error = validate_computed_field(&resource, &resource.fields[0]).unwrap_err();
+        assert!(error.contains("computed: true"), "{error}");
+    }
+
+    #[test]
+    fn rejects_computed_field_without_any_expression() {
+        let resource: Resource = serde_json::from_value(json!({
+            "name": "sales",
+            "endpoint": "/sales",
+            "fields": [
+                { "name": "totalAmount", "type": "decimal", "computed": true }
+            ]
+        }))
+        .unwrap();
+        let error = validate_computed_field(&resource, &resource.fields[0]).unwrap_err();
+        assert!(error.contains("computeExpression"), "{error}");
+    }
+
+    #[test]
+    fn noop_rename_hint_suggests_the_mutable_property() {
+        let mut resources = vec![json!({
+            "name": "sales",
+            "endpoint": "/sales",
+            "fields": [
+                {
+                    "name": "balanceAmount",
+                    "type": "decimal",
+                    "computed": true,
+                    "sqlExpression": "e.a - e.b"
+                }
+            ]
+        })];
+
+        let error = apply_operation(
+            &mut resources,
+            &json!({
+                "action": "updateField",
+                "resource": "sales",
+                "field": "balanceAmount",
+                "rename": "balanceAmount"
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("sqlExpression"), "{error}");
+        assert!(!error.contains("\"required\": true"), "{error}");
     }
 
     #[test]
