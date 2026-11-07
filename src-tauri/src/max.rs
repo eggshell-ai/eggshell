@@ -35,9 +35,10 @@ impl Default for MaxControl {
 }
 
 /// Runs Phase 1 of Max mode: break the user's requirement into a sectioned,
-/// skill-aligned plan (one `##` section per buildable chunk, each naming the
-/// entity, fields, screen/menu and build steps), persist it, and return the
-/// updated session.
+/// plan following the bundled `planning` skill (one `##` section per buildable
+/// chunk; each section describes its artifact — entity, dashboard widgets,
+/// report filters/columns, or workflow actions — plus build steps), persist
+/// it, and return the updated session.
 ///
 /// This does not execute any task. The frontend renders the task list and the
 /// user starts Phase 2 (execution) explicitly.
@@ -83,9 +84,12 @@ pub async fn run_max_breakdown(
         LLMMessage {
             role: LLMMessageRole::User,
             content: format!(
-                "Break the following requirement into buildable sections. Give every section its \
-entity and fields, its screen and menu wiring, and its build steps, following the response \
-format in your instructions. Write the plan once, in Markdown only.\n\n{}",
+                "Break the following requirement into buildable sections. Your system prompt \
+includes the Planning Skill: follow it so entities are defined with name and fields (child \
+line-item entities in the same section as their parent), dashboards name the actual KPI cards, \
+charts or tables, reports name their filters and columns, and workflows are defined as \
+concrete actions. Each section defines the end result, never the build steps. Write the plan \
+once, in Markdown only.\n\n{}",
                 user_message
             ),
             tool_call_id: None,
@@ -521,8 +525,10 @@ async fn persist_progress(
 ///
 /// Each agent gets the overall goal, the full ordered task list (so it knows
 /// where its chunk fits), and its single task section verbatim. That section
-/// already carries the entity, its fields and the screen/menu wiring the
-/// planner chose, so the agent should follow it rather than re-planning.
+/// describes the business outcome and requirements the planner chose, but the
+/// implementer decides the concrete implementation — it loads the relevant
+/// skill (e.g. `crud_creation`) and works out the schema, screen code and
+/// wiring itself rather than mirroring field lists from the plan.
 fn task_agent_prompt(overall_goal: &str, all_titles: &[String], task: &MaxTask) -> String {
     let task_list = all_titles
         .iter()
@@ -544,13 +550,15 @@ fn task_agent_prompt(overall_goal: &str, all_titles: &[String], task: &MaxTask) 
 === YOUR TASK ===\n{}\n{}\n\n\
 === INSTRUCTIONS ===\n\
 - Implement ONLY your task above. Do not start or scaffold the other tasks.\n\
-- The task section lists the entity, fields, route, menu entry and build steps the planner \
-chose. Follow it: create the resource with `sync_schema` using exactly those fields and types, \
-then the screen, controller and menu entry it names. If the section is vague, load the \
-`crud_creation` skill and follow its standard flow instead.\n\
+- Your task section describes what to build in business terms — the entity, screens, widgets, \
+filters or actions it names. It is a brief, not a spec to copy verbatim: decide the concrete \
+schema, code and wiring yourself. Load the `crud_creation` skill and follow its standard flow \
+(workspace and steps), and `analytics_and_reporting` for dashboards or reports.\n\
 - Before writing any code, inspect the existing project: read `frontend/src/menu-items/menu.json` and use `read_schema` to see the current database schema, so what you build matches what already exists.\n\
 - Keep your change small and self-contained: this task should be one screen, CRUD, report, or dashboard.\n\
-- Run `lint_code` after making changes to verify there are no syntax, lint, or schema errors.\n\
+- Run `lint_code` after making changes to verify there are no syntax, lint, or routing errors. \
+The backend checks confirm every controller you create is actually registered by the router; \
+if one is flagged, fix the `#[Route]` attribute or its import before moving on.\n\
 - When done, briefly summarise what you created and any follow-up the other task agents will need.",
         overall_goal, task_list, task.title, task.description
     )
@@ -769,35 +777,79 @@ mod tests {
 
     #[test]
     fn parses_sectioned_markdown_plan() {
-        let content = "\
-## Overview
+        let content = r#"## Overview
 Small CRM.
 
 ## 1. Customer Management
-Create a customer entity, add a menu entry, and generate a CRUD screen.
+Give the user a place to record and manage customers.
 
 ### Entity & Fields
-- Customer — `customers`
-- Name (text, required)
-- Phone (phone)
+Customers — customers
+- name (text, required)
+- phone (phone)
 
 ### Screen & Menu
 - Route `/customers`, sidebar `CRM > Customers`
 
-## 2. Sales Report
-Show monthly revenue.
+## 2. Sales Management
+Record sales with product line items against customers.
 
-### Build Steps
-- Add analytics endpoint, then a report page.
-";
+### Entity & Fields
+Sales — sales
+- customerId (select, required) → customers
+- saleDate (date, required)
+- totalAmount (decimal, required) — computed as the sum of the items' subtotals
+- status (select: pending / partially_paid / paid, required)
+- items (table) → sale_items, mapped on saleId
+
+Sale Items — sale_items
+- saleId (select, required) → sales
+- productId (select, required) → products
+- quantity (number, required, min 1)
+- unitPrice (decimal, required) — auto-lookup from the product's price
+- subtotal (decimal, required) — computed: quantity × unitPrice
+
+### Screen & Menu
+- Route `/sales`, sidebar `CRM > Sales`
+
+## 3. Sales Dashboard
+Show sales activity with KPI cards and a chart.
+
+### Dashboard Widgets
+- KPI card "Total sales" — sum of totalAmount (aggregator sales/count)
+- Line chart of monthly sales — xAxis = month, series = sum of totalAmount (aggregator sales/monthly)
+
+## 4. Payments workflow
+Let the user receive payments against a sale.
+
+### Entity & Fields
+Payments — payments
+- saleId (select, required) → sales
+- method (select: cash / bank / card_transfer, required)
+- amount (decimal, required)
+- date (date, required)
+
+### Actions
+- "Receive Payment" row button on each sale; popup selects the method (cash / bank / card transfer), enters the amount and adds it. Amount must not exceed the sale's remaining amount.
+"#;
         let tasks = parse_tasks(content);
-        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks.len(), 4);
         assert_eq!(tasks[0].0, "Customer Management");
         assert!(tasks[0].1.contains("### Entity & Fields"));
-        assert!(tasks[0].1.contains("- Name (text, required)"));
-        assert!(!tasks[0].1.contains("Sales Report"));
-        assert_eq!(tasks[1].0, "Sales Report");
-        assert!(tasks[1].1.contains("### Build Steps"));
+        assert!(tasks[0].1.contains("- name (text, required)"));
+        assert!(!tasks[0].1.contains("Sales Management"));
+        assert_eq!(tasks[1].0, "Sales Management");
+        assert!(tasks[1].1.contains("Sale Items — sale_items"));
+        assert!(tasks[1]
+            .1
+            .contains("- subtotal (decimal, required) — computed: quantity × unitPrice"));
+        assert_eq!(tasks[2].0, "Sales Dashboard");
+        assert!(tasks[2].1.contains("KPI card"));
+        assert_eq!(tasks[3].0, "Payments workflow");
+        assert!(tasks[3].1.contains("### Actions"));
+        // Sections describe outcomes, not build steps.
+        assert!(!tasks.iter().any(|(_, body)| body.contains("Build Steps")));
+        assert!(!tasks.iter().any(|(_, body)| body.contains("sync_schema")));
     }
 
     #[test]

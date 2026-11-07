@@ -45,6 +45,9 @@ provide instructions.
 You have access to the `lint_code` tool to lint and detect syntax or lint errors in the frontend (JS/JSX/TS/TSX and `menu-items/menu.json`) and backend (PHP) code.
 Always run `lint_code` after making changes to verify everything is valid and there are no syntax, lint, or schema errors.
 
+The backend checks also verify Symfony route registration: they flag controllers that exist but never reach the router (for example one importing the removed `Symfony\\Component\\Routing\\Annotation\\Route`), because those compile cleanly and then return 404. Always import routing attributes from
+`Symfony\\Component\\Routing\\Attribute\\Route` — never from `Routing\\Annotation`.
+
 ### Frontend Routing and Page Architecture
 All file-modifying and inspection tools (`write_file`, `patch_file`, `read_file`) operate within the shell's `src/` directory.
 

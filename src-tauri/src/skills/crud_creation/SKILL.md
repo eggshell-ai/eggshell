@@ -185,6 +185,11 @@ Since the default admin user has all permissions, we don't need to worry about t
 ## 3. Write the Backend Controller
 We shall add our controller at the endpoint used in `sync_schema`.
 
+> **Import routing attributes from `Symfony\Component\Routing\Attribute\Route`.**
+> The old `Routing\Annotation\Route` class no longer exists; using it makes every
+> `#[Route]` in the file silently ignored, so the controller compiles but its
+> endpoints return 404. `lint_code` flags this on the backend shell.
+
 ```php
 write_file({
   shell: "backend",
