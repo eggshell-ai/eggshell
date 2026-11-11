@@ -35,6 +35,12 @@ Insertion position rules for `addField` and `moveField`:
 
 Matching is case-insensitive for resource and field names.
 
+> **Never hand-edit generated files.** `Entity/*.php` and `resources/*.ts` are
+> regenerated from the stored schema on every sync — manual edits (including
+> "fixing" a select field's `?string` foreign-key column to `?int`, which is
+> intentional) are silently overwritten. Go through the schema via operations.
+> See "Foreign-key storage types" in the CRUD skill for the column-type rules.
+
 ## `changes` semantics
 
 `changes` is a camelCase object whose keys are the same properties documented in

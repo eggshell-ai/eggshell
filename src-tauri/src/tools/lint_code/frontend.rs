@@ -188,6 +188,12 @@ fn lint_frontend_shell(
                     .to_string_lossy()
                     .replace('\\', "/");
 
+                // `prettier/prettier` formatting warnings (CRLF, stray commas,
+                // re-indentation) are noise from scaffold files, not runtime
+                // problems. Reporting thousands of them swamps the agent's
+                // context, so keep only one aggregate warning per file.
+                let mut prettier_count = 0usize;
+
                 for msg in file_res.messages.unwrap_or_default() {
                     // A directive such as `// eslint-disable-next-line
                     // @next/next/no-img-element` produces an error when that rule
@@ -204,6 +210,10 @@ fn lint_frontend_shell(
 
                     if let Some(ref rule) = msg.rule_id {
                         if rule == "no-unused-vars" || rule == "@typescript-eslint/no-unused-vars" {
+                            continue;
+                        }
+                        if is_prettier_formatting_noise(rule, msg.message.as_deref()) {
+                            prettier_count += 1;
                             continue;
                         }
                     }
@@ -232,6 +242,18 @@ fn lint_frontend_shell(
                     };
                     issue = issue.with_column(msg.column);
                     issues.push(issue);
+                }
+
+                if prettier_count > 0 {
+                    issues.push(Issue::warning(
+                        Shell::Frontend,
+                        "eslint",
+                        display_path.clone(),
+                        1,
+                        format!(
+                            "[prettier/prettier] {prettier_count} formatting warning(s) in this file (line endings / spacing). Run the project's prettier to resolve; not an error."
+                        ),
+                    ));
                 }
             }
             return Ok(issues);
@@ -281,6 +303,21 @@ fn is_unknown_rule_definition(message: &str) -> bool {
         || (lower.contains("couldn't find rule") && lower.contains("definition"))
 }
 
+/// Prettier messages are pure formatting fixes (the template ships files with
+/// CRLF and stray commas while its `.prettierrc` demands LF). They can number
+/// in the thousands and carry zero semantic information, so each one is
+/// collapsed into a per-file aggregate instead of being reported line by line.
+fn is_prettier_formatting_noise(rule: &str, message: Option<&str>) -> bool {
+    if rule != "prettier/prettier" {
+        return false;
+    }
+
+    let Some(message) = message else {
+        return true;
+    };
+    message.starts_with("Delete ") || message.starts_with("Insert ") || message.starts_with("Replace ")
+}
+
 fn configure_env_node(command: &mut Command) {
     command.env_clear();
     for name in [
@@ -311,6 +348,35 @@ fn configure_env_node(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_prettier_formatting_noise_detection() {
+        assert!(is_prettier_formatting_noise("prettier/prettier", Some("Delete `␍`")));
+        assert!(is_prettier_formatting_noise(
+            "prettier/prettier",
+            Some("Delete `,`")
+        ));
+        assert!(is_prettier_formatting_noise(
+            "prettier/prettier",
+            Some("Insert `⏎`")
+        ));
+        assert!(is_prettier_formatting_noise(
+            "prettier/prettier",
+            Some("Replace `····` with `·····`")
+        ));
+        assert!(is_prettier_formatting_noise("prettier/prettier", None));
+
+        // Prettier rule but not a formatting fix => reported normally.
+        assert!(!is_prettier_formatting_noise(
+            "prettier/prettier",
+            Some("Code style issues found. Run Prettier to fix.")
+        ));
+        // Other rules are never treated as formatting noise.
+        assert!(!is_prettier_formatting_noise(
+            "react-hooks/exhaustive-deps",
+            Some("Delete `␍`")
+        ));
+    }
 
     #[test]
     fn test_unknown_rule_definition_filtering() {

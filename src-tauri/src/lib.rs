@@ -1,4 +1,5 @@
 mod apps;
+pub mod ask;
 pub mod config;
 mod db;
 pub mod dependencies;
@@ -974,6 +975,11 @@ async fn stop_chat(
     active_max: tauri::State<'_, ActiveMaxMap>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // A tool may be parked on an `ask_user` question. Resolve those first so
+    // the blocked run unwinds instead of holding the project's cancel flag
+    // occupied forever.
+    ask::cancel_project(project_id);
+
     // A Max mode run has no wrap-up phase: stopping aborts the current task and
     // leaves the rest resumable.
     let max_control = {
@@ -1038,6 +1044,16 @@ async fn stop_chat(
         flag.store(true, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// Resolves a pending `ask_user` question with the user's answer.
+///
+/// The agent's `ask_user` tool is parked on a channel; this command hands it
+/// the answer so the run can continue. An unknown id means the question already
+/// timed out, was stopped, or the app was restarted.
+#[tauri::command]
+async fn answer_question(question_id: String, answer: String) -> Result<(), String> {
+    ask::answer(&question_id, answer)
 }
 
 #[tauri::command]
@@ -1436,6 +1452,7 @@ pub fn run() {
             list_sessions,
             delete_session,
             send_message,
+            answer_question,
             wrap_up_chat,
             stop_chat,
             list_max_tasks,

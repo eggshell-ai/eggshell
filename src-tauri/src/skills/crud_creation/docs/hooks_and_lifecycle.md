@@ -50,6 +50,7 @@ Choose the lightest extension point that satisfies the requirement:
 |---|---|
 | Single-field rule (required, unique, size, format) | Declarative field config |
 | Cross-field / conditional validation returning errors | `ValidatesResource` hook (+ frontend mirror) |
+| Cross-record validation needing a DB query (e.g. "amount ≤ remaining balance") | **Custom backend route** (`docs/row_actions.md` §7) — *not* `ValidatesResource`, which has no EntityManager (see §3) |
 | Prepare/normalize/derive values before persisting | `BeforeSavesResource` hook, or `beforeSave()` override |
 | Work that needs the saved record's primary key (related records, audit rows) | `AfterSavesResource` hook |
 | Save flow that cannot follow the standard pipeline at all | Override `store()` / `update()` directly |
@@ -98,6 +99,19 @@ after-save methods.
 ---
 
 ## 3. Validation hooks (backend)
+
+> **A `ValidatesResource` hook cannot access the database.** Hook classes are
+> instantiated with no arguments, and the framework calls only
+> `validate($entity, $data, $action)` — no `EntityManager` is passed, and no
+> setter (e.g. `setEntityManager`) exists. The hook must be a **pure function**
+> of the entity and payload. Do not invent dependency injection.
+>
+> If a rule depends on other records or persisted state (e.g. "a payment amount
+> must not exceed the sale's remaining balance"), enforce it in a **custom
+> backend route** (see `docs/row_actions.md` §7 — the frontend submits there and
+> the route returns field-addressable errors) or in a `BeforeSavesResource` /
+> `AfterSavesResource` hook, which **do** receive the `EntityManagerInterface`
+> as a method parameter. Keep only in-memory rules inside `ValidatesResource`.
 
 For validation that cannot be represented declaratively, implement
 `ValidatesResource`.

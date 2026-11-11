@@ -57,6 +57,13 @@ function App() {
   const [iterateStatus, setIterateStatus] = useState<{ loop?: number; stage?: string; phase?: string } | null>(null);
   const [maxTasks, setMaxTasks] = useState<MaxTask[]>([]);
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
+  // Answers given to `ask_user` questions in this session, keyed by question id.
+  // Kept in memory only: once the run finishes the question is part of the
+  // transcript and needs no further interaction.
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
+  // Questions the agent is currently parked on. Only these accept an answer;
+  // older questions in the transcript are rendered as read-only.
+  const [pendingQuestionIds, setPendingQuestionIds] = useState<string[]>([]);
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
 
@@ -232,6 +239,21 @@ function App() {
         setStreamedMessages([]);
         return;
       }
+      if (type === "ask_user") {
+        // Show the question as a card and remember that the agent is waiting.
+        // The card, not the composer, is what sends the answer back.
+        const question = data as { questionId?: string; question?: string; options?: string[]; awaitingAnswer?: boolean };
+        const questionId = question.questionId;
+        if (questionId && question.awaitingAnswer !== false) {
+          setPendingQuestionIds((current) => current.includes(questionId) ? current : [...current, questionId]);
+        }
+        setStreamedMessages((current) => [...current, {
+          role: "ask_user",
+          content: question.question ?? "",
+          data: { ...question, isQuestion: true },
+        }]);
+        return;
+      }
       setStreamedMessages((current) => [...current, {
         role: type as ChatMessage["role"],
         content: eventContent(type, data),
@@ -339,7 +361,7 @@ function App() {
     const promptToSend = draft;
     setDraft("");
     setPendingPrompt(promptToSend);
-    setError(""); setIsSending(true); setStreamedMessages([]);
+    setError(""); setIsSending(true); setStreamedMessages([]); setPendingQuestionIds([]);
     try {
       const session = await invoke<Session>("send_message", {
         projectId: activeProject.id,
@@ -350,13 +372,13 @@ function App() {
       });
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); setPendingPrompt(""); void loadUsers(activeProject.id); }
+    finally { setIsSending(false); setPendingPrompt(""); setPendingQuestionIds([]); void loadUsers(activeProject.id); }
   }
 
   async function proceedToImplement() {
     if (!activeProject || isSending) return;
     setMode("implement");
-    setError(""); setIsSending(true); setStreamedMessages([]);
+    setError(""); setIsSending(true); setStreamedMessages([]); setPendingQuestionIds([]);
     const proceedMessage = "Proceed with implementation of the approved plan.";
     setPendingPrompt(proceedMessage);
     try {
@@ -369,11 +391,14 @@ function App() {
       });
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setDraft(""); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); setPendingPrompt(""); }
+    finally { setIsSending(false); setPendingPrompt(""); setPendingQuestionIds([]); }
   }
 
   async function stopChat() {
     if (!activeProject) return;
+    // The backend cancels any question the agent is parked on, so the card must
+    // stop offering an answer straight away.
+    setPendingQuestionIds([]);
     try {
       if (mode === "iterate" && !isWrappingUp) {
         setIsWrappingUp(true);
@@ -393,7 +418,7 @@ function App() {
 
   async function runMaxTasks(retryFailed: boolean) {
     if (!activeProject || !activeSession || isSending) return;
-    setError(""); setIsSending(true); setStreamedMessages([]); setMode("max");
+    setError(""); setIsSending(true); setStreamedMessages([]); setMode("max"); setPendingQuestionIds([]);
     setPendingPrompt(retryFailed ? "Retrying failed tasks…" : "Running Max tasks…");
     try {
       const session = await invoke<Session>("run_max_tasks", {
@@ -404,7 +429,7 @@ function App() {
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]);
       await loadMaxTasks(activeProject.id, session.id);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); setPendingPrompt(""); void loadUsers(activeProject.id); }
+    finally { setIsSending(false); setPendingPrompt(""); setPendingQuestionIds([]); void loadUsers(activeProject.id); }
   }
 
   async function stopMaxTask(taskId: number) {
@@ -413,6 +438,32 @@ function App() {
       await invoke("update_max_task_status", { taskId, status: "failed" });
       await loadMaxTasks(activeProject.id, activeSession.id);
     } catch (reason) { setError(String(reason)); }
+  }
+
+  /**
+   * Answers a question the agent is parked on. The run stays `isSending`: the
+   * answer resumes the existing turn rather than starting a new one, so no
+   * streaming state is reset here.
+   */
+  async function answerQuestion(questionId: string, answer: string) {
+    if (!pendingQuestionIds.includes(questionId)) return;
+    setError("");
+    // Optimistic: the card shows the choice immediately, and the pending marker
+    // is dropped so the buttons cannot be pressed twice.
+    setQuestionAnswers((current) => ({ ...current, [questionId]: answer }));
+    setPendingQuestionIds((current) => current.filter((id) => id !== questionId));
+    try {
+      await invoke("answer_question", { questionId, answer });
+    } catch (reason) {
+      setError(String(reason));
+      // The backend refused the answer, so let the user try again.
+      setQuestionAnswers((current) => {
+        const next = { ...current };
+        delete next[questionId];
+        return next;
+      });
+      setPendingQuestionIds((current) => current.includes(questionId) ? current : [...current, questionId]);
+    }
   }
 
   async function compactSession() {
@@ -475,7 +526,7 @@ function App() {
   if (activeProject) {
     return (
       <>
-        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} maxTasks={maxTasks} onRunMaxTasks={() => void runMaxTasks(false)} onRetryMaxTasks={() => void runMaxTasks(true)} onStopMaxTask={(taskId) => void stopMaxTask(taskId)} />
+        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} maxTasks={maxTasks} onRunMaxTasks={() => void runMaxTasks(false)} onRetryMaxTasks={() => void runMaxTasks(true)} onStopMaxTask={(taskId) => void stopMaxTask(taskId)} questionAnswers={questionAnswers} pendingQuestionIds={pendingQuestionIds} onAnswerQuestion={(questionId, answer) => void answerQuestion(questionId, answer)} />
         <UpdatePrompt autoCheck={autoUpdateEnabled} />
       </>
     );

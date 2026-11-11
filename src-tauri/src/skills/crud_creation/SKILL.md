@@ -324,6 +324,29 @@ It requires that `products` resource is already created.
 }
 ```
 
+### Foreign-key storage types (read before writing backend code)
+
+The entity column type generated for a reference depends on the field type, and
+this is intentional — do not "fix" it by hand-editing the generated entity:
+
+| Field type | Generated PHP property | Notes |
+|---|---|---|
+| `type: "select"` with `resource` | `public ?string $productId` | **String column**, even when the referenced resource's id is an integer (`?int $id`). |
+| `type: "foreign"` (child line's parent reference) | `public ?int $saleId` | Integer column for the parent record id. |
+
+So `Sale.customerId` may be `?string` while `Customer.id` is `?int`. In custom
+backend routes and hooks, cast explicitly when the value is used as a lookup id:
+
+```php
+$customer = $entityManager->getRepository(Customer::class)->find((int) $record->customerId);
+$entityManager->createQuery('... WHERE p.saleId = :saleId')
+    ->setParameter('saleId', (int) $record->saleId);
+```
+
+Never write raw SQL/DQL comparing a string FK column against an integer literal
+without a cast, and never re-type the generated `?string` property to `?int` by
+editing `Entity/*.php` directly — `sync_schema` regenerates those files and will
+overwrite manual edits.
 
 ## Checkboxes
 Checkboxes should have a clear label, both in `label` and during dispaly. By default, they display `Yes` and `No`, which seems unpolished.

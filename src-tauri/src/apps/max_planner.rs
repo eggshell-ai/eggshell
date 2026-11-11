@@ -1,5 +1,5 @@
 use crate::llm::{project_shells, App, Shell, Tool};
-use crate::tools::{ReadFileTool, ReadSchemaTool};
+use crate::tools::{ListDirectoryTool, ReadFileTool, ReadSchemaTool};
 
 /// The Max mode planning agent.
 ///
@@ -52,7 +52,11 @@ impl App for MaxPlannerApp {
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![Box::new(ReadFileTool::new()), Box::new(ReadSchemaTool::new())]
+        vec![
+            Box::new(ListDirectoryTool::new()),
+            Box::new(ReadFileTool::new()),
+            Box::new(ReadSchemaTool::new()),
+        ]
     }
 
     fn system_prompt(&self) -> String {
@@ -98,7 +102,7 @@ mod tests {
     fn planner_tools_are_read_only_and_offer_no_skills() {
         let tools = MaxPlannerApp.tools();
         let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
-        assert_eq!(names, vec!["read_file", "read_schema"]);
+        assert_eq!(names, vec!["list_directory", "read_file", "read_schema"]);
         assert!(!names.contains(&"load_skill"));
     }
 

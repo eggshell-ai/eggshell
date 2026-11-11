@@ -1,7 +1,7 @@
 use crate::llm::{default_skills, project_shells, App, Shell, Tool};
 use crate::tools::{
-    LintCodeTool, LoadSkillTool, ManageUserTool, MoveFileTool, PatchFileTool, ReadFileTool,
-    ReadSchemaTool, SyncSchemaTool, WriteFileTool,
+    LintCodeTool, ListDirectoryTool, LoadSkillTool, ManageUserTool, MoveFileTool, PatchFileTool,
+    ReadFileTool, ReadSchemaTool, SyncSchemaTool, WriteFileTool,
 };
 
 /// The application definition used for new projects.
@@ -18,6 +18,7 @@ impl App for AdminPanelApp {
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
             Box::new(LoadSkillTool::new(default_skills())),
+            Box::new(ListDirectoryTool::new()),
             Box::new(ReadFileTool::new()),
             Box::new(WriteFileTool::new()),
             Box::new(PatchFileTool::new()),
@@ -50,6 +51,8 @@ The backend checks also verify Symfony route registration: they flag controllers
 
 ### Frontend Routing and Page Architecture
 All file-modifying and inspection tools (`write_file`, `patch_file`, `read_file`) operate within the shell's `src/` directory.
+
+Use `list_directory` to discover exact paths before reading or writing. Never guess a path or assume a folder exists: list its parent first. `list_directory` returns a compact indented tree and collapses dependency/build directories (`vendor`, `node_modules`, `dist`, `build`, `.next`, `var/cache`, ...), so it is cheap to call.
 
 1. **Page Creation & File Paths**:
    - The frontend uses Next.js App Router.

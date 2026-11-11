@@ -100,10 +100,29 @@ once, in Markdown only.\n\n{}",
     ];
 
     let event_sink_clone = Arc::clone(&event_sink);
+    let on_event: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |event: Value| {
+        event_sink_clone(json!({
+            "projectId": project_id,
+            "sessionId": session_id,
+            "event": event,
+            "maxStage": "breakdown"
+        }));
+    });
+
+    // Max mode is unattended: `ask_user` still surfaces the question so it can
+    // be answered later, but it never blocks the breakdown.
+    let mut planner_tools = app.tools();
+    planner_tools.push(Box::new(crate::tools::AskUserTool::new(
+        Some(crate::ask::AskBroker::new(Arc::clone(&on_event))),
+        project_id,
+        session_id,
+        false,
+    )));
+
     let result = agent
         .run_agent(
             planner_messages,
-            app.tools(),
+            planner_tools,
             AgentOptions {
                 project_path: Some(project_path.clone()),
                 artifacts: artifacts.clone(),
@@ -112,14 +131,7 @@ once, in Markdown only.\n\n{}",
                 // business-oriented plan, so no catalogue is appended to its
                 // system prompt.
                 skills: Some(Vec::new()),
-                on_event: Some(Arc::new(move |event| {
-                    event_sink_clone(json!({
-                        "projectId": project_id,
-                        "sessionId": session_id,
-                        "event": event,
-                        "maxStage": "breakdown"
-                    }));
-                })),
+                on_event: Some(on_event),
                 max_turns: Some(8),
                 ..Default::default()
             },
