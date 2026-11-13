@@ -1,0 +1,1008 @@
+//! Installable feature modules.
+//!
+//! A module packages code that a generated project does not start with — a PDF
+//! renderer, a notification channel, an import pipeline. Each module lives in
+//! its own directory under the repository's top-level `modules/` folder and is
+//! embedded at compile time, so installing one never depends on the module
+//! sources being present next to the running binary.
+//!
+//! An install is *declarative*: `module.json` lists the directories to copy, the
+//! Composer and npm packages to add and the Symfony bundles to register. There is
+//! deliberately no install script — a shell script could not be made idempotent,
+//! could not tell whether a file on disk was written by the module or by the
+//! agent, and would not run on Windows without an extra shell.
+//!
+//! Everything an install records is kept in `<project>/.eggshell/modules.json`.
+//! That file is what makes a second install a no-op and what lets the installer
+//! refuse to overwrite a file it did not write.
+
+use include_dir::{include_dir, Dir};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::llm::LlmResult;
+
+/// The complete `modules/` tree, embedded recursively at compile time.
+static MODULES_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../modules");
+
+/// The manifest every module directory must contain.
+const MANIFEST_FILE: &str = "module.json";
+
+/// Where an install records what it did, relative to the project root.
+const STATE_DIR: &str = ".eggshell";
+const STATE_FILE: &str = "modules.json";
+
+/// Installed module skills live here, so the skill loader can find them without
+/// reading the state file.
+const SKILL_DIR: &str = "modules";
+
+/// Composer packages to install for a module.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ComposerSpec {
+    /// `package` => version constraint, e.g. `"mpdf/mpdf": "^8.3"`.
+    pub require: BTreeMap<String, String>,
+}
+
+/// npm packages to install for a module.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NpmSpec {
+    /// `package` => version range, e.g. `"jspdf": "^2.5.1"`.
+    pub dependencies: BTreeMap<String, String>,
+}
+
+/// One directory copied from the module into the project.
+///
+/// Both paths are relative: `from` to the module directory, `to` to the project
+/// root. A module therefore mirrors the project layout it targets, which keeps
+/// the manifest readable: `backend` -> `backend`, `frontend` -> `frontend`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CopyMapping {
+    pub from: String,
+    pub to: String,
+    /// When true an existing destination file that the module did not write is
+    /// left alone instead of failing the install. Used for configuration defaults
+    /// that a project or a Flex recipe may already provide.
+    #[serde(default)]
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct BackendSpec {
+    pub composer: ComposerSpec,
+    /// Fully-qualified bundle classes appended to `config/bundles.php`.
+    pub bundles: Vec<String>,
+    #[serde(default)]
+    pub copy: Vec<CopyMapping>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct FrontendSpec {
+    pub npm: NpmSpec,
+    #[serde(default)]
+    pub copy: Vec<CopyMapping>,
+}
+
+/// A module's `module.json`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModuleManifest {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    /// Path of the instructions file inside the module directory.
+    #[serde(default = "default_skill_file")]
+    pub skill: String,
+    #[serde(default)]
+    pub backend: BackendSpec,
+    #[serde(default)]
+    pub frontend: FrontendSpec,
+}
+
+fn default_skill_file() -> String {
+    "SKILL.md".to_string()
+}
+
+/// A module as it is installed in one project.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct InstalledModule {
+    pub version: String,
+    pub installed_at: u64,
+    /// Every file the module wrote, relative to the project root. This is the
+    /// ownership record: a file in it may be replaced on a re-install, and a file
+    /// outside it may not.
+    pub files: Vec<String>,
+    /// The module skill's path inside the project, relative to the project root.
+    pub skill_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ModuleState {
+    pub modules: BTreeMap<String, InstalledModule>,
+}
+
+/// What one install call did, so the agent can report it accurately.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct InstallReport {
+    pub module: String,
+    pub already_installed: bool,
+    pub files_written: Vec<String>,
+    /// Files already present with identical content; nothing was written.
+    pub files_unchanged: Vec<String>,
+    pub packages_installed: Vec<String>,
+    pub warnings: Vec<String>,
+    pub skill_path: Option<String>,
+    pub skill_content: Option<String>,
+}
+
+/// Returns every module found under `modules/`, sorted by id.
+pub fn catalogue() -> Vec<ModuleManifest> {
+    let mut modules: BTreeMap<String, ModuleManifest> = BTreeMap::new();
+
+    for dir in MODULES_DIR.dirs() {
+        let Some(manifest) = read_manifest(dir) else {
+            continue;
+        };
+        modules.insert(manifest.id.clone(), manifest);
+    }
+
+    modules.into_values().collect()
+}
+
+fn read_manifest(dir: &'static Dir<'static>) -> Option<ModuleManifest> {
+    let name = dir.path().file_name()?.to_str()?;
+    // `include_dir` resolves paths from the embedded root, not from `dir`.
+    let raw = MODULES_DIR.get_file(format!("{name}/{MANIFEST_FILE}"))?;
+    let text = raw.contents_utf8()?;
+    let manifest: ModuleManifest = serde_json::from_str(text).ok()?;
+    (!manifest.id.trim().is_empty()).then_some(manifest)
+}
+
+fn module_dir(id: &str) -> Option<&'static Dir<'static>> {
+    MODULES_DIR
+        .dirs()
+        .find(|dir| dir.path().file_name().and_then(|name| name.to_str()) == Some(id))
+}
+
+/// Finds a module by id.
+pub fn find(id: &str) -> Option<ModuleManifest> {
+    catalogue().into_iter().find(|module| module.id == id)
+}
+
+pub fn available_ids() -> Vec<String> {
+    catalogue().into_iter().map(|module| module.id).collect()
+}
+
+/// The block appended to the builder agent's system prompt.
+///
+/// Mirrors the shape of `agent::skills_summary` on purpose: the model already
+/// knows how to read that section, and the two appear together in the prompt.
+pub fn catalogue_prompt() -> String {
+    let modules = catalogue();
+    if modules.is_empty() {
+        return String::new();
+    }
+
+    let installed_note = "Call `enable_module` with the module id to install one. \
+Installing copies its backend and frontend files into the project, adds its \
+Composer/npm packages and registers its Symfony bundles. Call it before writing \
+code that depends on the module, and follow the module's skill for wiring.";
+
+    let mut summary = String::from(
+        "\n\n=== AVAILABLE MODULES ===\n\
+The project can be extended with optional modules. They are not installed by default.\n\n",
+    );
+    for module in &modules {
+        summary.push_str(&format!("**{}** ({})\n", module.id, module.name));
+        if !module.description.trim().is_empty() {
+            summary.push_str(&format!("Description: {}\n", module.description.trim()));
+        }
+        let composer = module
+            .backend
+            .composer
+            .require
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        if !composer.is_empty() {
+            summary.push_str(&format!("PHP packages: {}\n", composer.join(", ")));
+        }
+        let npm = module
+            .frontend
+            .npm
+            .dependencies
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        if !npm.is_empty() {
+            summary.push_str(&format!("npm packages: {}\n", npm.join(", ")));
+        }
+        summary.push('\n');
+    }
+    summary.push_str(installed_note);
+    summary.push_str("\n=== END MODULES ===\n");
+    summary
+}
+
+fn state_path(project: &Path) -> PathBuf {
+    project.join(STATE_DIR).join(STATE_FILE)
+}
+
+pub fn read_state(project: &Path) -> ModuleState {
+    let Ok(text) = std::fs::read_to_string(state_path(project)) else {
+        return ModuleState::default();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn write_state(project: &Path, state: &ModuleState) -> LlmResult<()> {
+    let path = state_path(project);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(state)?)?;
+    Ok(())
+}
+
+/// Installs `id` into `project`.
+///
+/// Installation is idempotent: a module recorded at the same version is reported
+/// as already installed and nothing is touched. A module recorded at a different
+/// version is re-written over the files it owns.
+///
+/// `module.json`, `SKILL.md` and the `overrides/` tree live at the module root
+/// and are never copied by the `backend`/`frontend` mappings, so the skill is the
+/// only thing that reaches `.eggshell/`.
+pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
+    let id = id.trim();
+    let Some(manifest) = find(id) else {
+        return Err(format!(
+            "Unknown module '{id}'. Available modules: {}.",
+            available_ids().join(", ")
+        )
+        .into());
+    };
+    let Some(dir) = module_dir(&manifest.id) else {
+        return Err(format!("Module '{id}' has no directory on disk.").into());
+    };
+
+    let mut state = read_state(project);
+    let mut report = InstallReport {
+        module: manifest.id.clone(),
+        ..Default::default()
+    };
+
+    if let Some(installed) = state.modules.get(&manifest.id) {
+        if installed.version == manifest.version {
+            report.already_installed = true;
+            report.skill_path = installed.skill_path.clone();
+            report.skill_content = installed
+                .skill_path
+                .as_ref()
+                .and_then(|path| std::fs::read_to_string(project.join(path)).ok());
+            return Ok(report);
+        }
+    }
+
+    // Ownership of files from a previous version carries over, so an upgrade may
+    // replace them without being treated as a conflict.
+    let owned: Vec<String> = state
+        .modules
+        .get(&manifest.id)
+        .map(|installed| installed.files.clone())
+        .unwrap_or_default();
+
+    let mut written: Vec<String> = Vec::new();
+
+    for mapping in manifest
+        .backend
+        .copy
+        .iter()
+        .chain(manifest.frontend.copy.iter())
+    {
+        if let Err(error) = copy_mapping(project, dir, mapping, &owned, &mut written, &mut report) {
+            // Record what was written before the failure. Otherwise those files
+            // exist on disk with no ownership record, and the retry the agent is
+            // about to make would treat them as somebody else's work and refuse.
+            record_partial_install(project, &manifest, &owned, &written);
+            return Err(error);
+        }
+    }
+
+    // Composer and npm run last, so a copy conflict aborts before minutes are
+    // spent downloading packages.
+    if !manifest.backend.composer.require.is_empty() {
+        let backend = project.join("backend");
+        if !backend.is_dir() {
+            report
+                .warnings
+                .push("backend directory not found; skipped Composer packages.".to_string());
+        } else {
+            let packages: Vec<String> = manifest
+                .backend
+                .composer
+                .require
+                .iter()
+                .map(|(name, constraint)| format!("{name}:{constraint}"))
+                .collect();
+            let command = format!("composer require {} --no-interaction --no-progress", packages.join(" "));
+            match crate::llm::symfony::run_command_capture(&command, &backend).await {
+                Ok(_) => report.packages_installed.extend(packages),
+                Err(error) => {
+                    return Err(format!(
+                        "Composer could not install the packages the '{id}' module needs: {error}"
+                    )
+                    .into())
+                }
+            }
+        }
+    }
+
+    if !manifest.frontend.npm.dependencies.is_empty() {
+        let frontend = project.join("frontend");
+        if !frontend.is_dir() {
+            report
+                .warnings
+                .push("frontend directory not found; skipped npm packages.".to_string());
+        } else {
+            let packages: Vec<String> = manifest
+                .frontend
+                .npm
+                .dependencies
+                .iter()
+                .map(|(name, range)| format!("{name}@{range}"))
+                .collect();
+            match crate::llm::react::run_npm_install_capture(&packages, &frontend).await {
+                Ok(_) => report.packages_installed.extend(packages),
+                Err(error) => {
+                    return Err(format!(
+                        "npm could not install the packages the '{id}' module needs: {error}"
+                    )
+                    .into())
+                }
+            }
+        }
+    }
+
+    if !manifest.backend.bundles.is_empty() {
+        let bundles = project.join("backend/config/bundles.php");
+        if bundles.is_file() {
+            match register_bundles(&bundles, &manifest.backend.bundles) {
+                Ok(added) => {
+                    if added > 0 {
+                        report.warnings.push(format!(
+                            "Registered {added} Symfony bundle(s) in config/bundles.php."
+                        ));
+                    }
+                }
+                Err(error) => report.warnings.push(format!(
+                    "Could not register Symfony bundles in config/bundles.php: {error}"
+                )),
+            }
+        } else {
+            report
+                .warnings
+                .push("config/bundles.php not found; bundles were not registered.".to_string());
+        }
+    }
+
+    // A copied `config/packages/*.yaml` or a new bundle is invisible until the
+    // container is rebuilt. Best effort: a failure here must not undo a good install.
+    if project.join("backend/bin/console").is_file() {
+        let console_path = project.join("backend");
+        if let Err(error) = crate::llm::symfony::run_command_capture(
+            "php bin/console cache:clear --no-warmup",
+            &console_path,
+        )
+        .await
+        {
+            report
+                .warnings
+                .push(format!("cache:clear failed: {error}"));
+        }
+    }
+
+    let skill_path = install_skill(project, dir, &manifest, &mut report)?;
+    report.skill_path = skill_path.clone();
+    report.skill_content = skill_path
+        .as_ref()
+        .and_then(|path| std::fs::read_to_string(project.join(path)).ok());
+
+    written.sort();
+    written.dedup();
+
+    let mut files = written.clone();
+    for file in &owned {
+        if !files.contains(file) {
+            files.push(file.clone());
+        }
+    }
+    files.sort();
+
+    state.modules.insert(
+        manifest.id.clone(),
+        InstalledModule {
+            version: manifest.version.clone(),
+            installed_at: now_secs(),
+            files,
+            skill_path,
+        },
+    );
+    write_state(project, &state)?;
+
+    report.files_written = written;
+    Ok(report)
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+/// Persists the files copied before a failure, so a retry recognises them as the
+/// module's own and can finish the install.
+///
+/// The state entry deliberately records no skill and the version already on disk:
+/// the install did not complete, and a later successful run overwrites both.
+fn record_partial_install(
+    project: &Path,
+    manifest: &ModuleManifest,
+    previously_owned: &[String],
+    written: &[String],
+) {
+    if written.is_empty() {
+        return;
+    }
+    let mut state = read_state(project);
+    let mut files = written.to_vec();
+    for file in previously_owned {
+        if !files.contains(file) {
+            files.push(file.clone());
+        }
+    }
+    files.sort();
+
+    let entry = state.modules.entry(manifest.id.clone()).or_default();
+    entry.files = files;
+    if entry.version.is_empty() {
+        entry.version = manifest.version.clone();
+    }
+    entry.installed_at = now_secs();
+    let _ = write_state(project, &state);
+}
+
+/// Copies one `from` -> `to` mapping out of the embedded module directory.
+fn copy_mapping(
+    project: &Path,
+    module_root: &'static Dir<'static>,
+    mapping: &CopyMapping,
+    owned: &[String],
+    written: &mut Vec<String>,
+    report: &mut InstallReport,
+) -> LlmResult<()> {
+    let from = mapping.from.trim_matches('/').replace('\\', "/");
+    let to = mapping.to.trim_matches('/').replace('\\', "/");
+
+    // `include_dir` resolves paths from the embedded root, not from `module_root`.
+    let full = format!(
+        "{}/{}",
+        module_root
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default(),
+        from
+    );
+    let Some(dir) = MODULES_DIR.get_dir(&full) else {
+        return Err(format!(
+            "Module directory '{from}' is missing from the package (mapping to '{to}')."
+        )
+        .into());
+    };
+
+    copy_dir(project, dir, &to, owned, written, report, mapping)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn copy_dir(
+    project: &Path,
+    dir: &'static Dir<'static>,
+    project_prefix: &str,
+    owned: &[String],
+    written: &mut Vec<String>,
+    report: &mut InstallReport,
+    mapping: &CopyMapping,
+) -> LlmResult<()> {
+    for file in dir.files() {
+        let Some(name) = file.path().file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let project_relative = join_relative(project_prefix, name);
+        let destination = project.join(&project_relative);
+
+        let contents = file.contents();
+        match std::fs::read(&destination) {
+            Ok(existing) if existing == contents => {
+                report.files_unchanged.push(project_relative);
+                continue;
+            }
+            // An `optional` mapping is a default that must not fight the project:
+            // if the file already exists, whatever the agent or a Flex recipe put
+            // there wins, even when it differs.
+            Ok(_) if mapping.optional => {
+                report.files_unchanged.push(project_relative);
+                continue;
+            }
+            Ok(_) if !owned.iter().any(|path| path == &project_relative) => {
+                return Err(format!(
+                    "Refusing to overwrite '{}': it already exists and was not installed by this module. \
+Move or delete it, then run enable_module again.",
+                    project_relative
+                )
+                .into());
+            }
+            _ => {}
+        }
+
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&destination, contents)?;
+        written.push(project_relative);
+    }
+
+    for child in dir.dirs() {
+        let Some(name) = child.path().file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        copy_dir(
+            project,
+            child,
+            &join_relative(project_prefix, name),
+            owned,
+            written,
+            report,
+            mapping,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn join_relative(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}/{name}")
+    }
+}
+
+/// Copies the module's skill into `.eggshell/modules/<id>/` and returns its
+/// project-relative path.
+fn install_skill(
+    project: &Path,
+    module_root: &'static Dir<'static>,
+    manifest: &ModuleManifest,
+    report: &mut InstallReport,
+) -> LlmResult<Option<String>> {
+    let skill = manifest.skill.trim_matches('/').replace('\\', "/");
+    let dir_name = module_root
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&manifest.id);
+    // `include_dir` resolves paths from the embedded root, not from `module_root`.
+    let Some(file) = MODULES_DIR.get_file(format!("{dir_name}/{skill}")) else {
+        report.warnings.push(format!(
+            "Module '{0}' declares skill '{skill}' but the file is missing; its instructions were not installed.",
+            manifest.id
+        ));
+        report.skill_content = None;
+        return Ok(None);
+    };
+
+    let relative = format!("{STATE_DIR}/{SKILL_DIR}/{}/SKILL.md", manifest.id);
+    let destination = project.join(&relative);
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&destination, file.contents())?;
+    Ok(Some(relative))
+}
+
+/// Adds `bundles` to a Symfony `config/bundles.php` that are not already there.
+///
+/// The file is a plain PHP array literal. Rather than parsing PHP, the closing
+/// `];` is located and entries are inserted before it, which preserves whatever
+/// Flex wrote and stays valid as long as the array literal does — which is the
+/// one thing every Symfony skeleton guarantees.
+fn register_bundles(path: &Path, bundles: &[String]) -> std::io::Result<usize> {
+    let source = std::fs::read_to_string(path)?;
+    let mut additions = Vec::new();
+
+    for bundle in bundles {
+        // `::class` is compared, not the raw string, so both `Foo\Bar::class` and
+        // a Flex-written `Foo\Bar::class` match the same entry.
+        let fqcn = bundle.trim().trim_matches('\\');
+        if fqcn.is_empty() {
+            continue;
+        }
+        let already = source.contains(&format!("{fqcn}::class"))
+            || source.contains(&format!("\\{fqcn}::class"));
+        if !already {
+            additions.push(format!("    \\{fqcn}::class => ['all' => true],"));
+        }
+    }
+
+    if additions.is_empty() {
+        return Ok(0);
+    }
+
+    let Some(close) = source.rfind("];") else {
+        return Err(std::io::Error::other(
+            "config/bundles.php has no closing `];` to insert into",
+        ));
+    };
+
+    let mut updated = String::with_capacity(source.len() + additions.join("\n").len());
+    updated.push_str(&source[..close]);
+    if !source[..close].ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(&additions.join("\n"));
+    updated.push('\n');
+    updated.push_str(&source[close..]);
+
+    std::fs::write(path, updated)?;
+    Ok(additions.len())
+}
+
+/// `enable_module` result, kept here so the tool stays a thin wrapper.
+pub fn report_to_value(report: &InstallReport) -> Value {
+    let message = if report.already_installed {
+        format!(
+            "Module '{}' is already installed; nothing was changed.",
+            report.module
+        )
+    } else {
+        format!(
+            "Module '{}' installed: {} file(s) written, {} package(s) added.",
+            report.module,
+            report.files_written.len(),
+            report.packages_installed.len()
+        )
+    };
+
+    json!({
+        "success": true,
+        "message": message,
+        "details": {
+            "module": report.module,
+            "alreadyInstalled": report.already_installed,
+            "filesWritten": report.files_written,
+            "filesUnchanged": report.files_unchanged,
+            "packagesInstalled": report.packages_installed,
+            "warnings": report.warnings,
+            "skillPath": report.skill_path,
+            "skillContent": report.skill_content,
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalogue_contains_pdf_export() {
+        let ids = available_ids();
+        assert!(ids.contains(&"pdf-export".to_string()), "ids: {ids:?}");
+    }
+
+    #[test]
+    fn manifest_declares_backend_packages() {
+        let module = find("pdf-export").expect("pdf-export module exists");
+        assert!(module.backend.composer.require.contains_key("mpdf/mpdf"));
+        assert!(module.backend.composer.require.contains_key("symfony/twig-bundle"));
+        assert!(!module.backend.bundles.is_empty());
+        assert!(!module.backend.copy.is_empty());
+        // The frontend client only uses the shared axios instance, so the module
+        // deliberately pulls in no npm packages.
+        assert!(module.frontend.npm.dependencies.is_empty());
+        assert!(!module.frontend.copy.is_empty());
+    }
+
+    #[test]
+    fn catalogue_prompt_lists_every_module() {
+        let prompt = catalogue_prompt();
+        for id in available_ids() {
+            assert!(prompt.contains(&id), "prompt missing {id}");
+        }
+        assert!(prompt.contains("enable_module"));
+    }
+
+    #[test]
+    fn registers_missing_bundles_once() {
+        let dir = std::env::temp_dir().join(format!("eggshell-bundles-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("bundles.php");
+        std::fs::write(
+            &path,
+            "<?php\n\nreturn [\n    Symfony\\Bundle\\FrameworkBundle\\FrameworkBundle::class => ['all' => true],\n];\n",
+        )
+        .expect("seed bundles");
+
+        let added = register_bundles(&path, &["Symfony\\Bundle\\TwigBundle\\TwigBundle".to_string()])
+            .expect("register");
+        assert_eq!(added, 1);
+        let again = register_bundles(&path, &["Symfony\\Bundle\\TwigBundle\\TwigBundle".to_string()])
+            .expect("register twice");
+        assert_eq!(again, 0);
+
+        let source = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(source.matches("TwigBundle::class").count(), 1);
+        assert!(source.trim_end().ends_with("];"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tail_output_keeps_the_end() {
+        let text = (0..10).map(|n| n.to_string()).collect::<Vec<_>>().join("\n");
+        let tail = crate::llm::symfony::tail_output(&text, 3);
+        assert!(tail.contains("earlier lines omitted"));
+        assert!(tail.ends_with('9'));
+    }
+
+    /// The module content itself: every declared copy source must exist in the
+    /// package, or an install would fail halfway through.
+    #[test]
+    fn every_declared_copy_source_exists() {
+        let module = find("pdf-export").expect("pdf-export module exists");
+        for mapping in module.backend.copy.iter().chain(module.frontend.copy.iter()) {
+            let path = format!("pdf-export/{}", mapping.from.trim_matches('/'));
+            assert!(
+                MODULES_DIR.get_dir(&path).is_some(),
+                "missing module directory '{path}'"
+            );
+        }
+        assert!(
+            MODULES_DIR
+                .get_file(format!("pdf-export/{}", module.skill))
+                .is_some(),
+            "missing SKILL.md"
+        );
+    }
+
+    /// Copies into a temp project without running Composer/npm: those steps are
+    /// guarded by the presence of `backend/` and `frontend/`, which this fixture
+    /// deliberately does not create beyond the files the module writes.
+    #[test]
+    fn install_writes_files_and_is_idempotent() {
+        let project = std::env::temp_dir().join(format!(
+            "eggshell-install-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        std::fs::create_dir_all(&project).expect("project dir");
+
+        let dir = module_dir("pdf-export").expect("module directory");
+        let module = find("pdf-export").expect("manifest");
+        let mut written = Vec::new();
+        let mut report = InstallReport {
+            module: module.id.clone(),
+            ..Default::default()
+        };
+        for mapping in module.backend.copy.iter().chain(module.frontend.copy.iter()) {
+            copy_mapping(&project, dir, mapping, &[], &mut written, &mut report)
+                .expect("copy succeeds");
+        }
+
+        assert!(project
+            .join("backend/src/Service/PdfTemplate/TemplatesPdf.php")
+            .is_file());
+        assert!(project.join("frontend/src/api/pdfClient.ts").is_file());
+        assert!(project
+            .join("backend/src/Service/PdfTemplate/Templates/invoice/template.html.twig")
+            .is_file());
+
+        // A second pass over the same files changes nothing.
+        let mut again = Vec::new();
+        let mut second = InstallReport {
+            module: module.id.clone(),
+            ..Default::default()
+        };
+        for mapping in module.backend.copy.iter().chain(module.frontend.copy.iter()) {
+            copy_mapping(&project, dir, mapping, &written, &mut again, &mut second)
+                .expect("second copy succeeds");
+        }
+        assert!(again.is_empty(), "second pass wrote: {again:?}");
+        assert!(!second.files_unchanged.is_empty());
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn optional_mapping_keeps_the_existing_file() {
+        let project = std::env::temp_dir().join(format!(
+            "eggshell-optional-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let target = project.join("backend/config/packages/twig.yaml");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("dirs");
+        std::fs::write(&target, "# project's own twig config\n").expect("seed file");
+
+        let dir = module_dir("pdf-export").expect("module directory");
+        let module = find("pdf-export").expect("manifest");
+        let mapping = module
+            .backend
+            .copy
+            .iter()
+            .find(|mapping| mapping.optional)
+            .expect("module declares an optional mapping");
+
+        let mut written = Vec::new();
+        let mut report = InstallReport::default();
+        copy_mapping(&project, dir, mapping, &[], &mut written, &mut report)
+            .expect("optional mapping must not fail");
+
+        assert!(written.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read"),
+            "# project's own twig config\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn install_refuses_to_overwrite_unowned_files() {
+        let project = std::env::temp_dir().join(format!(
+            "eggshell-conflict-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let target = project.join("frontend/src/api/pdfClient.ts");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("dirs");
+        std::fs::write(&target, "// the agent wrote this\n").expect("seed file");
+
+        let dir = module_dir("pdf-export").expect("module directory");
+        let module = find("pdf-export").expect("manifest");
+        let mut written = Vec::new();
+        let mut report = InstallReport::default();
+        let result = copy_mapping(
+            &project,
+            dir,
+            &module.frontend.copy[0],
+            &[],
+            &mut written,
+            &mut report,
+        );
+
+        let error = result.expect_err("conflict must fail");
+        assert!(error.to_string().contains("Refusing to overwrite"));
+        // The agent's file is untouched.
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read"),
+            "// the agent wrote this\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// End-to-end: install into a temp project (no Composer/npm), then load the
+    /// skill back through the same path the agent uses.
+    #[test]
+    fn installed_module_skill_is_loadable() {
+        let project = std::env::temp_dir().join(format!(
+            "eggshell-skill-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        std::fs::create_dir_all(&project).expect("project dir");
+
+        // Copy only, mirroring `install` without the package-manager steps.
+        let dir = module_dir("pdf-export").expect("module directory");
+        let manifest = find("pdf-export").expect("manifest");
+        let mut written = Vec::new();
+        let mut report = InstallReport {
+            module: manifest.id.clone(),
+            ..Default::default()
+        };
+        for mapping in manifest.backend.copy.iter().chain(manifest.frontend.copy.iter()) {
+            copy_mapping(&project, dir, mapping, &[], &mut written, &mut report)
+                .expect("copy succeeds");
+        }
+        let skill_path = install_skill(&project, dir, &manifest, &mut report)
+            .expect("skill installs")
+            .expect("skill path");
+
+        assert!(project.join(&skill_path).is_file());
+
+        let skills = crate::llm::project_skills(Some(project.to_str().expect("utf8 path")));
+        let skill = skills
+            .iter()
+            .find(|skill| skill.name() == "pdf_export")
+            .expect("module skill is discovered");
+        assert!(skill.content().contains("PDF Export Skill"));
+        assert!(skill.description().contains("PDF"));
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// A conflict part-way through an install must not poison the files that
+    /// were already written: the retry has to be able to finish.
+    #[test]
+    fn conflict_records_written_files_so_a_retry_can_finish() {
+        let project = std::env::temp_dir().join(format!(
+            "eggshell-recovery-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        // `frontend/src/api/pdfClient.ts` is the only file in the frontend tree,
+        // and seeding it turns that mapping into a conflict.
+        let blocker = project.join("frontend/src/api/pdfClient.ts");
+        std::fs::create_dir_all(blocker.parent().expect("parent")).expect("dirs");
+        std::fs::write(&blocker, "// written by the agent\n").expect("seed");
+
+        let manifest = find("pdf-export").expect("manifest");
+        let dir = module_dir("pdf-export").expect("module dir");
+
+        // Backend copies first and succeeds; frontend then conflicts.
+        let mut written = Vec::new();
+        let mut report = InstallReport::default();
+        let mut failure = None;
+        for mapping in manifest.backend.copy.iter().chain(manifest.frontend.copy.iter()) {
+            if let Err(error) = copy_mapping(&project, dir, mapping, &[], &mut written, &mut report)
+            {
+                record_partial_install(&project, &manifest, &[], &written);
+                failure = Some(error);
+                break;
+            }
+        }
+        assert!(failure.is_some(), "the seeded file must conflict");
+        assert!(project
+            .join("backend/src/Service/PdfTemplate/TemplatesPdf.php")
+            .is_file());
+
+        let state = read_state(&project);
+        let recorded = &state.modules.get("pdf-export").expect("partial state").files;
+        assert!(recorded
+            .iter()
+            .any(|file| file == "backend/src/Service/PdfTemplate/TemplatesPdf.php"));
+
+        // With the conflict gone, the recorded ownership lets the retry replace
+        // nothing and fill in the rest.
+        std::fs::remove_file(&blocker).expect("remove blocker");
+        let mut retry_written = Vec::new();
+        let mut retry_report = InstallReport::default();
+        for mapping in manifest.backend.copy.iter().chain(manifest.frontend.copy.iter()) {
+            copy_mapping(
+                &project,
+                dir,
+                mapping,
+                recorded,
+                &mut retry_written,
+                &mut retry_report,
+            )
+            .expect("retry succeeds");
+        }
+        assert!(retry_written
+            .iter()
+            .any(|file| file == "frontend/src/api/pdfClient.ts"));
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+}

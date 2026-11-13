@@ -207,6 +207,165 @@ fn list_files(dir: &Dir<'static>) -> Vec<String> {
     files
 }
 
+/// Where installed modules keep their skills, relative to the project root.
+const PROJECT_MODULE_SKILLS: &str = ".eggshell/modules";
+
+/// A skill installed into a project rather than bundled with the application.
+///
+/// Unlike [`MarkdownSkill`] the files live on disk, so the contents are owned
+/// `String`s instead of `&'static str`. Only `SKILL.md` and anything below
+/// `docs/` is exposed, which matches how bundled skills are laid out.
+pub struct ProjectSkill {
+    name: String,
+    description: String,
+    category: Option<String>,
+    tags: Vec<String>,
+    content: String,
+    files: Vec<String>,
+    documents: std::collections::HashMap<String, String>,
+}
+
+impl ProjectSkill {
+    /// Reads `<root>/.eggshell/modules/<directory>/SKILL.md`, returning `None`
+    /// when the directory has no skill or it is not valid UTF-8.
+    fn read(root: &std::path::Path, directory: &str) -> Option<Self> {
+        let dir = root.join(PROJECT_MODULE_SKILLS).join(directory);
+        let raw = std::fs::read_to_string(dir.join(SKILL_FILE)).ok()?;
+
+        let (frontmatter, body) = split_frontmatter(&raw);
+        let metadata = frontmatter
+            .and_then(|yaml| serde_yaml::from_str::<Frontmatter>(yaml).ok())
+            .unwrap_or_default();
+
+        let name = metadata
+            .name
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| directory.to_owned());
+        let description = metadata
+            .description
+            .filter(|description| !description.trim().is_empty())
+            .unwrap_or_else(|| first_heading(body).unwrap_or_default());
+
+        // Supporting documents are read eagerly: the tool has no lifetime to tie
+        // them to, and a module ships only a handful of small files.
+        let mut documents = std::collections::HashMap::new();
+        let mut files = vec![SKILL_FILE.to_string()];
+        collect_documents(&dir, &dir, &mut files, &mut documents);
+        files.sort();
+
+        Some(Self {
+            name,
+            description,
+            category: metadata
+                .category
+                .filter(|category| !category.trim().is_empty()),
+            tags: metadata.tags,
+            content: body.to_string(),
+            files,
+            documents,
+        })
+    }
+}
+
+/// Reads every file under `dir` into `documents`, keyed by its path relative to
+/// `base` with forward slashes.
+fn collect_documents(
+    base: &std::path::Path,
+    dir: &std::path::Path,
+    files: &mut Vec<String>,
+    documents: &mut std::collections::HashMap<String, String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_documents(base, &path, files, documents);
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(base) else {
+            continue;
+        };
+        let key = relative.to_string_lossy().replace('\\', "/");
+        if key == SKILL_FILE {
+            continue;
+        }
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            files.push(key.clone());
+            documents.insert(key, contents);
+        }
+    }
+}
+
+impl Skill for ProjectSkill {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn content(&self) -> &str {
+        &self.content
+    }
+
+    fn category(&self) -> Option<&str> {
+        self.category.as_deref()
+    }
+
+    fn tags(&self) -> &[String] {
+        &self.tags
+    }
+
+    fn read(&self, path: &str) -> Option<&str> {
+        let path = path.trim().replace('\\', "/");
+        if path.is_empty()
+            || path.starts_with('/')
+            || path.contains(':')
+            || path
+                .split('/')
+                .any(|segment| segment == ".." || segment == ".")
+        {
+            return None;
+        }
+        if path == SKILL_FILE {
+            return Some(&self.content);
+        }
+        self.documents.get(&path).map(String::as_str)
+    }
+
+    fn files(&self) -> &[String] {
+        &self.files
+    }
+}
+
+/// Returns the skills installed into `root` by modules, sorted by name.
+///
+/// A missing `.eggshell/modules` directory is normal: it just means no module has
+/// been enabled yet.
+pub fn load_project(root: &std::path::Path) -> Vec<Box<dyn Skill>> {
+    let base = root.join(PROJECT_MODULE_SKILLS);
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+
+    let mut skills: BTreeMap<String, Box<dyn Skill>> = BTreeMap::new();
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if let Some(skill) = ProjectSkill::read(root, &name) {
+            skills.insert(skill.name().to_owned(), Box::new(skill));
+        }
+    }
+    skills.into_values().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

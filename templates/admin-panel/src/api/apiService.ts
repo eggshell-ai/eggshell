@@ -74,6 +74,23 @@ const apiService = {
     const cleanPath = path.startsWith('/') ? path.slice(1) : path;
     return `${BASE_URL}/${cleanPath}`;
   },
+
+  /**
+   * Fetches an authenticated endpoint as a PDF and opens it in a new tab.
+   *
+   * Used by the PDF export module. A plain `window.open(url)` would drop the
+   * Authorization header and return 401, so the document is fetched as a blob
+   * and opened through an object URL instead.
+   */
+  openPdf: async (url: string): Promise<void> => {
+    const response = await api.get(url, { responseType: 'blob' });
+    const blobUrl = URL.createObjectURL(
+      new Blob([response.data], { type: 'application/pdf' })
+    );
+    window.open(blobUrl, '_blank');
+    // The viewer keeps its own reference; this only releases the object URL.
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  },
 };
 
 export default apiService;

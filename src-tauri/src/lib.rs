@@ -10,6 +10,7 @@ use llm::LLMService;
 pub mod providers;
 pub mod logger;
 pub mod migrations;
+pub mod modules;
 pub mod progress;
 mod setup;
 pub mod telemetry;

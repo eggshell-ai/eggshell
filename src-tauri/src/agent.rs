@@ -77,7 +77,25 @@ impl AgentService {
         options: AgentOptions,
     ) -> LlmResult<AgentRunResult> {
         let skills = options.skills.as_deref().unwrap_or(&self.skills);
-        self.attach_skills_summary(&mut messages, skills);
+        // Project skills are the ones `enable_module` installed. They are read
+        // per run because a module can be enabled while the app is running, and
+        // its skill must be visible to the very next turn. A bundled skill of the
+        // same name wins: the application's own instructions are authoritative.
+        //
+        // `AgentOptions::skills` is an explicit opt-out as well as an override:
+        // max mode passes `Some(vec![])` so its planner prompt carries no skill
+        // catalogue at all, and a module must not quietly reintroduce one.
+        let installed = if options.skills.is_none() {
+            super::project_skills(options.project_path.as_deref())
+        } else {
+            Vec::new()
+        };
+        let project_skills: Vec<&dyn Skill> = installed
+            .iter()
+            .map(|skill| skill.as_ref())
+            .filter(|skill| !skills.iter().any(|bundled| bundled.name() == skill.name()))
+            .collect();
+        self.attach_skills_summary(&mut messages, skills, &project_skills);
         self.attach_artifacts(&mut messages, &options.artifacts);
 
         // The prompts themselves are sensitive: they only travel into the
@@ -416,10 +434,17 @@ impl AgentService {
 
     /// Appends the catalogue of `skills` to the conversation's system message.
     ///
-    /// An empty slice appends nothing, which lets a mode opt out of the skills
-    /// section entirely through [`AgentOptions::skills`].
-    fn attach_skills_summary(&self, messages: &mut Vec<LLMMessage>, skills: &[Box<dyn Skill>]) {
-        let summary = skills_summary(skills);
+    /// `project_skills` are the skills installed into the project by modules and
+    /// are listed after the bundled ones. Empty slices append nothing, which lets
+    /// a mode opt out of the skills section entirely through
+    /// [`AgentOptions::skills`].
+    fn attach_skills_summary(
+        &self,
+        messages: &mut Vec<LLMMessage>,
+        skills: &[Box<dyn Skill>],
+        project_skills: &[&dyn Skill],
+    ) {
+        let summary = skills_summary(skills, project_skills);
         if summary.is_empty() {
             return;
         }
@@ -552,16 +577,31 @@ fn now_millis() -> LlmResult<u128> {
 
 /// Builds the catalogue of available skills appended to a system prompt.
 ///
-/// Returns an empty string when `skills` is empty so callers can opt out of the
-/// section altogether.
-fn skills_summary(skills: &[Box<dyn Skill>]) -> String {
-    if skills.is_empty() {
+/// Returns an empty string when there are no skills at all so callers can opt out
+/// of the section altogether. `project_skills` are the module-installed skills; a
+/// note explaining where they came from follows them.
+fn skills_summary(skills: &[Box<dyn Skill>], project_skills: &[&dyn Skill]) -> String {
+    if skills.is_empty() && project_skills.is_empty() {
         return String::new();
     }
     let mut summary = String::from("\n\n=== AVAILABLE SKILLS ===\nYou have access to the following skills that teach you how to perform specific tasks:\n\n");
     for skill in skills {
         summary.push_str(&format!(
             "**{}**\nDescription: {}\n",
+            skill.name(),
+            skill.description()
+        ));
+        if let Some(category) = skill.category() {
+            summary.push_str(&format!("Category: {category}\n"));
+        }
+        if !skill.tags().is_empty() {
+            summary.push_str(&format!("Tags: {}\n", skill.tags().join(", ")));
+        }
+        summary.push('\n');
+    }
+    for skill in project_skills {
+        summary.push_str(&format!(
+            "**{}** (installed module)\nDescription: {}\n",
             skill.name(),
             skill.description()
         ));
@@ -597,13 +637,13 @@ mod tests {
 
     #[test]
     fn skills_summary_is_empty_without_skills() {
-        assert!(skills_summary(&[]).is_empty());
+        assert!(skills_summary(&[], &[]).is_empty());
     }
 
     #[test]
     fn skills_summary_lists_the_default_catalogue() {
         let skills = super::super::default_skills();
-        let summary = skills_summary(&skills);
+        let summary = skills_summary(&skills, &[]);
         assert!(summary.contains("=== AVAILABLE SKILLS ==="));
         assert!(summary.contains("crud_creation"));
         assert!(summary.contains("=== END SKILLS ==="));
@@ -612,7 +652,7 @@ mod tests {
     #[test]
     fn skills_summary_does_not_advertise_reference_documents() {
         let skills = super::super::default_skills();
-        let summary = skills_summary(&skills);
+        let summary = skills_summary(&skills, &[]);
         assert!(!summary.contains("Documents (load on demand)"));
         assert!(!summary.contains("also pass its document name"));
     }
@@ -621,7 +661,7 @@ mod tests {
     fn empty_options_skills_do_not_touch_the_system_prompt() {
         let agent = AgentService::with_skills(Arc::new(StubLlm), Vec::new());
         let mut messages = vec![system_message("base prompt")];
-        agent.attach_skills_summary(&mut messages, &[]);
+        agent.attach_skills_summary(&mut messages, &[], &[]);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "base prompt");
     }

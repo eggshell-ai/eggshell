@@ -56,58 +56,80 @@ impl Tool for LoadSkillTool {
             .ok_or_else(|| "skillName is required and must be a non-empty string".to_string())?;
 
         let Some(skill) = self.skills.iter().find(|skill| skill.name() == skill_name) else {
-            return Ok(json!({
-                "success": false,
-                "message": format!("Skill '{skill_name}' not found."),
-                "error": "Skill not found"
-            }));
-        };
-
-        // When a path is supplied, return only that bundled file so the agent
-        // can pull in supporting material referenced by the skill itself.
-        let path = args
-            .get("path")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|path| !path.is_empty());
-
-        if let Some(path) = path {
-            let Some(content) = skill.read(path) else {
+            // Module-installed skills are not in the bundled list: they are
+            // discovered per run from the project, so they have to be looked up
+            // on disk when a name misses.
+            let project_skill = project_skill(&args, skill_name);
+            let Some(skill) = project_skill.as_deref() else {
                 return Ok(json!({
                     "success": false,
-                    "message": format!("File '{path}' not found in skill '{skill_name}'."),
-                    "error": "File not found",
-                    "details": {
-                        "skillName": skill.name(),
-                        "availableFiles": skill.files()
-                    }
+                    "message": format!("Skill '{skill_name}' not found."),
+                    "error": "Skill not found"
                 }));
             };
+            return Ok(skill_response(skill, skill_name, &args));
+        };
 
-            return Ok(json!({
-                "success": true,
-                "message": format!("File '{path}' of skill '{skill_name}' loaded successfully."),
+        Ok(skill_response(skill.as_ref(), skill_name, &args))
+    }
+}
+
+/// Looks `name` up among the skills installed into the project by modules.
+fn project_skill(args: &Value, name: &str) -> Option<Box<dyn Skill>> {
+    let project_path = args
+        .get("projectPath")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())?;
+    crate::llm::project_skills(Some(project_path))
+        .into_iter()
+        .find(|skill| skill.name() == name)
+}
+
+fn skill_response(skill: &dyn Skill, skill_name: &str, args: &Value) -> Value {
+    // When a path is supplied, return only that bundled file so the agent
+    // can pull in supporting material referenced by the skill itself.
+    let path = args
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+
+    if let Some(path) = path {
+        let Some(content) = skill.read(path) else {
+            return json!({
+                "success": false,
+                "message": format!("File '{path}' not found in skill '{skill_name}'."),
+                "error": "File not found",
                 "details": {
                     "skillName": skill.name(),
-                    "path": path,
-                    "content": content
+                    "availableFiles": skill.files()
                 }
-            }));
-        }
+            });
+        };
 
-        Ok(json!({
+        return json!({
             "success": true,
-            "message": format!("Skill '{skill_name}' loaded successfully."),
+            "message": format!("File '{path}' of skill '{skill_name}' loaded successfully."),
             "details": {
                 "skillName": skill.name(),
-                "description": skill.description(),
-                "category": skill.category(),
-                "tags": skill.tags(),
-                "files": skill.files(),
-                "content": skill.content()
+                "path": path,
+                "content": content
             }
-        }))
+        });
     }
+
+    json!({
+        "success": true,
+        "message": format!("Skill '{skill_name}' loaded successfully."),
+        "details": {
+            "skillName": skill.name(),
+            "description": skill.description(),
+            "category": skill.category(),
+            "tags": skill.tags(),
+            "files": skill.files(),
+            "content": skill.content()
+        }
+    })
 }
 
 #[cfg(test)]

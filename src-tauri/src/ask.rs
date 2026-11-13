@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn answering_resolves_the_waiting_receiver() {
-        let receiver = register("q-answer", 7);
+        let receiver = pending("q-answer", 7);
         answer("q-answer", "Option B".to_string()).expect("answer resolves");
         assert_eq!(
             receiver.blocking_recv().expect("outcome"),
@@ -218,15 +218,15 @@ mod tests {
 
     #[test]
     fn a_question_can_only_be_answered_once() {
-        let _receiver = register("q-once", 7);
+        let _receiver = pending("q-once", 7);
         answer("q-once", "first".to_string()).expect("first answer wins");
         assert!(answer("q-once", "second".to_string()).is_err());
     }
 
     #[test]
     fn cancelling_a_project_resolves_only_its_questions() {
-        let mine = register("q-cancel-mine", 11);
-        let other = register("q-cancel-other", 12);
+        let mine = pending("q-cancel-mine", 11);
+        let other = pending("q-cancel-other", 12);
 
         assert_eq!(cancel_project(11), 1);
         assert_eq!(mine.blocking_recv().expect("outcome"), AskOutcome::Cancelled);

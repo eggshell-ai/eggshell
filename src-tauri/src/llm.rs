@@ -12,7 +12,7 @@ use crate::progress::ProgressLog;
 pub(crate) mod symfony;
 
 #[path = "react.rs"]
-mod react;
+pub(crate) mod react;
 
 pub use crate::apps::{AdminPanel, AdminPanelApp, MaxPlannerApp, PlanningApp, QaApp};
 
@@ -30,7 +30,7 @@ mod agent;
 pub use agent::{AgentArtifact, AgentRunResult, AgentService};
 
 #[path = "skill_loader.rs"]
-mod skill_loader;
+pub(crate) mod skill_loader;
 
 #[path = "mock_llm.rs"]
 mod mock_llm;
@@ -252,6 +252,17 @@ pub trait Skill: Send + Sync {
 /// contains a `SKILL.md` becomes a skill, sorted by name.
 pub fn default_skills() -> Vec<Box<dyn Skill>> {
     skill_loader::load_all()
+}
+
+/// Returns the skills installed into a project by modules (`enable_module`).
+///
+/// These are loaded per run rather than at startup: a module can be installed
+/// while the application is running, and the next run should see its skill.
+pub fn project_skills(project_path: Option<&str>) -> Vec<Box<dyn Skill>> {
+    let Some(project_path) = project_path.filter(|path| !path.trim().is_empty()) else {
+        return Vec::new();
+    };
+    skill_loader::load_project(std::path::Path::new(project_path))
 }
 
 /// A tool available to the LLM, including its parameter schema and executor.

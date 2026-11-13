@@ -69,6 +69,10 @@ const toolCallFormatters: Record<string, ToolMessageFormatter> = {
     const question = (args as { question?: string } | undefined)?.question;
     return question ? `Asked: ${question}` : "Asked the user a question";
   },
+  enable_module: ({ arguments: args }) => {
+    const moduleId = (args as { module?: string } | undefined)?.module;
+    return moduleId ? `Installing module: ${moduleId}` : "Installing a module";
+  },
 };
 
 function formatToolMessage(event: ToolEvent) {

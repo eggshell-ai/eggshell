@@ -227,6 +227,69 @@ fn run_command_blocking(args: &[&str], cwd: &Path, log: &ProgressLog) -> LlmResu
     Ok(())
 }
 
+/// Installs npm packages into a project's frontend and returns the captured
+/// output.
+///
+/// Used by module installation, where there is no progress log to stream into
+/// and the agent needs the failure text. Reuses the same environment plumbing as
+/// [`run_command_blocking`] so Eggshell's portable Node is on `PATH`.
+pub(crate) async fn run_npm_install_capture(packages: &[String], cwd: &Path) -> LlmResult<String> {
+    let packages = packages.to_vec();
+    let cwd = cwd.to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || run_npm_install_capture_blocking(&packages, &cwd))
+        .await
+        .map_err(|error| io::Error::other(format!("npm task failed: {error}")))?
+}
+
+fn run_npm_install_capture_blocking(
+    packages: &[String],
+    cwd: &Path,
+) -> LlmResult<String> {
+    let mut args = vec!["install".to_string(), "--no-audit".to_string(), "--no-fund".to_string()];
+    if !packages.is_empty() {
+        args.extend(packages.iter().cloned());
+    }
+    let label = format!("npm {}", args.join(" "));
+    crate::logger::Logger::global().info(format!("ReactShell: $ {label}"), false);
+
+    let mut command = npm_command(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    configure_environment(&mut command);
+    command
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = command.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
+        let mut details = stdout;
+        if !stderr.trim().is_empty() {
+            if !details.trim().is_empty() {
+                details.push('\n');
+            }
+            details.push_str(&stderr);
+        }
+        return Err(io::Error::other(format!(
+            "command failed with {}: {label}\n{}",
+            output.status,
+            crate::llm::symfony::tail_output(
+                &details,
+                crate::llm::symfony::COMMAND_OUTPUT_TAIL_LINES
+            )
+        ))
+        .into());
+    }
+    Ok(stdout)
+}
+
 fn configure_environment(command: &mut Command) {
     command.env_clear();
     for name in [

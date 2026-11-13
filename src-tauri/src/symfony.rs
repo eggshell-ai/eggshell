@@ -537,3 +537,82 @@ fn run_php_capture_blocking(args: &[String], cwd: &Path) -> LlmResult<String> {
     }
     Ok(stdout)
 }
+
+/// Runs one shell command in `cwd` and returns everything it printed.
+///
+/// Module installation needs the opposite of [`run_command_blocking`]: there is
+/// no progress log to stream into, and the agent has to be told *why* a
+/// `composer require` failed. Output is captured in full and then trimmed to the
+/// tail by [`tail_output`], because composer can print thousands of lines.
+pub(crate) async fn run_command_capture(command: &str, cwd: &Path) -> LlmResult<String> {
+    let command = command.to_string();
+    let cwd = cwd.to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || run_command_capture_blocking(&command, &cwd))
+        .await
+        .map_err(|error| io::Error::other(format!("command task failed: {error}")))?
+}
+
+fn run_command_capture_blocking(command: &str, cwd: &Path) -> LlmResult<String> {
+    crate::logger::Logger::global().info(format!("SymfonyShell: $ {command}"), false);
+
+    let mut process = if cfg!(windows) {
+        let mut process = Command::new("cmd");
+        process.args(["/C", command]);
+        process
+    } else {
+        let mut process = Command::new("sh");
+        process.args(["-c", command]);
+        process
+    };
+
+    configure_environment(&mut process);
+    process
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        process.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = process.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !output.status.success() {
+        // Composer reports real failures on stderr but writes "nothing to
+        // install" notes on stdout, so both halves are worth quoting.
+        let mut details = stdout.clone();
+        if !stderr.trim().is_empty() {
+            if !details.trim().is_empty() {
+                details.push('\n');
+            }
+            details.push_str(&stderr);
+        }
+        return Err(io::Error::other(format!(
+            "command failed with {}: {command}\n{}",
+            output.status,
+            tail_output(&details, COMMAND_OUTPUT_TAIL_LINES)
+        ))
+        .into());
+    }
+    Ok(stdout)
+}
+
+/// How many trailing lines of a captured command are kept for the agent. The
+/// interesting part of a failed install is always the end.
+pub(crate) const COMMAND_OUTPUT_TAIL_LINES: usize = 40;
+
+/// Trims captured command output to its last `lines` lines.
+pub(crate) fn tail_output(output: &str, lines: usize) -> String {
+    let collected: Vec<&str> = output.lines().collect();
+    if collected.len() <= lines {
+        return output.trim_end().to_string();
+    }
+    let skipped = collected.len() - lines;
+    let mut tail = format!("... ({skipped} earlier lines omitted)\n");
+    tail.push_str(&collected[skipped..].join("\n"));
+    tail
+}

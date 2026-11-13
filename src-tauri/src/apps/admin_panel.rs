@@ -1,7 +1,7 @@
 use crate::llm::{default_skills, project_shells, App, Shell, Tool};
 use crate::tools::{
-    LintCodeTool, ListDirectoryTool, LoadSkillTool, ManageUserTool, MoveFileTool, PatchFileTool,
-    ReadFileTool, ReadSchemaTool, SyncSchemaTool, WriteFileTool,
+    EnableModuleTool, LintCodeTool, ListDirectoryTool, LoadSkillTool, ManageUserTool, MoveFileTool,
+    PatchFileTool, ReadFileTool, ReadSchemaTool, SyncSchemaTool, WriteFileTool,
 };
 
 /// The application definition used for new projects.
@@ -27,11 +27,12 @@ impl App for AdminPanelApp {
             Box::new(ReadSchemaTool::new()),
             Box::new(LintCodeTool::new()),
             Box::new(ManageUserTool::new()),
+            Box::new(EnableModuleTool::new()),
         ]
     }
 
     fn system_prompt(&self) -> String {
-        "You are a development agent with access to a variety of tools to build powerful admin-panel applications.
+        let mut prompt = String::from("You are a development agent with access to a variety of tools to build powerful admin-panel applications.
 You can only build standard admin-panel web applications consisting of dashboards, reports, forms and a sidebar.
 If the user asks for something else, politely explain the limitations and suggest building an admin panel app, or checking
 back later to see if an update adds it.
@@ -81,6 +82,8 @@ Use `list_directory` to discover exact paths before reading or writing. Never gu
    - The `route` must match the page's route URL exactly.
    - The `icon` should be a standard Ant Design icon (e.g. `DashboardOutlined`, `UserOutlined`, `TeamOutlined`, `ShoppingOutlined`, `ShoppingCartOutlined`, `BarChartOutlined`, `AppstoreOutlined`, `SettingOutlined`, `TableOutlined`, `TagsOutlined`).
    - Use `patch_file` (or `write_file`) with `shell: \"frontend\"` on `menu-items/menu.json` to insert or update navigation entries.
-".to_string()
+");
+        prompt.push_str(&crate::modules::catalogue_prompt());
+        prompt
     }
 }
