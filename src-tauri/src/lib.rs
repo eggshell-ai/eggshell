@@ -27,10 +27,23 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
+
+/// Monotonic number stamped on every `agent-event` payload.
+///
+/// The frontend appends deltas to state, so a second delivery of the same event
+/// (a listener registered twice, for example) would render the token twice. A
+/// process-wide counter means the two sinks below never reuse a number, even
+/// across separate runs, so the UI can drop anything it has already seen.
+static AGENT_EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Wraps the app handle so every emitted payload carries the shared sequence.
+fn next_agent_event_seq() -> u64 {
+    AGENT_EVENT_SEQ.fetch_add(1, Ordering::Relaxed) + 1
+}
 
 type ActiveGenerationMap = Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>;
 type ActiveIterationMap = Arc<Mutex<HashMap<i64, Arc<iterate::IterationControl>>>>;
@@ -815,7 +828,10 @@ async fn send_message(
         .collect::<Vec<_>>();
     let event_sink = Arc::new({
         let app = app.clone();
-        move |payload| {
+        move |mut payload: serde_json::Value| {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("seq".to_string(), next_agent_event_seq().into());
+            }
             let _ = app.emit("agent-event", payload);
         }
     });
@@ -908,7 +924,10 @@ async fn run_max_tasks(
 
     let event_sink = Arc::new({
         let app = app.clone();
-        move |payload| {
+        move |mut payload: serde_json::Value| {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("seq".to_string(), next_agent_event_seq().into());
+            }
             let _ = app.emit("agent-event", payload);
         }
     });

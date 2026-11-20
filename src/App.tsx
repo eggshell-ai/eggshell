@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -67,6 +67,26 @@ function App() {
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
 
+  // The `agent-event` listener is registered once for the lifetime of the
+  // window, so it cannot close over `activeProject`/`activeSession` directly:
+  // re-subscribing on every switch is what duplicated the stream (a listener
+  // whose `listen()` promise resolved after cleanup was never removed, and each
+  // switch added another one). These refs keep the ids readable from the one
+  // stable handler.
+  const activeProjectIdRef = useRef<number | undefined>(undefined);
+  const activeSessionIdRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    activeProjectIdRef.current = activeProject?.id;
+  }, [activeProject?.id]);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSession?.id;
+  }, [activeSession?.id]);
+
+  // Last event sequence number applied. Events are stamped by the backend, and
+  // deltas are appended rather than replaced, so applying one twice doubles the
+  // text. Kept outside the listener effect so every listener instance shares it.
+  const lastEventSeqRef = useRef(0);
+
   async function syncSetupState() {
     try {
       const { setup_completed, providers, auto_update_enabled } = await invoke<SetupState>("load_setup_state");
@@ -93,11 +113,22 @@ function App() {
   }, []);
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
-    void listen<{ projectId: number; event: { type: string; data: unknown } }>("agent-event", ({ payload }) => {
-      if (payload.projectId !== activeProject?.id || payload.event.type === "complete") return;
+    // `listen` resolves asynchronously. If the effect is cleaned up first, the
+    // resolved function must be called immediately instead of leaked, otherwise
+    // it stays subscribed and every event is handled twice.
+    let stopped = false;
+    void listen<{ projectId: number; sessionId?: number; seq?: number; event: { type: string; data: unknown } }>("agent-event", ({ payload }) => {
+      if (payload.projectId !== activeProjectIdRef.current || payload.event.type === "complete") return;
+      // Drop a re-delivery of an event already applied (duplicate listener,
+      // reconnect, or a repeated emit).
+      if (typeof payload.seq === "number") {
+        if (payload.seq <= lastEventSeqRef.current) return;
+        lastEventSeqRef.current = payload.seq;
+      }
       const { type, data } = payload.event;
       if (type === "thought_delta") {
         const delta = (data as { delta?: string })?.delta ?? "";
+        if (!delta) return;
         setStreamedMessages((current) => {
           const last = current[current.length - 1];
           if (last && last.role === "thought") {
@@ -114,6 +145,7 @@ function App() {
       }
       if (type === "content_delta") {
         const delta = (data as { delta?: string })?.delta ?? "";
+        if (!delta) return;
         setStreamedMessages((current) => {
           const last = current[current.length - 1];
           if (last && last.role === "assistant") {
@@ -149,7 +181,7 @@ function App() {
         const totalTokens = (data as { total_tokens?: number })?.total_tokens ?? 0;
         if (totalTokens > 0) {
           setActiveSession((current) => current ? { ...current, token_usage: totalTokens } : current);
-          setSessions((current) => current.map((s) => s.id === activeSession?.id ? { ...s, token_usage: totalTokens } : s));
+          setSessions((current) => current.map((s) => s.id === activeSessionIdRef.current ? { ...s, token_usage: totalTokens } : s));
         }
         return;
       }
@@ -178,7 +210,7 @@ function App() {
         const loopPayload = data as { loop?: number; plan?: string; implementation?: string; qaReport?: string; tokenUsage?: number };
         if (loopPayload.tokenUsage) {
           setActiveSession((current) => current ? { ...current, token_usage: loopPayload.tokenUsage } : current);
-          setSessions((current) => current.map((s) => s.id === activeSession?.id ? { ...s, token_usage: loopPayload.tokenUsage } : s));
+          setSessions((current) => current.map((s) => s.id === activeSessionIdRef.current ? { ...s, token_usage: loopPayload.tokenUsage } : s));
         }
         setStreamedMessages([]);
         return;
@@ -259,9 +291,10 @@ function App() {
         content: eventContent(type, data),
         data,
       }]);
-    }).then((stop) => { unlisten = stop; });
-    return () => unlisten?.();
-  }, [activeProject?.id, activeSession?.id]);
+    }).then((stop) => { if (stopped) stop(); else unlisten = stop; })
+      .catch((reason: unknown) => console.error("[App] agent events unavailable", { reason }));
+    return () => { stopped = true; unlisten?.(); };
+  }, []);
   // Registered at mount rather than when a create starts: `listen` resolves
   // asynchronously, and the first commands would have run before it was ready.
   // That is also why this needs no history command, unlike the setup log.
