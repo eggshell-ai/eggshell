@@ -1,14 +1,14 @@
 {
     "id": "pdf-export",
     "name": "PDF Export",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Render Twig-based PDF documents (invoices, receipts, quotations) with mPDF, expose them over an authenticated HTTP endpoint, and open them from the frontend.",
     "skill": "SKILL.md",
     "backend": {
         "composer": {
             "require": {
                 "mpdf/mpdf": "^8.3",
-                "symfony/twig-bundle": "8.1.*"
+                "symfony/twig-bundle": "^8.0"
             }
         },
         "bundles": [

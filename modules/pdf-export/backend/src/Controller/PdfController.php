@@ -9,6 +9,7 @@ use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Security\Http\Attribute\IsGranted;
 
 /**
  * Serves rendered PDF documents and the list of available template names.
@@ -26,23 +27,24 @@ final class PdfController extends AbstractController
     ) {}
 
     #[Route('/templates', name: 'templates', methods: ['GET'])]
+    #[IsGranted('pdf_export.view')]
     public function templates(): JsonResponse
     {
-        $this->denyAccessUnlessGranted('pdf_export.view');
-
         return new JsonResponse(['templates' => $this->providers->templates()]);
     }
 
+    // The method is `show`, not `render`: `AbstractController::render()` has its
+    // own signature, and overriding it with a different one is a PHP fatal error
+    // at class-compile time (it broke `cache:clear` during installation once).
     #[Route(
         '/{template}/{id}',
-        name: 'render',
+        name: 'show',
         requirements: ['template' => '[A-Za-z0-9_\-]+', 'id' => '[A-Za-z0-9_\-]+'],
         methods: ['GET'],
     )]
-    public function render(string $template, string $id): Response
+    #[IsGranted('pdf_export.view')]
+    public function show(string $template, string $id): Response
     {
-        $this->denyAccessUnlessGranted('pdf_export.view');
-
         if (!$this->providers->has($template)) {
             throw new NotFoundHttpException(
                 "No PDF provider is registered for template '{$template}'."

@@ -123,6 +123,16 @@ pub struct InstalledModule {
     pub files: Vec<String>,
     /// The module skill's path inside the project, relative to the project root.
     pub skill_path: Option<String>,
+    /// False when the entry was written after a failed install, to record the
+    /// files that were already copied. Such an entry exists so the retry owns its
+    /// own files, but it must not be reported as a finished install. Entries
+    /// written before this field existed are complete, hence the `true` default.
+    #[serde(default = "default_true")]
+    pub complete: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -283,7 +293,7 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
     };
 
     if let Some(installed) = state.modules.get(&manifest.id) {
-        if installed.version == manifest.version {
+        if installed.complete && installed.version == manifest.version {
             report.already_installed = true;
             report.skill_path = installed.skill_path.clone();
             report.skill_content = installed
@@ -321,6 +331,46 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
 
     // Composer and npm run last, so a copy conflict aborts before minutes are
     // spent downloading packages.
+
+    // Ownership is recorded *before* the package-manager steps. Composer and npm
+    // can fail after the copies succeeded, and the retry must be allowed to
+    // overwrite the files this module already wrote; without the record it would
+    // refuse them as somebody else's work.
+    record_partial_install(project, &manifest, &owned, &written);
+
+    // Set once something has rebuilt the service container; `composer require`
+    // does that through `post-update-cmd`.
+    let mut container_rebuilt = false;
+
+    // Bundles are registered before Composer runs. The module's `config/packages`
+    // files are already on disk, and `composer require` triggers the project's
+    // `post-update-cmd` (`cache:clear`), which compiles the container — a `twig:`
+    // block with no TwigBundle registered would fail that compile. Flex's recipe
+    // also registers the bundle, but a recipe can be skipped while the package
+    // still installs, so the install must not depend on it. `register_bundles`
+    // is idempotent, so a Flex-registered bundle is left alone.
+    if !manifest.backend.bundles.is_empty() {
+        let bundles = project.join("backend/config/bundles.php");
+        if bundles.is_file() {
+            match register_bundles(&bundles, &manifest.backend.bundles) {
+                Ok(added) => {
+                    if added > 0 {
+                        report.warnings.push(format!(
+                            "Registered {added} Symfony bundle(s) in config/bundles.php."
+                        ));
+                    }
+                }
+                Err(error) => report.warnings.push(format!(
+                    "Could not register Symfony bundles in config/bundles.php: {error}"
+                )),
+            }
+        } else {
+            report
+                .warnings
+                .push("config/bundles.php not found; bundles were not registered.".to_string());
+        }
+    }
+
     if !manifest.backend.composer.require.is_empty() {
         let backend = project.join("backend");
         if !backend.is_dir() {
@@ -337,12 +387,37 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
                 .collect();
             let command = format!("composer require {} --no-interaction --no-progress", packages.join(" "));
             match crate::llm::symfony::run_command_capture(&command, &backend).await {
-                Ok(_) => report.packages_installed.extend(packages),
+                Ok(_) => {
+                    report.packages_installed.extend(packages);
+                    // `post-update-cmd` already ran `cache:clear`, so the
+                    // trailing rebuild can be skipped.
+                    container_rebuilt = true;
+                }
+                // `composer require` also runs the project's `post-update-cmd`
+                // scripts, which include `cache:clear`. That compiles the whole
+                // container, so an error in the project's own code — including a
+                // file the module just copied — exits non-zero although the
+                // packages downloaded fine. Reporting that as "Composer could not
+                // install the packages" sends the agent chasing the wrong bug, so
+                // the two cases are told apart: if every declared package is on
+                // disk, only the script failed.
                 Err(error) => {
-                    return Err(format!(
-                        "Composer could not install the packages the '{id}' module needs: {error}"
-                    )
-                    .into())
+                    let missing = missing_composer_packages(&backend, &manifest.backend.composer.require);
+                    if missing.is_empty() {
+                        report.packages_installed.extend(packages);
+                        report.warnings.push(format!(
+                            "The Composer packages were installed, but Composer's post-install \
+                             scripts failed. This is a problem in the project's own code, not in the \
+                             module's dependencies: {error}"
+                        ));
+                    } else {
+                        return Err(format!(
+                            "Composer could not install the packages the '{id}' module needs \
+                             (missing: {}): {error}",
+                            missing.join(", ")
+                        )
+                        .into());
+                    }
                 }
             }
         }
@@ -374,31 +449,11 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
         }
     }
 
-    if !manifest.backend.bundles.is_empty() {
-        let bundles = project.join("backend/config/bundles.php");
-        if bundles.is_file() {
-            match register_bundles(&bundles, &manifest.backend.bundles) {
-                Ok(added) => {
-                    if added > 0 {
-                        report.warnings.push(format!(
-                            "Registered {added} Symfony bundle(s) in config/bundles.php."
-                        ));
-                    }
-                }
-                Err(error) => report.warnings.push(format!(
-                    "Could not register Symfony bundles in config/bundles.php: {error}"
-                )),
-            }
-        } else {
-            report
-                .warnings
-                .push("config/bundles.php not found; bundles were not registered.".to_string());
-        }
-    }
-
     // A copied `config/packages/*.yaml` or a new bundle is invisible until the
-    // container is rebuilt. Best effort: a failure here must not undo a good install.
-    if project.join("backend/bin/console").is_file() {
+    // container is rebuilt. Best effort: a failure here must not undo a good
+    // install — the project's own code may be broken, and the agent needs the
+    // real error from `lint_code`, not a failed install.
+    if !container_rebuilt && project.join("backend/bin/console").is_file() {
         let console_path = project.join("backend");
         if let Err(error) = crate::llm::symfony::run_command_capture(
             "php bin/console cache:clear --no-warmup",
@@ -436,6 +491,7 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
             installed_at: now_secs(),
             files,
             skill_path,
+            complete: true,
         },
     );
     write_state(project, &state)?;
@@ -454,8 +510,10 @@ fn now_secs() -> u64 {
 /// Persists the files copied before a failure, so a retry recognises them as the
 /// module's own and can finish the install.
 ///
-/// The state entry deliberately records no skill and the version already on disk:
-/// the install did not complete, and a later successful run overwrites both.
+/// The state entry deliberately records no skill and the version already on disk,
+/// and is flagged `complete: false`: the install did not finish, so a later run
+/// must not treat it as a no-op. It exists only to establish ownership of the
+/// files that are already there.
 fn record_partial_install(
     project: &Path,
     manifest: &ModuleManifest,
@@ -480,7 +538,25 @@ fn record_partial_install(
         entry.version = manifest.version.clone();
     }
     entry.installed_at = now_secs();
+    entry.complete = false;
     let _ = write_state(project, &state);
+}
+
+/// Returns the declared Composer packages that are not present in the project.
+///
+/// Used to tell "the download failed" (a real install error) from "the download
+/// worked and the project's `post-update-cmd` scripts failed" (a problem in the
+/// project's own code). A package is considered present when its `vendor/`
+/// directory exists; that is exactly what autoloading needs.
+fn missing_composer_packages(
+    backend: &Path,
+    require: &BTreeMap<String, String>,
+) -> Vec<String> {
+    require
+        .keys()
+        .filter(|package| !backend.join("vendor").join(package).is_dir())
+        .cloned()
+        .collect()
 }
 
 /// Copies one `from` -> `to` mapping out of the embedded module directory.
@@ -704,6 +780,139 @@ pub fn report_to_value(report: &InstallReport) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Public methods a controller inherits from `AbstractController`. A module
+    /// controller that declares one of these with its own signature is a PHP
+    /// fatal error at class-compile time: PHP never autoloads the file on its own,
+    /// so the failure only appears when something compiles the container (for
+    /// example `cache:clear` inside Composer's `post-update-cmd`), which turns a
+    /// broken module file into an inexplicable install failure.
+    ///
+    /// Verified against Symfony 8.1 `AbstractController`. Re-check this list when
+    /// upgrading Symfony: a method added there becomes a reserved name here.
+    const ABSTRACT_CONTROLLER_PUBLIC_API: [&str; 18] = [
+        "addFlash",
+        "createAccessDeniedException",
+        "createForm",
+        "createFormBuilder",
+        "createNotFoundException",
+        "denyAccessUnlessGranted",
+        "forward",
+        "generateUrl",
+        "getParameter",
+        "getSubscribedServices",
+        "getUser",
+        "isGranted",
+        "json",
+        "redirect",
+        "redirectToRoute",
+        "render",
+        "renderForm",
+        "renderView",
+    ];
+
+    /// Every public method name declared in `$contents` (`public function name(`).
+    fn declared_public_methods(contents: &str) -> Vec<String> {
+        const MARKER: &str = "public function ";
+        const STATIC_MARKER: &str = "public static function ";
+        let mut names = Vec::new();
+        for line in contents.lines() {
+            // `public static function getSubscribedServices()` collides with the
+            // parent just the same; PHP does not care about the modifier here.
+            let rest = if let Some(index) = line.find(STATIC_MARKER) {
+                &line[index + STATIC_MARKER.len()..]
+            } else if let Some(index) = line.find(MARKER) {
+                &line[index + MARKER.len()..]
+            } else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                .collect();
+            if !name.is_empty() {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// Collects every `*.php` file below `dir`, as (embedded path, source).
+    fn collect_php(dir: &'static Dir<'static>, into: &mut Vec<(String, String)>) {
+        for file in dir.files() {
+            let path = file.path().to_string_lossy().replace('\\', "/");
+            if !path.ends_with(".php") {
+                continue;
+            }
+            if let Some(contents) = file.contents_utf8() {
+                into.push((path, contents.to_string()));
+            }
+        }
+        for child in dir.dirs() {
+            collect_php(child, into);
+        }
+    }
+
+    /// The module package is copied verbatim into a project, so a defect in it is
+    /// a defect in every project that installs it. This is the check that would
+    /// have caught `PdfController::render(string $template, string $id)` turning
+    /// `composer require` into exit code 255.
+    #[test]
+    fn module_controllers_do_not_override_abstract_controller_methods() {
+        let mut violations = Vec::new();
+
+        for module_dir in MODULES_DIR.dirs() {
+            let Some(name) = module_dir.path().file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(controllers) = MODULES_DIR.get_dir(format!("{name}/backend/src/Controller"))
+            else {
+                continue;
+            };
+
+            let mut files = Vec::new();
+            collect_php(controllers, &mut files);
+
+            for (path, contents) in files {
+                // Only classes that actually extend the base controller inherit
+                // (and therefore must not redeclare) its methods.
+                if !contents.contains("extends AbstractController")
+                    && !contents.contains("extends \\Symfony\\Bundle\\FrameworkBundle\\Controller\\AbstractController")
+                {
+                    continue;
+                }
+                for method in declared_public_methods(&contents) {
+                    if ABSTRACT_CONTROLLER_PUBLIC_API.contains(&method.as_str()) {
+                        violations.push(format!(
+                            "{path}: public function {method}() overrides AbstractController::{method}()"
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "module controllers must not redeclare AbstractController methods \
+             (PHP fatal at class-compile time, breaks cache:clear during install):\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// Guards the helper itself, so a silent regex regression cannot make the
+    /// check above pass vacuously.
+    #[test]
+    fn declared_public_methods_reads_signatures() {
+        let contents = "\
+    public function render(string $template, string $id): Response
+    public function templates(): JsonResponse
+    public static function getSubscribedServices(): array
+    private function helper(): void
+";
+        let mut methods = declared_public_methods(contents);
+        methods.sort();
+        assert_eq!(methods, ["getSubscribedServices", "render", "templates"]);
+    }
 
     #[test]
     fn catalogue_contains_pdf_export() {
@@ -942,6 +1151,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&project);
     }
 
+    #[test]
+    fn detects_composer_packages_that_did_not_land() {
+        let project =
+            std::env::temp_dir().join(format!("eggshell-composer-{}-{}", std::process::id(), now_secs()));
+        let backend = project.join("backend");
+        std::fs::create_dir_all(backend.join("vendor/mpdf/mpdf")).expect("vendor dir");
+
+        let mut require = BTreeMap::new();
+        require.insert("mpdf/mpdf".to_string(), "^8.3".to_string());
+        require.insert("symfony/twig-bundle".to_string(), "^8.0".to_string());
+
+        // Only mpdf was downloaded; twig-bundle is missing.
+        assert_eq!(
+            missing_composer_packages(&backend, &require),
+            ["symfony/twig-bundle"]
+        );
+
+        std::fs::create_dir_all(backend.join("vendor/symfony/twig-bundle")).expect("vendor dir");
+        assert!(missing_composer_packages(&backend, &require).is_empty());
+
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
     /// A conflict part-way through an install must not poison the files that
     /// were already written: the retry has to be able to finish.
     #[test]
@@ -978,10 +1210,14 @@ mod tests {
             .is_file());
 
         let state = read_state(&project);
-        let recorded = &state.modules.get("pdf-export").expect("partial state").files;
+        let entry = state.modules.get("pdf-export").expect("partial state");
+        let recorded = &entry.files;
         assert!(recorded
             .iter()
             .any(|file| file == "backend/src/Service/PdfTemplate/TemplatesPdf.php"));
+        // A partial entry must never be reported (or short-circuited) as a
+        // finished install, even at the same version.
+        assert!(!entry.complete);
 
         // With the conflict gone, the recorded ownership lets the retry replace
         // nothing and fill in the rest.
