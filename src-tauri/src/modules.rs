@@ -13,8 +13,10 @@
 //! agent, and would not run on Windows without an extra shell.
 //!
 //! Everything an install records is kept in `<project>/.eggshell/modules.json`.
-//! That file is what makes a second install a no-op and what lets the installer
-//! refuse to overwrite a file it did not write.
+//! That file is what makes a second install a no-op: a same-version re-install
+//! verifies the files it recorded and only touches the ones that are missing or
+//! modified. When it does write, it always overwrites — a module owns every path
+//! it declares, so a stale or broken copy is repaired rather than fought over.
 
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
@@ -64,9 +66,9 @@ pub struct NpmSpec {
 pub struct CopyMapping {
     pub from: String,
     pub to: String,
-    /// When true an existing destination file that the module did not write is
-    /// left alone instead of failing the install. Used for configuration defaults
-    /// that a project or a Flex recipe may already provide.
+    /// When true a differing destination file is left alone instead of being
+    /// replaced. Used for configuration defaults that a project or a Flex recipe
+    /// may already provide; every non-optional mapping is overwritten on install.
     #[serde(default)]
     pub optional: bool,
 }
@@ -117,9 +119,10 @@ fn default_skill_file() -> String {
 pub struct InstalledModule {
     pub version: String,
     pub installed_at: u64,
-    /// Every file the module wrote, relative to the project root. This is the
-    /// ownership record: a file in it may be replaced on a re-install, and a file
-    /// outside it may not.
+    /// Every file the module wrote, relative to the project root. Kept as a
+    /// record for diagnostics and for reporting what a repair touched; a file
+    /// outside it is still overwritten on install, but the overwrite is called
+    /// out as a warning.
     pub files: Vec<String>,
     /// The module skill's path inside the project, relative to the project root.
     pub skill_path: Option<String>,
@@ -149,6 +152,10 @@ pub struct InstallReport {
     pub files_written: Vec<String>,
     /// Files already present with identical content; nothing was written.
     pub files_unchanged: Vec<String>,
+    /// Files that already existed with different content and were replaced. A
+    /// path is listed here when it was not in the module's ownership record, so
+    /// a repair can say which pre-existing files it clobbered.
+    pub files_overwritten: Vec<String>,
     pub packages_installed: Vec<String>,
     pub warnings: Vec<String>,
     pub skill_path: Option<String>,
@@ -205,8 +212,10 @@ pub fn catalogue_prompt() -> String {
 
     let installed_note = "Call `enable_module` with the module id to install one. \
 Installing copies its backend and frontend files into the project, adds its \
-Composer/npm packages and registers its Symfony bundles. Call it before writing \
-code that depends on the module, and follow the module's skill for wiring.";
+Composer/npm packages and registers its Symfony bundles. It overwrites the \
+module's own files, so calling it again repairs a broken or partial install. \
+Call it before writing code that depends on the module, and follow the \
+module's skill for wiring.";
 
     let mut summary = String::from(
         "\n\n=== AVAILABLE MODULES ===\n\
@@ -266,14 +275,23 @@ fn write_state(project: &Path, state: &ModuleState) -> LlmResult<()> {
 
 /// Installs `id` into `project`.
 ///
-/// Installation is idempotent: a module recorded at the same version is reported
-/// as already installed and nothing is touched. A module recorded at a different
-/// version is re-written over the files it owns.
+/// Installation is idempotent and self-repairing: a module recorded at the same
+/// version whose files are all intact is reported as already installed and
+/// nothing is touched, while missing or modified files are re-written. A module
+/// recorded at a different version is re-written over the files it owns. Any
+/// pre-existing file a mapping targets is replaced, and the replacement is
+/// reported in `InstallReport::files_overwritten`.
 ///
 /// `module.json`, `SKILL.md` and the `overrides/` tree live at the module root
 /// and are never copied by the `backend`/`frontend` mappings, so the skill is the
 /// only thing that reaches `.eggshell/`.
 pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
+    install_inner(project, id, true).await
+}
+
+/// Shared implementation. `run_packages` is false in tests, which must exercise
+/// the copy/verify/repair path without invoking Composer or npm.
+async fn install_inner(project: &Path, id: &str, run_packages: bool) -> LlmResult<InstallReport> {
     let id = id.trim();
     let Some(manifest) = find(id) else {
         return Err(format!(
@@ -292,20 +310,40 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
         ..Default::default()
     };
 
-    if let Some(installed) = state.modules.get(&manifest.id) {
+    // A same-version install is only a no-op if every file it recorded is still
+    // on disk unchanged. Otherwise fall through and re-copy, which repairs a
+    // deleted or edited module file instead of leaving the project broken.
+    let drifted = if let Some(installed) = state.modules.get(&manifest.id) {
         if installed.complete && installed.version == manifest.version {
-            report.already_installed = true;
-            report.skill_path = installed.skill_path.clone();
-            report.skill_content = installed
-                .skill_path
-                .as_ref()
-                .and_then(|path| std::fs::read_to_string(project.join(path)).ok());
-            return Ok(report);
+            let drifted = verify_installed(project, dir, &manifest);
+            if drifted.is_empty() {
+                report.already_installed = true;
+                report.skill_path = installed.skill_path.clone();
+                report.skill_content = installed
+                    .skill_path
+                    .as_ref()
+                    .and_then(|path| std::fs::read_to_string(project.join(path)).ok());
+                return Ok(report);
+            }
+            drifted
+        } else {
+            Vec::new()
         }
+    } else {
+        Vec::new()
+    };
+
+    if !drifted.is_empty() {
+        report.warnings.push(format!(
+            "{} file(s) were missing or modified since the module was installed; reinstalling to repair them.",
+            drifted.len()
+        ));
     }
 
-    // Ownership of files from a previous version carries over, so an upgrade may
-    // replace them without being treated as a conflict.
+    // The ownership record from a previous install. It no longer gates writes —
+    // a module owns every path it declares — but it distinguishes a normal
+    // re-install from a replacement of a file the module never wrote, which is
+    // surfaced as a warning.
     let owned: Vec<String> = state
         .modules
         .get(&manifest.id)
@@ -321,21 +359,28 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
         .chain(manifest.frontend.copy.iter())
     {
         if let Err(error) = copy_mapping(project, dir, mapping, &owned, &mut written, &mut report) {
-            // Record what was written before the failure. Otherwise those files
-            // exist on disk with no ownership record, and the retry the agent is
-            // about to make would treat them as somebody else's work and refuse.
+            // Record what was written before the failure so a retry knows those
+            // files belong to the module and reports them as unchanged rather
+            // than as replacements.
             record_partial_install(project, &manifest, &owned, &written);
             return Err(error);
         }
     }
 
-    // Composer and npm run last, so a copy conflict aborts before minutes are
+    if !report.files_overwritten.is_empty() {
+        report.warnings.push(format!(
+            "Replaced {} pre-existing file(s) the module owns: {}.",
+            report.files_overwritten.len(),
+            report.files_overwritten.join(", ")
+        ));
+    }
+
+    // Composer and npm run last, so a copy failure aborts before minutes are
     // spent downloading packages.
 
     // Ownership is recorded *before* the package-manager steps. Composer and npm
-    // can fail after the copies succeeded, and the retry must be allowed to
-    // overwrite the files this module already wrote; without the record it would
-    // refuse them as somebody else's work.
+    // can fail after the copies succeeded; recording now keeps the retry able to
+    // report those files as the module's own.
     record_partial_install(project, &manifest, &owned, &written);
 
     // Set once something has rebuilt the service container; `composer require`
@@ -371,7 +416,7 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
         }
     }
 
-    if !manifest.backend.composer.require.is_empty() {
+    if run_packages && !manifest.backend.composer.require.is_empty() {
         let backend = project.join("backend");
         if !backend.is_dir() {
             report
@@ -423,7 +468,7 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
         }
     }
 
-    if !manifest.frontend.npm.dependencies.is_empty() {
+    if run_packages && !manifest.frontend.npm.dependencies.is_empty() {
         let frontend = project.join("frontend");
         if !frontend.is_dir() {
             report
@@ -453,7 +498,7 @@ pub async fn install(project: &Path, id: &str) -> LlmResult<InstallReport> {
     // container is rebuilt. Best effort: a failure here must not undo a good
     // install — the project's own code may be broken, and the agent needs the
     // real error from `lint_code`, not a failed install.
-    if !container_rebuilt && project.join("backend/bin/console").is_file() {
+    if run_packages && !container_rebuilt && project.join("backend/bin/console").is_file() {
         let console_path = project.join("backend");
         if let Err(error) = crate::llm::symfony::run_command_capture(
             "php bin/console cache:clear --no-warmup",
@@ -621,13 +666,13 @@ fn copy_dir(
                 report.files_unchanged.push(project_relative);
                 continue;
             }
-            Ok(_) if !owned.iter().any(|path| path == &project_relative) => {
-                return Err(format!(
-                    "Refusing to overwrite '{}': it already exists and was not installed by this module. \
-Move or delete it, then run enable_module again.",
-                    project_relative
-                )
-                .into());
+            Ok(_) => {
+                // The module owns this path, so a stale, broken or agent-written
+                // file is replaced rather than treated as a conflict. Files the
+                // module did not record are called out so a repair is visible.
+                if !owned.iter().any(|path| path == &project_relative) {
+                    report.files_overwritten.push(project_relative.clone());
+                }
             }
             _ => {}
         }
@@ -655,6 +700,88 @@ Move or delete it, then run enable_module again.",
     }
 
     Ok(())
+}
+
+/// Returns the project-relative paths an earlier install recorded but that are
+/// now missing or differ from the module's embedded copy.
+///
+/// Used to decide whether a same-version re-enable can short-circuit or must
+/// re-copy to repair the project. `optional` mappings are skipped on purpose:
+/// the project's own file is expected to win there.
+fn verify_installed(
+    project: &Path,
+    module_root: &'static Dir<'static>,
+    manifest: &ModuleManifest,
+) -> Vec<String> {
+    let dir_name = module_root
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let mut drifted = Vec::new();
+
+    for mapping in manifest
+        .backend
+        .copy
+        .iter()
+        .chain(manifest.frontend.copy.iter())
+    {
+        if mapping.optional {
+            continue;
+        }
+        let from = mapping.from.trim_matches('/').replace('\\', "/");
+        let to = mapping.to.trim_matches('/').replace('\\', "/");
+        // `include_dir` resolves paths from the embedded root, not from `module_root`.
+        let full = format!("{dir_name}/{from}");
+        let Some(source) = MODULES_DIR.get_dir(&full) else {
+            continue;
+        };
+        collect_drifted(project, source, &to, &mut drifted);
+    }
+
+    // The skill is installed outside any copy mapping, so it is checked directly.
+    let skill_relative = format!("{STATE_DIR}/{SKILL_DIR}/{}/SKILL.md", manifest.id);
+    let skill = manifest.skill.trim_matches('/').replace('\\', "/");
+    if let Some(file) = MODULES_DIR.get_file(format!("{dir_name}/{skill}")) {
+        let destination = project.join(&skill_relative);
+        match std::fs::read(&destination) {
+            Ok(existing) if existing == file.contents() => {}
+            _ => drifted.push(skill_relative),
+        }
+    }
+
+    drifted
+}
+
+fn collect_drifted(
+    project: &Path,
+    dir: &'static Dir<'static>,
+    project_prefix: &str,
+    into: &mut Vec<String>,
+) {
+    for file in dir.files() {
+        let Some(name) = file.path().file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let project_relative = join_relative(project_prefix, name);
+        let destination = project.join(&project_relative);
+        match std::fs::read(&destination) {
+            Ok(existing) if existing == file.contents() => {}
+            _ => into.push(project_relative),
+        }
+    }
+
+    for child in dir.dirs() {
+        let Some(name) = child.path().file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        collect_drifted(
+            project,
+            child,
+            &join_relative(project_prefix, name),
+            into,
+        );
+    }
 }
 
 fn join_relative(prefix: &str, name: &str) -> String {
@@ -753,12 +880,19 @@ pub fn report_to_value(report: &InstallReport) -> Value {
             report.module
         )
     } else {
-        format!(
+        let mut message = format!(
             "Module '{}' installed: {} file(s) written, {} package(s) added.",
             report.module,
             report.files_written.len(),
             report.packages_installed.len()
-        )
+        );
+        if !report.files_overwritten.is_empty() {
+            message.push_str(&format!(
+                " {} pre-existing file(s) were replaced.",
+                report.files_overwritten.len()
+            ));
+        }
+        message
     };
 
     json!({
@@ -769,6 +903,7 @@ pub fn report_to_value(report: &InstallReport) -> Value {
             "alreadyInstalled": report.already_installed,
             "filesWritten": report.files_written,
             "filesUnchanged": report.files_unchanged,
+            "filesOverwritten": report.files_overwritten,
             "packagesInstalled": report.packages_installed,
             "warnings": report.warnings,
             "skillPath": report.skill_path,
@@ -780,6 +915,15 @@ pub fn report_to_value(report: &InstallReport) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs a future on a fresh current-thread runtime, matching the pattern
+    /// used by the other tool tests.
+    fn run<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime builds")
+            .block_on(future)
+    }
 
     /// Public methods a controller inherits from `AbstractController`. A module
     /// controller that declares one of these with its own signature is a PHP
@@ -1077,9 +1221,9 @@ mod tests {
     }
 
     #[test]
-    fn install_refuses_to_overwrite_unowned_files() {
+    fn install_overwrites_unowned_files() {
         let project = std::env::temp_dir().join(format!(
-            "eggshell-conflict-{}-{}",
+            "eggshell-overwrite-{}-{}",
             std::process::id(),
             now_secs()
         ));
@@ -1091,22 +1235,24 @@ mod tests {
         let module = find("pdf-export").expect("manifest");
         let mut written = Vec::new();
         let mut report = InstallReport::default();
-        let result = copy_mapping(
+        copy_mapping(
             &project,
             dir,
             &module.frontend.copy[0],
             &[],
             &mut written,
             &mut report,
-        );
+        )
+        .expect("an unowned existing file is overwritten, not refused");
 
-        let error = result.expect_err("conflict must fail");
-        assert!(error.to_string().contains("Refusing to overwrite"));
-        // The agent's file is untouched.
-        assert_eq!(
-            std::fs::read_to_string(&target).expect("read"),
-            "// the agent wrote this\n"
-        );
+        // The module's content replaced the agent's file.
+        assert!(!std::fs::read_to_string(&target)
+            .expect("read")
+            .contains("the agent wrote this"));
+        assert!(report
+            .files_overwritten
+            .iter()
+            .any(|file| file == "frontend/src/api/pdfClient.ts"));
 
         let _ = std::fs::remove_dir_all(&project);
     }
@@ -1174,70 +1320,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&project);
     }
 
-    /// A conflict part-way through an install must not poison the files that
-    /// were already written: the retry has to be able to finish.
+    /// A re-enable at the same version must repair files that were deleted or
+    /// edited since the first install, instead of short-circuiting to a no-op.
     #[test]
-    fn conflict_records_written_files_so_a_retry_can_finish() {
+    fn reinstall_repairs_deleted_and_modified_files() {
         let project = std::env::temp_dir().join(format!(
-            "eggshell-recovery-{}-{}",
+            "eggshell-repair-{}-{}",
             std::process::id(),
             now_secs()
         ));
-        // `frontend/src/api/pdfClient.ts` is the only file in the frontend tree,
-        // and seeding it turns that mapping into a conflict.
-        let blocker = project.join("frontend/src/api/pdfClient.ts");
-        std::fs::create_dir_all(blocker.parent().expect("parent")).expect("dirs");
-        std::fs::write(&blocker, "// written by the agent\n").expect("seed");
+        std::fs::create_dir_all(&project).expect("project dir");
 
-        let manifest = find("pdf-export").expect("manifest");
-        let dir = module_dir("pdf-export").expect("module dir");
+        // First install: package steps are skipped, so no composer/npm needed.
+        run(install_inner(&project, "pdf-export", false)).expect("first install");
+        let template = project.join("backend/src/Service/PdfTemplate/TemplatesPdf.php");
+        let client = project.join("frontend/src/api/pdfClient.ts");
+        assert!(template.is_file());
+        assert!(client.is_file());
 
-        // Backend copies first and succeeds; frontend then conflicts.
-        let mut written = Vec::new();
-        let mut report = InstallReport::default();
-        let mut failure = None;
-        for mapping in manifest.backend.copy.iter().chain(manifest.frontend.copy.iter()) {
-            if let Err(error) = copy_mapping(&project, dir, mapping, &[], &mut written, &mut report)
-            {
-                record_partial_install(&project, &manifest, &[], &written);
-                failure = Some(error);
-                break;
-            }
-        }
-        assert!(failure.is_some(), "the seeded file must conflict");
-        assert!(project
-            .join("backend/src/Service/PdfTemplate/TemplatesPdf.php")
-            .is_file());
+        // Break the install: delete one module file, edit another.
+        std::fs::remove_file(&template).expect("delete module file");
+        std::fs::write(&client, "// modified by the agent\n").expect("modify module file");
 
-        let state = read_state(&project);
-        let entry = state.modules.get("pdf-export").expect("partial state");
-        let recorded = &entry.files;
-        assert!(recorded
+        let report = run(install_inner(&project, "pdf-export", false)).expect("repair install");
+        assert!(!report.already_installed, "drift must trigger a re-install");
+        assert!(template.is_file(), "deleted file is restored");
+        assert!(!std::fs::read_to_string(&client)
+            .expect("read")
+            .contains("modified by the agent"));
+        assert!(report
+            .warnings
             .iter()
-            .any(|file| file == "backend/src/Service/PdfTemplate/TemplatesPdf.php"));
-        // A partial entry must never be reported (or short-circuited) as a
-        // finished install, even at the same version.
-        assert!(!entry.complete);
+            .any(|warning| warning.contains("missing or modified")));
 
-        // With the conflict gone, the recorded ownership lets the retry replace
-        // nothing and fill in the rest.
-        std::fs::remove_file(&blocker).expect("remove blocker");
-        let mut retry_written = Vec::new();
-        let mut retry_report = InstallReport::default();
-        for mapping in manifest.backend.copy.iter().chain(manifest.frontend.copy.iter()) {
-            copy_mapping(
-                &project,
-                dir,
-                mapping,
-                recorded,
-                &mut retry_written,
-                &mut retry_report,
-            )
-            .expect("retry succeeds");
-        }
-        assert!(retry_written
-            .iter()
-            .any(|file| file == "frontend/src/api/pdfClient.ts"));
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// A same-version re-enable with every file intact must stay a no-op.
+    #[test]
+    fn reinstall_is_a_noop_when_files_match() {
+        let project = std::env::temp_dir().join(format!(
+            "eggshell-noop-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        std::fs::create_dir_all(&project).expect("project dir");
+
+        run(install_inner(&project, "pdf-export", false)).expect("first install");
+        let report = run(install_inner(&project, "pdf-export", false)).expect("second install");
+
+        assert!(report.already_installed);
+        assert!(report.files_written.is_empty());
+        assert!(report.files_overwritten.is_empty());
 
         let _ = std::fs::remove_dir_all(&project);
     }

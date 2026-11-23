@@ -59,7 +59,7 @@ impl Tool for EnableModuleTool {
     }
 
     fn description(&self) -> &str {
-        "Installs an optional feature module into the project: copies its backend and frontend files, adds its Composer/npm packages, registers its Symfony bundles, and returns the module's instructions. Safe to call again; an installed module is left untouched."
+        "Installs an optional feature module into the project: copies its backend and frontend files, adds its Composer/npm packages, registers its Symfony bundles, and returns the module's instructions. Safe to call again: an unchanged install is left alone, while missing or modified module files are re-written to repair the project."
     }
 
     fn parameters(&self) -> &Map<String, Value> {
