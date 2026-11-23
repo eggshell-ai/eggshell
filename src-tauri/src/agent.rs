@@ -26,6 +26,10 @@ pub struct AgentRunResult {
     pub token_usage: Option<u64>,
     #[serde(default)]
     pub hit_max_turns: bool,
+    /// The turn budget the run was given. Reported alongside `hit_max_turns` so
+    /// callers can explain the stop without duplicating the default.
+    #[serde(default)]
+    pub max_turns: u32,
     /// Set when the model repeated a tool call that had already failed twice
     /// with identical arguments. The run stops instead of spending the rest of
     /// the turn budget on a call that cannot succeed.
@@ -348,13 +352,18 @@ impl AgentService {
             }
         }
 
-        if final_content.trim().is_empty() {
-            if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+        let cancelled = cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed));
+        if hit_max_turns {
+            // The final turn asked for tools that were never executed, so any
+            // text it produced is a truncated preamble rather than an answer.
+            // Replace it so the UI does not look like the agent trailed off.
+            final_content = max_turns_notice(max_turns);
+        } else if stalled {
+            final_content =
+                "Stopped: the same tool call kept failing with identical arguments. Change the approach or arguments before retrying.".to_string();
+        } else if final_content.trim().is_empty() {
+            if cancelled {
                 final_content = "Response stopped by user.".to_string();
-            } else if stalled {
-                final_content = "Stopped: the same tool call kept failing with identical arguments. Change the approach or arguments before retrying.".to_string();
-            } else if hit_max_turns {
-                final_content = "Reached maximum allowed turns before completing all actions.".to_string();
             } else if !all_tool_calls.is_empty() {
                 final_content = "Completed requested actions.".to_string();
             }
@@ -365,6 +374,7 @@ impl AgentService {
             tool_calls: all_tool_calls,
             token_usage: latest_token_usage,
             hit_max_turns,
+            max_turns,
             stalled,
         };
         emit(
@@ -374,6 +384,8 @@ impl AgentService {
                 "content": result.content,
                 "tool_calls": result.tool_calls,
                 "token_usage": result.token_usage,
+                "hit_max_turns": result.hit_max_turns,
+                "max_turns": result.max_turns,
                 "stalled": result.stalled,
             }),
         );
@@ -562,6 +574,15 @@ fn with_project_path(args: Value, project_path: Option<&str>) -> Value {
     Value::Object(args)
 }
 
+/// The message a run ends with when it used up its turn budget. It names the
+/// budget and tells the user how to continue, because the previous wording
+/// ("Reached maximum allowed turns") read like an error and gave no next step.
+fn max_turns_notice(max_turns: u32) -> String {
+    format!(
+        "Stopped after {max_turns} turns before finishing. Send **continue** to resume from where I left off."
+    )
+}
+
 fn emit(options: &AgentOptions, kind: &str, data: Value) {
     if let Some(callback) = &options.on_event {
         callback(json!({ "type": kind, "data": data }));
@@ -697,7 +718,6 @@ mod tests {
 
     /// Always emits the same `failing_tool` call with identical arguments.
     struct RepeatingLlm;
-
     #[async_trait]
     impl LLMService for RepeatingLlm {
         async fn execute_prompt(
@@ -808,5 +828,107 @@ mod tests {
         assert!(result.content.contains("same tool call kept failing"));
         // Executed once, intercepted once, stopped once.
         assert_eq!(result.tool_calls.len(), 3);
+    }
+
+    /// Always asks for a tool that succeeds, so the run can only end by using up
+    /// its turn budget. Mirrors the production run in log 1795440427291-39040,
+    /// where exploration consumed every turn without a single write.
+    struct EndlessLlm {
+        turn: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait]
+    impl LLMService for EndlessLlm {
+        async fn execute_prompt(
+            &self,
+            _prompt: &str,
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<String> {
+            Ok(String::new())
+        }
+
+        async fn execute_prompt_with_tools(
+            &self,
+            _messages: &[LLMMessage],
+            _tools: &[Box<dyn Tool>],
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<Value> {
+            let turn = self.turn.fetch_add(1, Ordering::Relaxed);
+            Ok(json!({
+                // A truncated preamble: the last thought never became an answer.
+                "content": "Let me read one more file before writing.\n",
+                "tool_calls": [{
+                    "id": format!("call-{turn}"),
+                    "type": "function",
+                    "function": {
+                        "name": "ok_tool",
+                        "arguments": { "projectPath": "/tmp/project", "index": turn }
+                    }
+                }]
+            }))
+        }
+    }
+
+    struct OkTool {
+        parameters: Map<String, Value>,
+    }
+
+    #[async_trait]
+    impl Tool for OkTool {
+        fn name(&self) -> &str {
+            "ok_tool"
+        }
+        fn description(&self) -> &str {
+            "Always succeeds."
+        }
+        fn parameters(&self) -> &Map<String, Value> {
+            &self.parameters
+        }
+        async fn execute(&self, _args: Value) -> LlmResult<Value> {
+            Ok(json!({ "ok": true }))
+        }
+    }
+
+    #[tokio::test]
+    async fn hitting_the_turn_budget_reports_the_limit_and_replaces_the_preamble() {
+        let agent = AgentService::with_skills(
+            Arc::new(EndlessLlm {
+                turn: std::sync::atomic::AtomicU32::new(0),
+            }),
+            Vec::new(),
+        );
+
+        let result = agent
+            .run_agent(
+                vec![
+                    system_message("system"),
+                    LLMMessage {
+                        role: LLMMessageRole::User,
+                        content: "do the thing".to_string(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        tool_calls: None,
+                    },
+                ],
+                vec![Box::new(OkTool {
+                    parameters: Map::new(),
+                })],
+                AgentOptions {
+                    max_turns: Some(3),
+                    ..agent_options()
+                },
+            )
+            .await
+            .expect("agent run");
+
+        assert!(result.hit_max_turns, "expected the run to hit the budget");
+        assert_eq!(result.max_turns, 3);
+        // The trailing preamble must not survive as the answer.
+        assert!(!result.content.contains("one more file"));
+        assert!(result.content.contains("Stopped after 3 turns"));
+        assert!(result.content.contains("continue"));
+        // Only executed turns are reported; the 3rd turn's calls never ran.
+        assert_eq!(result.tool_calls.len(), 2);
     }
 }

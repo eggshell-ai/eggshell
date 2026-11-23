@@ -106,6 +106,29 @@ function MessageContent({ content }: { content: string }) {
   </div>;
 }
 
+/**
+ * Why a run ended without a normal reply. Persisted on the assistant message by
+ * the backend (`db.rs`), so a reloaded session still explains the stop.
+ */
+export type StopReason = "max_turns" | "stalled";
+
+function StopNotice({ reason, maxTurns }: { reason: StopReason; maxTurns?: number }) {
+  const isMaxTurns = reason === "max_turns";
+  return (
+    <div className={`stop-notice ${reason}`} role="status">
+      <span className="stop-notice-icon" aria-hidden="true">{isMaxTurns ? "⏸" : "⚠"}</span>
+      <div className="stop-notice-body">
+        <strong>{isMaxTurns ? "Stopped at the turn limit" : "Stopped: a tool kept failing"}</strong>
+        <p>
+          {isMaxTurns
+            ? `The run used all ${maxTurns ?? 30} turns before finishing. Send “continue” to resume from where it left off.`
+            : "The same tool call failed repeatedly with identical arguments. Change the approach or arguments, then try again."}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 type ToolRunProps = { call: ChatMessage; result?: ChatMessage };function ThinkingBlock({ content, isRunning }: { content: string; isRunning: boolean }) {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -605,6 +628,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     }
     const isPlan = (message.data as { isPlan?: boolean } | undefined)?.isPlan;
     const planPath = (message.data as { planPath?: string } | undefined)?.planPath;
+    const planStop = message.data as { stopReason?: StopReason; maxTurns?: number } | undefined;
     if (isPlan) {
       renderedMessages.push(
         <article className="message assistant plan-message" key={`plan-${index}`}>
@@ -616,6 +640,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
             {planPath && <span className="plan-path" title={planPath}>Saved to: {planPath.split(/[\\/]/).pop()}</span>}
           </div>
           <MessageContent content={message.content} />
+          {planStop?.stopReason && <StopNotice reason={planStop.stopReason} maxTurns={planStop.maxTurns} />}
           <div className="plan-actions">
             <button
               className="plan-proceed-btn"
@@ -632,10 +657,15 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
       continue;
     }
     if (message.role === "assistant") {
+      const stop = message.data as { stopReason?: StopReason; maxTurns?: number } | undefined;
       renderedMessages.push(
         <article className="message assistant" key={`assistant-${index}`}>
           <span>Eggshell</span>
-          <MessageContent content={message.content} />
+          {/* The stop notice says the same thing as the persisted text, so the
+              body is only shown for a normal reply. */}
+          {stop?.stopReason
+            ? <StopNotice reason={stop.stopReason} maxTurns={stop.maxTurns} />
+            : <MessageContent content={message.content} />}
           {renderFeedbackRow(index)}
         </article>
       );

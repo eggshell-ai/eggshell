@@ -2898,6 +2898,52 @@ input {
   min-height: 24px;
 }
 
+/* Explains a run that ended without a normal reply (turn limit / stalled tool). */
+.stop-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 14px;
+  border: 1px solid #e5d9c3;
+  border-left: 3px solid #d99a2b;
+  border-radius: 10px;
+  background: #fdf8ee;
+}
+
+.stop-notice.stalled {
+  border-color: #e8cfcf;
+  border-left-color: #d2564a;
+  background: #fdf2f1;
+}
+
+.stop-notice-icon {
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.stop-notice-body strong {
+  display: block;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: #7a5a16;
+}
+
+.stop-notice.stalled .stop-notice-body strong {
+  color: #8d332b;
+}
+
+.stop-notice-body p {
+  margin: 2px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #6d6350;
+}
+
+.stop-notice.stalled .stop-notice-body p {
+  color: #74605c;
+}
+
 .feedback-actions {
   display: flex;
   align-items: center;

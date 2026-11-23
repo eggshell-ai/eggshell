@@ -118,12 +118,26 @@ function App() {
     // it stays subscribed and every event is handled twice.
     let stopped = false;
     void listen<{ projectId: number; sessionId?: number; seq?: number; event: { type: string; data: unknown } }>("agent-event", ({ payload }) => {
-      if (payload.projectId !== activeProjectIdRef.current || payload.event.type === "complete") return;
+      if (payload.projectId !== activeProjectIdRef.current) return;
       // Drop a re-delivery of an event already applied (duplicate listener,
       // reconnect, or a repeated emit).
       if (typeof payload.seq === "number") {
         if (payload.seq <= lastEventSeqRef.current) return;
         lastEventSeqRef.current = payload.seq;
+      }
+      if (payload.event.type === "complete") {
+        // A run that consumed its whole turn budget has no normal reply. Show
+        // why it stopped right away instead of leaving the last thought looking
+        // like the agent trailed off mid-sentence.
+        const done = payload.event.data as { hit_max_turns?: boolean; max_turns?: number; stalled?: boolean } | undefined;
+        if (done?.hit_max_turns) {
+          setStreamedMessages((current) => [...current, {
+            role: "assistant",
+            content: "",
+            data: { stopReason: "max_turns", maxTurns: done.max_turns },
+          }]);
+        }
+        return;
       }
       const { type, data } = payload.event;
       if (type === "thought_delta") {
@@ -529,6 +543,8 @@ function App() {
       finalAssistantContent &&
       message.content.trim() === finalAssistantContent
     ) return false;
+    // A stop notice is rendered from `data` alone, so it has no text of its own.
+    if ((message.data as { stopReason?: string } | undefined)?.stopReason) return true;
     if (message.content.trim()) return true;
     if (!message.data || typeof message.data !== "object") return false;
 

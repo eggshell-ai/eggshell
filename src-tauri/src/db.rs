@@ -558,6 +558,10 @@ impl SessionsRepository {
                     log_dir,
                     on_event: Some(on_event),
                     cancellation_token: cancel_token,
+                    // Chat runs explore a codebase before writing, so 10 turns
+                    // was enough to exhaust the budget on recon alone (see log
+                    // 1795440427291-39040, which never reached a write).
+                    max_turns: Some(30),
                     ..Default::default()
                 },
             )
@@ -589,6 +593,25 @@ impl SessionsRepository {
                 "isPlan": true,
                 "planPath": plan_path_str
             }));
+        }
+
+        // A run that stopped because it ran out of turns (or because it stalled)
+        // never produced a normal reply. Record why, so the UI can explain the
+        // stop instead of showing a mid-sentence trailing thought.
+        if result.hit_max_turns || result.stalled {
+            let reason = if result.stalled { "stalled" } else { "max_turns" };
+            match assistant_data.as_mut() {
+                Some(data) if data.is_object() => {
+                    data["stopReason"] = json!(reason);
+                    data["maxTurns"] = json!(result.max_turns);
+                }
+                _ => {
+                    assistant_data = Some(json!({
+                        "stopReason": reason,
+                        "maxTurns": result.max_turns,
+                    }));
+                }
+            }
         }
 
         messages.push(ChatMessage {
