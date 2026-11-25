@@ -91,6 +91,8 @@ struct ResourceAction {
     permission: Option<String>,
     action_expression: Option<String>,
     label_expression: Option<String>,
+    /// Static button label. `labelExpression` wins when both are present.
+    label: Option<String>,
     confirm: Option<bool>,
     /// Custom JavaScript executed with an injected helper API when the action runs.
     handler: Option<String>,
@@ -136,6 +138,19 @@ pub struct SyncSchemaTool {
 const RESERVED_COLUMN_NAMES: [&str; 15] = [
     "desc", "asc", "order", "group", "key", "index", "select", "insert", "update", "delete",
     "table", "from", "where", "by", "limit",
+];
+
+/// Every property `ResourceGrid` understands on a row action. Anything else is
+/// silently dropped by the generated frontend, which hides the button without
+/// any error, so unknown keys are rejected up front.
+const ACTION_KEYS: [&str; 7] = [
+    "permission",
+    "actionExpression",
+    "labelExpression",
+    "label",
+    "confirm",
+    "handler",
+    "form",
 ];
 
 impl SyncSchemaTool {
@@ -310,6 +325,11 @@ impl Tool for SyncSchemaTool {
                 // `lint_code`, leaving the project in a broken state.
                 validate_computed_field(&resource, field)?;
             }
+            // Actions are validated against the RAW schema value: the typed
+            // `ResourceAction` struct ignores unknown properties, so a stray
+            // `label`/`title`/`onClick` would otherwise survive validation and
+            // then be dropped by codegen, hiding the button with no error.
+            validate_actions(&resource, schema_resources[index].get("actions"))?;
             generated.push(resource);
         }
 
@@ -1311,6 +1331,96 @@ fn stored_column_names(resource: &Resource, exclude: &str) -> Vec<String> {
         .collect()
 }
 
+/// Validates the row-action array of a resource.
+///
+/// `raw_actions` is the un-deserialised `actions` value from the schema, because
+/// the typed `ResourceAction` silently ignores unknown properties.
+///
+/// Rejected cases (each one otherwise hides the button with no error):
+/// - a property outside [`ACTION_KEYS`] (e.g. `title`, `icon`, `onClick`);
+/// - an action with neither `label` nor `labelExpression`;
+/// - an action with nothing to run (`handler`, `form`, or `actionExpression`);
+/// - an action with both `handler` and `form`.
+fn validate_actions(resource: &Resource, raw_actions: Option<&Value>) -> Result<(), String> {
+    let actions = match raw_actions.and_then(Value::as_array) {
+        Some(actions) if !actions.is_empty() => actions,
+        _ => return Ok(()),
+    };
+
+    let allowed = ACTION_KEYS.join(", ");
+
+    for (position, raw) in actions.iter().enumerate() {
+        let number = position + 1;
+        let Some(object) = raw.as_object() else {
+            return Err(format!(
+                "Action #{number} on resource '{}' must be an object, got: {}",
+                resource.name,
+                serde_json::to_string(raw).unwrap_or_default()
+            ));
+        };
+
+        if let Some(unknown) = object.keys().find(|key| !ACTION_KEYS.contains(&key.as_str())) {
+            let hint = match unknown.as_str() {
+                "title" | "icon" | "onClick" | "on_click" => {
+                    " Row actions are declarative: there is no `onClick`/`icon`/`title` support. Use `handler` for custom JavaScript and `label` for the button text."
+                }
+                _ => "",
+            };
+            return Err(format!(
+                "Action #{number} on resource '{}' uses unsupported property `{unknown}`.{hint}\n\
+                 Supported action properties: {allowed}.\n\
+                 `label` is a static button text; `labelExpression` is a JavaScript expression (a string literal must be quoted inside it, e.g. labelExpression: \"'Download PDF'\").\n\
+                 Received action: {}",
+                resource.name,
+                serde_json::to_string(raw).unwrap_or_default()
+            ));
+        }
+
+        let has_label = object
+            .get("label")
+            .and_then(Value::as_str)
+            .map(|label| !label.trim().is_empty())
+            .unwrap_or(false);
+        let has_label_expression = object
+            .get("labelExpression")
+            .and_then(Value::as_str)
+            .map(|expression| !expression.trim().is_empty())
+            .unwrap_or(false);
+        if !has_label && !has_label_expression {
+            return Err(format!(
+                "Action #{number} on resource '{}' has neither `label` nor `labelExpression`, so its button can never render.\n\
+                 Use `label: \"Download PDF\"` for a constant label, or `labelExpression: \"data.status === 'draft' ? 'Issue' : null\"` to build it per row.\n\
+                 Received action: {}",
+                resource.name,
+                serde_json::to_string(raw).unwrap_or_default()
+            ));
+        }
+
+        let has_handler = object.contains_key("handler");
+        let has_form = object.contains_key("form");
+        let has_action_expression = object.contains_key("actionExpression");
+        if has_handler && has_form {
+            return Err(format!(
+                "Action #{number} on resource '{}' sets both `handler` and `form`; only one of them may be used.\n\
+                 Use `handler` for inline JavaScript, or `form` for a dialog that submits to an endpoint.\n\
+                 Received action: {}",
+                resource.name,
+                serde_json::to_string(raw).unwrap_or_default()
+            ));
+        }
+        if !has_handler && !has_form && !has_action_expression {
+            return Err(format!(
+                "Action #{number} on resource '{}' has nothing to run: provide `handler` (custom JavaScript), `form` (a dialog), or `actionExpression` (a path POSTed to the backend).\n\
+                 Received action: {}",
+                resource.name,
+                serde_json::to_string(raw).unwrap_or_default()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Rejects computed definitions that cannot work: an `sqlExpression` without
 /// `computed: true`, a computed field with nothing to compute from, and a
 /// subquery used as an arithmetic operand.
@@ -1378,6 +1488,7 @@ fn validate_computed_field(resource: &Resource, field: &Field) -> Result<(), Str
 fn js(s: &str) -> String {
     serde_json::to_string(s).unwrap()
 }
+
 fn frontend_code(r: &Resource, _class: &str) -> String {
     let fields = r
         .fields
@@ -1405,6 +1516,9 @@ fn actions_js(r: &Resource) -> String {
             }
             if let Some(expression) = &a.label_expression {
                 s.push_str(&format!("      labelExpression: {},\n", js(expression)));
+            }
+            if let Some(label) = &a.label {
+                s.push_str(&format!("      label: {},\n", js(label)));
             }
             if a.confirm.unwrap_or(false) {
                 s.push_str("      confirm: true,\n");
@@ -1868,6 +1982,90 @@ mod tests {
             .iter()
             .map(|f| f["name"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    fn resource_with_actions(actions: Value) -> (Resource, Value) {
+        let raw = json!({
+            "name": "sales",
+            "endpoint": "/sales",
+            "fields": [{ "name": "invoiceNumber", "type": "text" }],
+            "actions": actions
+        });
+        let resource: Resource = serde_json::from_value(raw.clone()).unwrap();
+        let actions = raw["actions"].clone();
+        (resource, actions)
+    }
+
+    #[test]
+    fn accepts_static_and_expression_labels() {
+        let (resource, actions) = resource_with_actions(json!([
+            { "label": "Download PDF", "handler": "await api.openPdf('/pdf/invoice/' + data.id);" },
+            { "labelExpression": "'Receive Payment'", "form": { "title": "Pay" } },
+            { "labelExpression": "data.status !== 'paid' ? 'Pay' : null", "actionExpression": "/pay" }
+        ]));
+        assert!(validate_actions(&resource, Some(&actions)).is_ok());
+    }
+
+    #[test]
+    fn accepts_action_without_actions_array() {
+        let (resource, _) = resource_with_actions(Value::Null);
+        assert!(validate_actions(&resource, None).is_ok());
+        assert!(validate_actions(&resource, Some(&Value::Null)).is_ok());
+    }
+
+    #[test]
+    fn rejects_unsupported_action_property() {
+        let (resource, actions) = resource_with_actions(json!([
+            { "label": "Invoice", "icon": "<FilePdfOutlined />", "onClick": "open(id)" }
+        ]));
+        let error = validate_actions(&resource, Some(&actions)).unwrap_err();
+        assert!(error.contains("unsupported property `icon`"), "{error}");
+        assert!(error.contains("Supported action properties"), "{error}");
+    }
+
+    #[test]
+    fn rejects_action_without_label() {
+        let (resource, actions) = resource_with_actions(json!([
+            { "handler": "doThing();" }
+        ]));
+        let error = validate_actions(&resource, Some(&actions)).unwrap_err();
+        assert!(error.contains("neither `label` nor `labelExpression`"), "{error}");
+    }
+
+    #[test]
+    fn rejects_blank_label() {
+        let (resource, actions) = resource_with_actions(json!([
+            { "label": "   ", "handler": "doThing();" }
+        ]));
+        assert!(validate_actions(&resource, Some(&actions)).is_err());
+    }
+
+    #[test]
+    fn rejects_action_with_nothing_to_run() {
+        let (resource, actions) = resource_with_actions(json!([
+            { "label": "Download PDF" }
+        ]));
+        let error = validate_actions(&resource, Some(&actions)).unwrap_err();
+        assert!(error.contains("nothing to run"), "{error}");
+    }
+
+    #[test]
+    fn rejects_handler_and_form_together() {
+        let (resource, actions) = resource_with_actions(json!([
+            { "label": "Both", "handler": "x();", "form": { "title": "T" } }
+        ]));
+        let error = validate_actions(&resource, Some(&actions)).unwrap_err();
+        assert!(error.contains("both `handler` and `form`"), "{error}");
+    }
+
+    #[test]
+    fn actions_js_emits_static_label() {
+        let (resource, _) = resource_with_actions(json!([
+            { "label": "Download PDF", "handler": "await api.openPdf('/pdf/invoice/' + data.id);" }
+        ]));
+        let emitted = actions_js(&resource);
+        assert!(emitted.contains("label: \"Download PDF\""), "{emitted}");
+        assert!(!emitted.contains("labelExpression"), "{emitted}");
     }
 
     #[test]

@@ -166,8 +166,16 @@ export interface ResourceAction {
   permission?: string;
   /** Evaluates to the request path appended to `<endpoint>/<record.id>` (e.g. '/deactivate') */
   actionExpression?: string;
-  /** Evaluates to the button label; falsy hides the button for that row */
+  /**
+   * Evaluates to the button label; falsy hides the button for that row.
+   * Takes precedence over `label` when both are set.
+   */
   labelExpression?: string;
+  /**
+   * Static button label, rendered as-is. Only used when `labelExpression` is
+   * absent. To build the label from the row, use `labelExpression` instead.
+   */
+  label?: string;
   /** Show a confirmation dialog before executing */
   confirm?: boolean;
   /**

@@ -22,6 +22,7 @@ mod frontend;
 mod issue;
 mod php;
 mod registry;
+mod resources;
 mod symfony_routing;
 
 #[cfg(test)]

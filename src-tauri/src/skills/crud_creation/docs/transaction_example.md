@@ -102,6 +102,10 @@ sync_schema({
           actionExpression: "data.status === 'draft' ? '/confirm' : null",
           labelExpression: "data.status === 'draft' ? 'Confirm Order' : null",
           confirm: true
+        },
+        {
+          label: "Download PDF",
+          handler: "await api.openPdf('/pdf/order/' + encodeURIComponent(String(data.id)));"
         }
       ]
     }

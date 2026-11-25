@@ -25,16 +25,45 @@ behavior genuinely cannot be expressed as a single backend POST.
 
 ## 1. Common action properties
 
-Every action supports:
+Every action supports exactly these properties — `ResourceGrid` ignores
+anything else, and it does so silently (the button simply never renders):
 
 | Property | Required | Meaning |
 |---|---|---|
 | `permission` | no | Permission required to see/execute the action. Superusers always pass. |
-| `labelExpression` | yes | JavaScript expression evaluated per row (with the record available as `data`) that returns the button label. A falsy result hides the button for that row. |
+| `label` | see below | Static button text, rendered as-is. Use it for a constant label such as `"Download PDF"`. |
+| `labelExpression` | see below | JavaScript expression evaluated per row (with the record available as `data`) that returns the button label. A falsy result hides the button for that row. Takes precedence over `label`. |
 | `confirm` | no | When `true`, shows a confirmation dialog before running. |
+| `actionExpression` | path actions | Evaluated path appended to `<endpoint>/<record.id>`. |
+| `handler` | handler actions | Custom JavaScript, run with the injected helper API. |
+| `form` | form actions | Dialog configuration submitted to a custom endpoint. |
+
+Exactly one label is required: an action needs either `label` or
+`labelExpression`. If both are present, `labelExpression` wins. An action with
+neither can never render, and both `sync_schema` and `lint_code` report it.
+
+These properties are **not** supported on an action (they belong to fields or
+plain React code): `title`, `icon`, `onClick`, `type`, `name`. Use `label` for
+the text and `handler` for the behavior.
 
 Frontend visibility is convenience only. Backend checks are security and
 correctness. See the invariants in sections 5 and 6.
+
+### Static label vs label expression
+
+```javascript
+// Constant button text: plain string, never evaluated.
+{ label: "Download PDF", handler: "await api.openPdf('/pdf/invoice/' + data.id);" }
+
+// Per-row text: JavaScript expression. The value it returns must be a string,
+// so a constant string still needs its own quotes inside the expression.
+{ labelExpression: "data.status === 'draft' ? 'Issue Invoice' : null", actionExpression: "/issue" }
+```
+
+The common mistake is putting a bare string into `labelExpression`:
+`labelExpression: "Download PDF"` evaluates the identifier `Download PDF` and
+throws, hiding the button. Write `label: "Download PDF"`, or
+`labelExpression: "'Download PDF'"` if you really need an expression.
 
 ---
 

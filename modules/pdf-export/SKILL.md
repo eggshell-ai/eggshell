@@ -189,18 +189,27 @@ pdfClient.openPdf('invoice', sale.id);
 ```
 
 Add a button wherever the record is shown. With the shared resource UI, add a row
-action in the resource's `.ts` file under `frontend/src/resources/`:
+action to the resource's `actions` array (via `sync_schema`, e.g.
+`updateResource`). Row actions are declarative: they use `label` for the static
+button text and `handler` for the JavaScript that runs.
 
-```ts
-import { FilePdfOutlined } from '@ant-design/icons';
-import pdfClient from '@/api/pdfClient';
-
+```javascript
+// Passed to sync_schema (updateResource) - NOT hand-written into the .ts file.
 {
-  title: 'Invoice',
-  icon: <FilePdfOutlined />,
-  onClick: (record) => pdfClient.openPdf('invoice', record.id),
+  label: "Download Invoice",
+  handler: "await api.openPdf('/pdf/invoice/' + encodeURIComponent(String(data.id)));"
 }
 ```
+
+Inside a `handler`, the injected helpers are `data`/`record`, `api`,
+`message`, `modal`, `refresh`, `openForm`, `close`, and `values`. Use
+`api.openPdf(url)` — it attaches the bearer token and opens the blob in a new
+tab.
+
+Do not use `title`, `icon`, or `onClick` on a row action: those keys are ignored
+and the button will never appear. Do not write `labelExpression: "Download"`
+either — an expression must return a string, so constant text belongs in
+`label`.
 
 If the page is a custom view, use the same call inside an `<Button>`.
 

@@ -7,6 +7,7 @@
 use super::check::{Check, Tier};
 use super::frontend::{EslintCheck, MenuJsonCheck};
 use super::php::{AnalyticsReportsCheck, DoctrineSchemaCheck, PhpSyntaxCheck};
+use super::resources::ResourceActionsCheck;
 use super::symfony_routing::{DeprecatedRouteImportCheck, RouteRegistrationCheck};
 
 /// Every check, in execution order.
@@ -14,6 +15,7 @@ pub(crate) fn default_checks() -> Vec<Box<dyn Check>> {
     let mut checks: Vec<Box<dyn Check>> = vec![
         Box::new(DeprecatedRouteImportCheck),
         Box::new(MenuJsonCheck),
+        Box::new(ResourceActionsCheck),
         Box::new(PhpSyntaxCheck),
         Box::new(EslintCheck),
         Box::new(RouteRegistrationCheck),

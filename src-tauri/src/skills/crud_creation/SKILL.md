@@ -34,7 +34,7 @@ sync_schema({
       name: "products",
       endpoint: "/products", # Generally same as the resource name
       titleExpression: "data.sku + ' - ' + data.name", # Display the product's SKU / Name as the readable title of individual products
-      actions: [ # Optional: display a "Deactivate" button only if product is active, null hides the button automatically
+      actions: [ # Optional row actions. Each needs `label` (static text) or `labelExpression` (per-row JS)
         {
           permission: "products.edit",
           labelExpression: "data.active ? 'Deactivate' : null",

@@ -166,6 +166,10 @@ sync_schema({
             actionExpression: "data.status == 'new' ? '/contacted' : null",
             labelExpression: "data.status == 'new' ? 'Mark Contacted' : null",
             confirm: true
+          },
+          {
+            label: "Export",
+            handler: "await api.openPdf('/pdf/lead/' + data.id);"
           }
         ]
       }
@@ -208,6 +212,8 @@ call — retrying the same shape will fail identically.
 | `{ action: "updateField", resource: "x", field: "y", label: "New" }` | Stray properties are folded into `changes`, but this form is only a fallback | Prefer the explicit `changes: { label: "New" }` |
 | `{ action: "updateResource", resource: "x" }` with no `changes` | `updateResource` always needs a `changes` object | `changes: { titleExpression: "data.name" }` |
 | `{ action: "updateField", ..., changes: { fields: [...] } }` | Field editing must go through the field actions | Use `addField` / `removeField` / `moveField` |
+| Action object with `labelExpression: "Download PDF"` | The expression is evaluated as JavaScript, so a bare string throws and hides the button | Use `label: "Download PDF"` for constant text, or `labelExpression: "'Download PDF'"` |
+| Action object using `title`, `icon`, or `onClick` | Row actions are declarative; `ResourceGrid` ignores these keys and the button never renders | Use `label` for the text and `handler` for the behavior |
 | Two fields for one relationship (`sale` select + `saleId` number) | Generates two columns for the same FK | Keep one field and `removeField` the other |
 
 Operations run in order and the whole call is all-or-nothing: if operation #3
