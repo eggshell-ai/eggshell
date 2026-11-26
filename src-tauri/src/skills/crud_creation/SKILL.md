@@ -107,10 +107,12 @@ Use one of the following field types:
 | `"decimal"` | Fixed-point decimal / currency input with configurable `scale` and `precision` |
 | `"boolean"` | Boolean / checkbox input |
 | `"date"` | Date picker |
+| `"time"` | Time picker |
 | `"file"` | File upload |
 | `"select"` | Dropdown; use `options` for static choices or `resource` for dynamic choices |
 | `"tags"` | Multi-select tags, normally paired with `resource` |
 | `"table"` | Line-item grid, paired with `columns` |
+| `"foreign"` | A child line item's integer reference to its parent record. Renders as a **plain number input** — use `select` + `resource` when the user should pick from a dropdown. |
 
 ## Field Options
 Every field must have `name` and `type`.
@@ -342,6 +344,13 @@ $customer = $entityManager->getRepository(Customer::class)->find((int) $record->
 $entityManager->createQuery('... WHERE p.saleId = :saleId')
     ->setParameter('saleId', (int) $record->saleId);
 ```
+
+> **Do not convert a `select` + `resource` field to `type: "foreign"`.** The
+> `?string` column is intentional and `sync_schema` rejects the conversion. If a
+> select field's column looks "wrong" next to a line item's `?int` parent
+> reference, that is by design: the two types serve different purposes. Change
+> a field's properties (including `type`) through `changes` on `updateField`, and
+> never by hand-editing `Entity/*.php`.
 
 Never write raw SQL/DQL comparing a string FK column against an integer literal
 without a cast, and never re-type the generated `?string` property to `?int` by

@@ -135,6 +135,28 @@ pub struct SyncSchemaTool {
     parameters: Map<String, Value>,
 }
 
+/// Every field type the generator understands. `php_type` and `field_js` fall
+/// back to a string column / `field.<type>()` call for anything else, so an
+/// unknown type would otherwise reach the generated PHP/TS and only fail at
+/// lint or runtime. Reject it up front and list the supported set.
+const VALID_FIELD_TYPES: [&str; 15] = [
+    "text",
+    "textarea",
+    "email",
+    "phone",
+    "password",
+    "number",
+    "decimal",
+    "boolean",
+    "date",
+    "time",
+    "file",
+    "select",
+    "tags",
+    "table",
+    "foreign",
+];
+
 const RESERVED_COLUMN_NAMES: [&str; 15] = [
     "desc", "asc", "order", "group", "key", "index", "select", "insert", "update", "delete",
     "table", "from", "where", "by", "limit",
@@ -269,6 +291,7 @@ impl Tool for SyncSchemaTool {
         let mut schema_resources = read_schema_resources(&project);
         let mut affected: Vec<String> = Vec::new();
         let mut removed: Vec<String> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
 
         for new_resource in &full_resources {
             let mut normalized_res = new_resource.clone();
@@ -291,6 +314,7 @@ impl Tool for SyncSchemaTool {
             &operations,
             &mut affected,
             &mut removed,
+            &mut warnings,
         )?;
 
         let mut generated: Vec<Resource> = Vec::with_capacity(affected.len());
@@ -319,6 +343,8 @@ impl Tool for SyncSchemaTool {
                     )
                     .into());
                 }
+                validate_field_type(&resource, field)?;
+                validate_foreign_conversion(&resource, field)?;
                 // Validate computed expressions here, before any generated file
                 // is written or a migration is run. Otherwise a bad expression
                 // reaches `schemas.json` and only surfaces later from
@@ -369,6 +395,9 @@ impl Tool for SyncSchemaTool {
                 removed.join(", ")
             ));
         }
+        for warning in &warnings {
+            message.push_str(&format!(" Warning: {warning}"));
+        }
 
         Ok(json!({
             "success": true,
@@ -379,6 +408,7 @@ impl Tool for SyncSchemaTool {
                 "frontendResourcePaths": frontend,
                 "backendEntityPaths": backend,
                 "schemaPath": schema_path,
+                "warnings": warnings,
                 "timestamp": timestamp()
             }
         }))
@@ -562,10 +592,14 @@ fn apply_operations(
     operations: &[Value],
     affected: &mut Vec<String>,
     removed: &mut Vec<String>,
+    warnings: &mut Vec<String>,
 ) -> Result<(), String> {
     let mut working = resources.clone();
     let mut working_affected = affected.clone();
     let mut working_removed = removed.clone();
+    let mut working_warnings: Vec<String> = Vec::new();
+
+    reject_oscillating_renames(operations)?;
 
     for (position, operation) in operations.iter().enumerate() {
         let resource = operation
@@ -573,7 +607,7 @@ fn apply_operations(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let outcome = apply_operation(&mut working, operation).map_err(|error| {
+        let outcome = apply_operation_collecting(&mut working, operation, &mut working_warnings).map_err(|error| {
             // Operations run in order, so earlier ones have already been
             // applied to `working`. Nothing reached disk, but say so: a
             // partial edit silently discarded is what makes retries confusing.
@@ -607,13 +641,88 @@ fn apply_operations(
     *resources = working;
     *affected = working_affected;
     *removed = working_removed;
+    warnings.extend(working_warnings);
+    Ok(())
+}
+
+/// Rejects an operation list whose renames cancel each other out.
+///
+/// An agent stuck on a field tends to cycle `A -> B -> A` or `A -> tmp -> A`.
+/// Every individual rename succeeds, so the run looks productive while it
+/// drops and recreates the same database column repeatedly. Treat the whole
+/// list as invalid and say why.
+fn reject_oscillating_renames(operations: &[Value]) -> Result<(), String> {
+    let mut renames: Vec<(String, String, String)> = Vec::new();
+    for operation in operations {
+        let Some(object) = operation.as_object() else {
+            continue;
+        };
+        if object.get("action").and_then(Value::as_str) != Some("updateField") {
+            continue;
+        }
+        let Some(resource) = object.get("resource").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(field) = object
+            .get("field")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+        let Some(rename) = object
+            .get("rename")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case(field))
+        else {
+            continue;
+        };
+        renames.push((resource.to_string(), field.to_string(), rename.to_string()));
+    }
+
+    // A list oscillates when the same field is renamed twice (`A -> B -> A`),
+    // or when a name is both produced and consumed (`A -> B` then `B -> C`),
+    // which means the intermediate step only exists to shuffle one column
+    // around. Neither can be what the caller meant.
+    for (index, (resource, from, to)) in renames.iter().enumerate() {
+        for (other_resource, other_from, other_to) in renames.iter().skip(index + 1) {
+            let same_resource = resource.eq_ignore_ascii_case(other_resource);
+            if !same_resource {
+                continue;
+            }
+            let renamed_twice = from.eq_ignore_ascii_case(other_from);
+            let chained = to.eq_ignore_ascii_case(other_from);
+            let restored = to.eq_ignore_ascii_case(other_to);
+            if renamed_twice || chained || restored {
+                return Err(format!(
+                    "renaming field '{from}' to '{to}' (and again within the same call) has no effect \
+                     except dropping and re-adding the database column. Decide on the final field name \
+                     and send one `updateField`. To change the field's type or other properties, keep \
+                     `field` as '{from}' and put them in `changes`."
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
 /// Applies one incremental edit operation to the schema resource list.
+#[cfg(test)]
 fn apply_operation(
     resources: &mut Vec<Value>,
     operation: &Value,
+) -> Result<OperationOutcome, String> {
+    apply_operation_collecting(resources, operation, &mut Vec::new())
+}
+
+/// [`apply_operation`] variant that reports non-fatal side effects (e.g. a
+/// rename dropping a column) through `warnings`.
+fn apply_operation_collecting(
+    resources: &mut Vec<Value>,
+    operation: &Value,
+    warnings: &mut Vec<String>,
 ) -> Result<OperationOutcome, String> {
     let object = operation
         .as_object()
@@ -729,27 +838,14 @@ fn apply_operation(
                 let current = field_index(&resources[index], &name)
                     .map(|position| resources[index]["fields"][position].clone())
                     .unwrap_or(Value::Null);
-                // Suggest a property this field actually has. A blanket
-                // `"required": true` example is useless when the caller needs
-                // to replace an `sqlExpression`, which is the most common case.
-                let suggestion = match &current {
-                    Value::Object(map) => {
-                        if map.contains_key("sqlExpression") {
-                            "{ \"sqlExpression\": \"e.totalAmount - COALESCE(e.receivedAmount, 0)\" }".to_string()
-                        } else if map.contains_key("computeExpression") {
-                            "{ \"computeExpression\": \"data.a - data.b\" }".to_string()
-                        } else {
-                            "{ \"required\": true }".to_string()
-                        }
-                    }
-                    _ => "{ \"required\": true }".to_string(),
-                };
+                let suggestion = suggest_field_change(&current);
                 return Err(format!(
                     "`updateField` on field '{name}' of resource '{resource_name}': `rename` is set to '{name}', \
-                     which is the field's current name, so the operation is a no-op. To change properties, put \
-                     them in `changes` instead, for example: \
+                     which is the field's current name, so the operation is a no-op. `rename` only changes the \
+                     name. To change properties, keep `field` as '{name}' and put them in `changes`, for example: \
                      {{ \"action\": \"updateField\", \"resource\": \"{resource_name}\", \"field\": \"{name}\", \
-                     \"changes\": {suggestion} }}. `rename` is only for giving the field a different name.\n\
+                     \"changes\": {suggestion} }}. To change the field's type, put the new type in `changes` too \
+                     (e.g. \"changes\": {{ \"type\": \"number\" }}).\n\
                      Received operation: {}\nCurrent field definition: {}",
                     serde_json::to_string(operation).unwrap_or_default(),
                     serde_json::to_string(&current).unwrap_or_default()
@@ -797,7 +893,11 @@ fn apply_operation(
             apply_changes(field, &changes);
             normalize_field_json(field);
             if rename.is_some() {
-                field.insert("name".to_string(), Value::String(new_name));
+                field.insert("name".to_string(), Value::String(new_name.clone()));
+                warnings.push(format!(
+                    "Renamed field '{name}' to '{new_name}' on resource '{resource_name}': the old column \
+                     was dropped and a new one created, so existing values in it were not migrated."
+                ));
             }
         }
         "removeField" => {
@@ -1419,6 +1519,81 @@ fn validate_actions(resource: &Resource, raw_actions: Option<&Value>) -> Result<
     }
 
     Ok(())
+}
+
+/// Picks a `changes` example that would actually change something on `field`.
+///
+/// A blanket `{ "required": true }` is useless when the field is already
+/// required — the model reads it, sees nothing to do, and retries the same
+/// no-op `rename`. Prefer a broken expression to replace, then a flag the field
+/// does not already have switched on.
+fn suggest_field_change(field: &Value) -> String {
+    let Some(map) = field.as_object() else {
+        return "{ \"label\": \"New Label\" }".to_string();
+    };
+    if map.contains_key("sqlExpression") {
+        return "{ \"sqlExpression\": \"e.totalAmount - COALESCE(e.receivedAmount, 0)\" }".to_string();
+    }
+    if map.contains_key("computeExpression") {
+        return "{ \"computeExpression\": \"data.a - data.b\" }".to_string();
+    }
+    // First display flag the field does not already have switched on.
+    for (key, example) in [
+        ("filterable", "{ \"filterable\": true }"),
+        ("searchable", "{ \"searchable\": true }"),
+        ("sortable", "{ \"sortable\": true }"),
+    ] {
+        if !matches!(map.get(key), Some(Value::Bool(true))) {
+            return example.to_string();
+        }
+    }
+    "{ \"label\": \"New Label\" }".to_string()
+}
+
+/// Rejects a field whose `type` is not one the generator understands.
+fn validate_field_type(resource: &Resource, field: &Field) -> Result<(), String> {
+    if VALID_FIELD_TYPES.contains(&field.field_type.as_str()) {
+        return Ok(());
+    }
+    Err(format!(
+        "Field '{}' on resource '{}' has unknown type '{}'. Supported types: {}.",
+        field.name,
+        resource.name,
+        field.field_type,
+        VALID_FIELD_TYPES.join(", ")
+    ))
+}
+
+/// Rejects converting a reference field to the `foreign` type.
+///
+/// `select` + `resource` is the user-facing dropdown and intentionally stores a
+/// `?string` column. `foreign` is the bare integer parent-reference used by
+/// line items, and it renders as a plain number input (there is no `foreign`
+/// case in `FormField.tsx`). Swapping one for the other silently degrades the
+/// form and drops + recreates the column, so point at the supported option
+/// instead of accepting the edit.
+fn validate_foreign_conversion(resource: &Resource, field: &Field) -> Result<(), String> {
+    if field.field_type != "foreign" {
+        return Ok(());
+    }
+    let Some(reference) = field
+        .resource
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    Err(format!(
+        "Field '{}' on resource '{}' cannot be `type: \"foreign\"` because it also has a `resource` \
+         ({reference}). Use `type: \"select\"` with `resource` for a dropdown bound to another \
+         resource — its `?string` column is intentional, so cast with `(int)` in backend code when \
+         you need the referenced id. `type: \"foreign\"` is only for a child line's integer parent \
+         reference and renders as a plain number input. Never hand-edit the generated entity to \
+         change the column type; it is regenerated on every sync.",
+        field.name, resource.name
+    ))
 }
 
 /// Rejects computed definitions that cannot work: an `sqlExpression` without
@@ -2592,7 +2767,11 @@ mod tests {
         // A same-name rename gets the dedicated, self-correcting message.
         assert!(error.contains("no-op"), "{error}");
         assert!(error.contains("changes"), "{error}");
-        assert!(error.contains("\"required\": true"), "{error}");
+        // The suggestion must be a change the field does not already have: the
+        // old `{"required": true}` example was a no-op for this field and the
+        // model ignored it, then kept renaming.
+        assert!(!error.contains("\"required\": true"), "{error}");
+        assert!(error.contains("To change the field's type"), "{error}");
         assert!(error.contains("Received operation"), "{error}");
         assert!(error.contains("Current field definition"), "{error}");
 
@@ -2719,6 +2898,7 @@ mod tests {
             ],
             &mut affected,
             &mut removed,
+            &mut Vec::new(),
         )
         .unwrap_err();
 
@@ -2747,6 +2927,7 @@ mod tests {
             })],
             &mut affected,
             &mut removed,
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -2755,4 +2936,161 @@ mod tests {
         assert!(removed.is_empty());
     }
 
+    fn select_field_schema() -> Vec<Value> {
+        vec![json!({
+            "name": "payments",
+            "endpoint": "/payments",
+            "fields": [
+                {
+                    "name": "saleId",
+                    "type": "select",
+                    "label": "Sale",
+                    "resource": "sales",
+                    "required": true
+                }
+            ]
+        })]
+    }
+
+    #[test]
+    fn rejects_unknown_field_type() {
+        let resource: Resource = serde_json::from_value(json!({
+            "name": "products",
+            "endpoint": "/products",
+            "fields": [{ "name": "price", "type": "currency" }]
+        }))
+        .unwrap();
+        let error = validate_field_type(&resource, &resource.fields[0]).unwrap_err();
+        assert!(error.contains("unknown type 'currency'"), "{error}");
+        assert!(error.contains("Supported types"), "{error}");
+        assert!(error.contains("decimal"), "{error}");
+    }
+
+    #[test]
+    fn rejects_select_to_foreign_conversion() {
+        let resource: Resource = serde_json::from_value(json!({
+            "name": "payments",
+            "endpoint": "/payments",
+            "fields": [{
+                "name": "saleId",
+                "type": "foreign",
+                "resource": "sales"
+            }]
+        }))
+        .unwrap();
+        let error = validate_foreign_conversion(&resource, &resource.fields[0]).unwrap_err();
+        assert!(error.contains("cannot be `type: \"foreign\"`"), "{error}");
+        assert!(error.contains("Use `type: \"select\"`"), "{error}");
+        assert!(error.contains("plain number input"), "{error}");
+    }
+
+    #[test]
+    fn allows_foreign_field_without_resource() {
+        let mut resources = schema_fixture();
+        apply_operation(
+            &mut resources,
+            &json!({
+                "action": "addField",
+                "resource": "products",
+                "field": { "name": "categoryId", "type": "foreign" }
+            }),
+        )
+        .unwrap();
+        assert_eq!(field_names(&resources), ["name", "price", "categoryId"]);
+    }
+
+    #[test]
+    fn no_op_rename_suggestion_does_not_repeat_existing_value() {
+        let mut resources = select_field_schema();
+        let error = apply_operation(
+            &mut resources,
+            &json!({
+                "action": "updateField",
+                "resource": "payments",
+                "field": "saleId",
+                "rename": "saleId"
+            }),
+        )
+        .unwrap_err();
+        // The incident's suggestion was `{"required": true}`, which the field
+        // already had, so the model discarded it and kept renaming.
+        assert!(!error.contains("\"required\": true"), "{error}");
+        assert!(error.contains("To change the field's type"), "{error}");
+        assert!(error.contains("no-op"), "{error}");
+    }
+
+    #[test]
+    fn rename_reports_dropped_column_warning() {
+        let mut resources = schema_fixture();
+        let mut warnings = Vec::new();
+        apply_operation_collecting(
+            &mut resources,
+            &json!({
+                "action": "updateField",
+                "resource": "products",
+                "field": "price",
+                "rename": "unitPrice"
+            }),
+            &mut warnings,
+        )
+        .unwrap();
+        assert_eq!(field_names(&resources), ["name", "unitPrice"]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("not migrated"), "{warnings:?}");
+    }
+
+    #[test]
+    fn rejects_rename_round_trip_in_one_call() {
+        let mut resources = schema_fixture();
+        let error = apply_operations(
+            &mut resources,
+            &[
+                json!({
+                    "action": "updateField",
+                    "resource": "products",
+                    "field": "price",
+                    "rename": "sale_id_tmp"
+                }),
+                json!({
+                    "action": "updateField",
+                    "resource": "products",
+                    "field": "sale_id_tmp",
+                    "rename": "price"
+                }),
+            ],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.contains("has no effect"), "{error}");
+        assert!(error.contains("dropping and re-adding"), "{error}");
+    }
+
+    #[test]
+    fn allows_unrelated_renames_in_one_call() {
+        let mut resources = schema_fixture();
+        apply_operations(
+            &mut resources,
+            &[
+                json!({
+                    "action": "updateField",
+                    "resource": "products",
+                    "field": "name",
+                    "rename": "title"
+                }),
+                json!({
+                    "action": "updateField",
+                    "resource": "products",
+                    "field": "price",
+                    "rename": "unitPrice"
+                }),
+            ],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(field_names(&resources), ["title", "unitPrice"]);
+    }
 }

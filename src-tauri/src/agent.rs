@@ -11,6 +11,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_MAX_TURNS: u32 = 10;
 
+/// How many times `sync_schema` may rename a field on the same resource within
+/// one run before the run is treated as stalled.
+///
+/// A rename drops and recreates a database column, so model-driven rename
+/// churn is never productive: if the name were already known, one call would
+/// have been enough. The sales-system incident needed three renames to be
+/// recognised as a loop. The threshold leaves room for one deliberate rename
+/// followed by a correction.
+const MAX_SCHEMA_RENAMES_PER_RESOURCE: u32 = 3;
+
 /// A file the user attached to a message. Only its name travels into the
 /// prompt; the contents are deliberately never sent to the upstream provider.
 #[derive(Debug, Clone)]
@@ -124,6 +134,13 @@ impl AgentService {
         // Tracks a failing call so a byte-identical retry can be intercepted
         // instead of being executed again. See `fingerprint_tool_call`.
         let mut failed_call: Option<(String, u32)> = None;
+        // Counts mutating tool calls per "target" (tool + resource + field), so
+        // a run that keeps editing the same thing with slightly different
+        // arguments (e.g. renaming a field A -> B -> A) is stopped. Each such
+        // call succeeds, so `failed_call` never fires. See
+        // `mutation_target_key`.
+        let mut mutation_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         let mut stalled = false;
         let cancel_token = options.cancellation_token.clone();
 
@@ -275,7 +292,7 @@ impl AgentService {
                 if repeat_count > 0 {
                     let payload = json!({
                         "success": false,
-                        "error": "This is an identical repeat of a tool call that already failed. It cannot succeed and was not executed again. Change the arguments before retrying - for `sync_schema` that usually means putting the new properties in `changes` instead of `rename`.",
+                        "error": "This is an identical repeat of a tool call that already failed. It cannot succeed and was not executed again. Change the arguments before retrying - for `sync_schema` that sometimes means putting the new properties in `changes` or `changes.type` instead of `rename`.",
                         "repeatedCall": { "name": name, "arguments": tool_args },
                         "attempt": repeat_count + 1,
                     });
@@ -292,6 +309,28 @@ impl AgentService {
                     messages.push(tool_message(call_id, name, tool_args, payload));
                     failed_call = Some((fingerprint, repeat_count + 1));
                     continue;
+                }
+
+                // Guard against oscillation: repeated edits to the same field
+                // whose arguments only differ in `rename` all succeed, so the
+                // identical-call guard above never fires. The sales-system
+                // incident renamed saleId -> saleRef -> saleId -> sale_id_tmp
+                // across four turns and would have continued.
+                if let Some(key) = schema_rename_target(name, &tool_args) {
+                    let count = mutation_counts.entry(key).or_insert(0);
+                    *count += 1;
+                    if *count > MAX_SCHEMA_RENAMES_PER_RESOURCE {
+                        self.logger.warning(
+                            format!(
+                                "agent stalled: {name} renamed a field on the same resource {} times",
+                                *count
+                            ),
+                            true,
+                        );
+                        log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_repeat", "toolName": name, "attempts": *count, "stalled": true }));
+                        stalled = true;
+                        break;
+                    }
                 }
 
                 self.logger.info(
@@ -544,6 +583,45 @@ fn fingerprint_tool_call(name: &str, args: &Value) -> String {
     format!("{name}:{}", serde_json::to_string(args).unwrap_or_default())
 }
 
+/// Returns a counter key when `name`/`args` describe a schema rename, so the
+/// caller can count renames per resource across the run.
+///
+/// Only destructive field renames are counted, not ordinary edits: a run may
+/// legitimately touch one field many times (labels, flags, then a type), but
+/// renaming the same resource's fields over and over means the model is
+/// thrashing. The key is `sync_schema:<resource>`.
+fn schema_rename_target(name: &str, args: &Value) -> Option<String> {
+    if name != "sync_schema" {
+        return None;
+    }
+    let operations = args.get("operations")?.as_array()?;
+    let mut resources: Vec<String> = Vec::new();
+    for operation in operations {
+        let object = operation.as_object()?;
+        if object.get("action").and_then(Value::as_str) != Some("updateField") {
+            continue;
+        }
+        let Some(field) = object.get("field").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(rename) = object.get("rename").and_then(Value::as_str) else {
+            continue;
+        };
+        // A `rename` equal to the current name is rejected by the tool, so it
+        // does not count as churn.
+        if rename.trim().eq_ignore_ascii_case(field.trim()) || rename.trim().is_empty() {
+            continue;
+        }
+        if let Some(resource) = object.get("resource").and_then(Value::as_str) {
+            resources.push(resource.to_ascii_lowercase());
+        }
+    }
+    resources.sort();
+    resources.dedup();
+    // Return the first renamed resource; one call normally targets one resource.
+    resources.into_iter().next().map(|resource| format!("sync_schema:{resource}"))
+}
+
 fn tool_message(id: Option<String>, name: &str, args: Value, result: Value) -> LLMMessage {
     LLMMessage {
         role: LLMMessageRole::Tool,
@@ -782,6 +860,163 @@ mod tests {
             log_conversation: false,
             ..Default::default()
         }
+    }
+
+    /// Emits a `sync_schema` rename whose target changes on every turn, matching
+    /// the sales-system incident (`saleId` -> `saleRef` -> `saleId` -> `sale_id_tmp`).
+    struct RenameLoopLlm {
+        names: Vec<String>,
+    }
+
+    #[async_trait]
+    impl LLMService for RenameLoopLlm {
+        async fn execute_prompt(
+            &self,
+            _prompt: &str,
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<String> {
+            Ok(String::new())
+        }
+
+        async fn execute_prompt_with_tools(
+            &self,
+            messages: &[LLMMessage],
+            _tools: &[Box<dyn Tool>],
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<Value> {
+            // One rename per turn; the rename target cycles through `self.names`.
+            let turn = messages
+                .iter()
+                .filter(|message| matches!(message.role, LLMMessageRole::Tool))
+                .count();
+            let target = self
+                .names
+                .get(turn % self.names.len())
+                .cloned()
+                .unwrap_or_else(|| "saleId".to_string());
+            Ok(json!({
+                "content": "",
+                "tool_calls": [{
+                    "id": format!("call-{turn}"),
+                    "type": "function",
+                    "function": {
+                        "name": "sync_schema",
+                        "arguments": {
+                            "projectPath": "/tmp/project",
+                            "operations": [{
+                                "action": "updateField",
+                                "resource": "payments",
+                                "field": "saleId",
+                                "rename": target
+                            }]
+                        }
+                    }
+                }]
+            }))
+        }
+    }
+
+    /// Succeeds no matter what, so only the oscillation guard can stop the run.
+    struct AlwaysOkTool {
+        parameters: Map<String, Value>,
+    }
+
+    #[async_trait]
+    impl Tool for AlwaysOkTool {
+        fn name(&self) -> &str {
+            "sync_schema"
+        }
+        fn description(&self) -> &str {
+            "Pretends to edit the schema."
+        }
+        fn parameters(&self) -> &Map<String, Value> {
+            &self.parameters
+        }
+        async fn execute(&self, _args: Value) -> LlmResult<Value> {
+            Ok(json!({ "success": true, "message": "Schema sync completed successfully." }))
+        }
+    }
+
+    /// The incident's shape: every rename succeeds, so the identical-call guard
+    /// never fires and only the per-resource rename counter can stop the loop.
+    #[tokio::test]
+    async fn repeated_renames_on_one_resource_stop_the_run() {
+        let llm = Arc::new(RenameLoopLlm {
+            names: vec![
+                "saleRef".to_string(),
+                "saleId_back".to_string(),
+                "sale_id_tmp".to_string(),
+                "sale_id_tmp2".to_string(),
+                "sale_id_tmp3".to_string(),
+                "sale_id_tmp4".to_string(),
+            ],
+        });
+        let agent = AgentService::with_skills(llm, Vec::new());
+
+        let result = agent
+            .run_agent(
+                vec![
+                    system_message("system"),
+                    LLMMessage {
+                        role: LLMMessageRole::User,
+                        content: "change the type".to_string(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        tool_calls: None,
+                    },
+                ],
+                vec![Box::new(AlwaysOkTool {
+                    parameters: Map::new(),
+                })],
+                AgentOptions {
+                    max_turns: Some(30),
+                    ..agent_options()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(result.stalled, "expected the run to be marked stalled");
+        assert!(!result.hit_max_turns, "the guard must fire before the budget");
+    }
+
+    #[test]
+    fn schema_rename_target_only_counts_real_renames() {
+        let rename = json!({
+            "operations": [{
+                "action": "updateField",
+                "resource": "payments",
+                "field": "saleId",
+                "rename": "saleRef"
+            }]
+        });
+        assert_eq!(
+            schema_rename_target("sync_schema", &rename).as_deref(),
+            Some("sync_schema:payments")
+        );
+
+        // A no-op rename is rejected by the tool, so it must not count as churn.
+        let no_op = json!({
+            "operations": [{
+                "action": "updateField",
+                "resource": "payments",
+                "field": "saleId",
+                "rename": "saleId"
+            }]
+        });
+        assert_eq!(schema_rename_target("sync_schema", &no_op), None);
+
+        // A plain property edit is not churn either.
+        let edit = json!({
+            "operations": [{
+                "action": "updateField",
+                "resource": "payments",
+                "field": "saleId",
+                "changes": { "required": true }
+            }]
+        });
+        assert_eq!(schema_rename_target("sync_schema", &edit), None);
     }
 
     #[test]

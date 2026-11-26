@@ -66,6 +66,33 @@ Renaming a field drops the old column and creates a new one, so existing data in
 that column is not migrated. Prefer renaming only during development, or add the
 new field and copy/backfill data with an explicit migration.
 
+## Changing a field's type
+
+A type change is a property change, so it goes in `changes` — keep `field` as the
+current name:
+
+```javascript
+sync_schema({
+  operations: [
+    {
+      action: "updateField",
+      resource: "products",
+      field: "price",
+      changes: { type: "number" }
+    }
+  ]
+})
+```
+
+`rename` is **not** a type change; it only renames and would drop the column.
+When a field needs new properties *and* a new type, do both in one call with
+`field` = current name, `changes` = properties, and `rename` = the new name.
+
+> `type: "foreign"` cannot be paired with `resource`. `select` + `resource` is
+> the dropdown and stores `?string` on purpose; `foreign` is a line item's
+> integer parent reference and renders as a plain number input. Cast with
+> `(int)` in backend code instead of converting the field.
+
 ## Examples
 
 Add a field to an existing resource:
