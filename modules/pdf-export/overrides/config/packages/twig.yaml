@@ -1,0 +1,8 @@
+# Enables Twig, which the PDF template renderer builds its own Environment on.
+#
+# `PdfTemplate\TemplatesPdf` constructs a `Twig\Environment` with a
+# `FilesystemLoader` rooted at the template directory, so the bundle only needs
+# to be enabled — no `twig.paths` entry is required.
+twig:
+    default_path: '%kernel.project_dir%/templates'
+    form_themes: []

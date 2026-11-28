@@ -34,8 +34,11 @@ impl Default for MaxControl {
     }
 }
 
-/// Runs Phase 1 of Max mode: break the user's requirement into a simple,
-/// business-oriented task list, persist it, and return the updated session.
+/// Runs Phase 1 of Max mode: break the user's requirement into a sectioned,
+/// plan following the bundled `planning` skill (one `##` section per buildable
+/// chunk; each section describes its artifact — entity, dashboard widgets,
+/// report filters/columns, or workflow actions — plus build steps), persist
+/// it, and return the updated session.
 ///
 /// This does not execute any task. The frontend renders the task list and the
 /// user starts Phase 2 (execution) explicitly.
@@ -81,7 +84,12 @@ pub async fn run_max_breakdown(
         LLMMessage {
             role: LLMMessageRole::User,
             content: format!(
-                "Break the following requirement into a simple, business-oriented task list.\n\n{}",
+                "Break the following requirement into buildable sections. Your system prompt \
+includes the Planning Skill: follow it so entities are defined with name and fields (child \
+line-item entities in the same section as their parent), dashboards name the actual KPI cards, \
+charts or tables, reports name their filters and columns, and workflows are defined as \
+concrete actions. Each section defines the end result, never the build steps. Write the plan \
+once, in Markdown only.\n\n{}",
                 user_message
             ),
             tool_call_id: None,
@@ -92,10 +100,29 @@ pub async fn run_max_breakdown(
     ];
 
     let event_sink_clone = Arc::clone(&event_sink);
+    let on_event: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |event: Value| {
+        event_sink_clone(json!({
+            "projectId": project_id,
+            "sessionId": session_id,
+            "event": event,
+            "maxStage": "breakdown"
+        }));
+    });
+
+    // Max mode is unattended: `ask_user` still surfaces the question so it can
+    // be answered later, but it never blocks the breakdown.
+    let mut planner_tools = app.tools();
+    planner_tools.push(Box::new(crate::tools::AskUserTool::new(
+        Some(crate::ask::AskBroker::new(Arc::clone(&on_event))),
+        project_id,
+        session_id,
+        false,
+    )));
+
     let result = agent
         .run_agent(
             planner_messages,
-            app.tools(),
+            planner_tools,
             AgentOptions {
                 project_path: Some(project_path.clone()),
                 artifacts: artifacts.clone(),
@@ -104,15 +131,8 @@ pub async fn run_max_breakdown(
                 // business-oriented plan, so no catalogue is appended to its
                 // system prompt.
                 skills: Some(Vec::new()),
-                on_event: Some(Arc::new(move |event| {
-                    event_sink_clone(json!({
-                        "projectId": project_id,
-                        "sessionId": session_id,
-                        "event": event,
-                        "maxStage": "breakdown"
-                    }));
-                })),
-                max_turns: Some(5),
+                on_event: Some(on_event),
+                max_turns: Some(8),
                 ..Default::default()
             },
         )
@@ -516,8 +536,11 @@ async fn persist_progress(
 /// Builds the per-task prompt for an implementer agent.
 ///
 /// Each agent gets the overall goal, the full ordered task list (so it knows
-/// where its chunk fits), and its single task. It is told to re-read the
-/// relevant skills and schema before implementing.
+/// where its chunk fits), and its single task section verbatim. That section
+/// describes the business outcome and requirements the planner chose, but the
+/// implementer decides the concrete implementation — it loads the relevant
+/// skill (e.g. `crud_creation`) and works out the schema, screen code and
+/// wiring itself rather than mirroring field lists from the plan.
 fn task_agent_prompt(overall_goal: &str, all_titles: &[String], task: &MaxTask) -> String {
     let task_list = all_titles
         .iter()
@@ -539,9 +562,15 @@ fn task_agent_prompt(overall_goal: &str, all_titles: &[String], task: &MaxTask) 
 === YOUR TASK ===\n{}\n{}\n\n\
 === INSTRUCTIONS ===\n\
 - Implement ONLY your task above. Do not start or scaffold the other tasks.\n\
+- Your task section describes what to build in business terms — the entity, screens, widgets, \
+filters or actions it names. It is a brief, not a spec to copy verbatim: decide the concrete \
+schema, code and wiring yourself. Load the `crud_creation` skill and follow its standard flow \
+(workspace and steps), and `analytics_and_reporting` for dashboards or reports.\n\
 - Before writing any code, inspect the existing project: read `frontend/src/menu-items/menu.json` and use `read_schema` to see the current database schema, so what you build matches what already exists.\n\
 - Keep your change small and self-contained: this task should be one screen, CRUD, report, or dashboard.\n\
-- Run `lint_code` after making changes to verify there are no syntax, lint, or schema errors.\n\
+- Run `lint_code` after making changes to verify there are no syntax, lint, or routing errors. \
+The backend checks confirm every controller you create is actually registered by the router; \
+if one is flagged, fix the `#[Route]` attribute or its import before moving on.\n\
 - When done, briefly summarise what you created and any follow-up the other task agents will need.",
         overall_goal, task_list, task.title, task.description
     )
@@ -549,15 +578,88 @@ fn task_agent_prompt(overall_goal: &str, all_titles: &[String], task: &MaxTask) 
 
 /// Parses the Max planner's response into `(title, description)` pairs.
 ///
-/// Prefers the fenced JSON array the planner is instructed to emit; falls back
-/// to the numbered Markdown list when the JSON is missing or malformed.
+/// The canonical format is the sectioned Markdown plan the planner is told to
+/// emit: one `## N. Title` heading per task, with everything up to the next
+/// `##` heading becoming that task's description. The `## Overview` preamble
+/// and any empty sections are skipped.
+///
+/// The legacy fenced-JSON and numbered-line parsers are kept as defensive
+/// fallbacks for older sessions and for models that ignore the format, but the
+/// planner no longer emits them.
 pub fn parse_tasks(content: &str) -> Vec<(String, String)> {
+    let sections = parse_tasks_from_sections(content);
+    if !sections.is_empty() {
+        return sections;
+    }
     if let Some(tasks) = parse_tasks_from_json(content) {
         if !tasks.is_empty() {
             return tasks;
         }
     }
     parse_tasks_from_lines(content)
+}
+
+/// Extracts tasks from `##` Markdown sections.
+///
+/// A section with no body is ignored so stray headings do not become empty
+/// tasks, and container headings (`## Overview`, `## Tasks`, ...) are skipped
+/// so a preamble or a legacy numbered list is not mistaken for one task.
+fn parse_tasks_from_sections(content: &str) -> Vec<(String, String)> {
+    let mut tasks: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, Vec<&str>)> = None;
+
+    for line in content.lines() {
+        // `### ` does not match: the character after `##` is `#`, not a space.
+        if let Some(heading) = line.strip_prefix("## ") {
+            if let Some((title, body)) = current.take() {
+                push_section(&mut tasks, title, &body);
+            }
+            let title = clean_section_title(heading);
+            current = if title.is_empty() || is_container_heading(&title) {
+                None
+            } else {
+                Some((title, Vec::new()))
+            };
+            continue;
+        }
+        if let Some((_, body)) = current.as_mut() {
+            body.push(line);
+        }
+    }
+
+    if let Some((title, body)) = current.take() {
+        push_section(&mut tasks, title, &body);
+    }
+
+    tasks
+}
+
+/// Headings that introduce the document or a list rather than one buildable
+/// section. Their bodies are intentionally dropped.
+fn is_container_heading(title: &str) -> bool {
+    matches!(
+        title.to_ascii_lowercase().as_str(),
+        "overview" | "summary" | "tasks" | "task list" | "plan" | "plan overview"
+    )
+}
+
+/// Strips a leading `N.` / `N)` marker and surrounding whitespace from a
+/// section heading, leaving the human-readable title.
+fn clean_section_title(heading: &str) -> String {
+    let trimmed = heading.trim();
+    match strip_numbered_prefix(trimmed) {
+        Some(rest) => rest.trim().trim_start_matches(['*', '-', ' ']).trim().to_string(),
+        None => trimmed.trim_matches('*').trim().to_string(),
+    }
+}
+
+/// Records a section when it has a body, preserving the body's Markdown
+/// structure (sub-headings and bullets) as the task description.
+fn push_section(tasks: &mut Vec<(String, String)>, title: String, body: &[&str]) {
+    let description = body.join("\n").trim().to_string();
+    if !description.is_empty() {
+        tasks.push((title, description));
+    }
 }
 
 /// Extracts tasks from the first fenced ```json block that parses to an array
@@ -684,6 +786,100 @@ fn max_log_dir(app_handle: Option<&AppHandle>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_sectioned_markdown_plan() {
+        let content = r#"## Overview
+Small CRM.
+
+## 1. Customer Management
+Give the user a place to record and manage customers.
+
+### Entity & Fields
+Customers — customers
+- name (text, required)
+- phone (phone)
+
+### Screen & Menu
+- Route `/customers`, sidebar `CRM > Customers`
+
+## 2. Sales Management
+Record sales with product line items against customers.
+
+### Entity & Fields
+Sales — sales
+- customerId (select, required) → customers
+- saleDate (date, required)
+- totalAmount (decimal, required) — computed as the sum of the items' subtotals
+- status (select: pending / partially_paid / paid, required)
+- items (table) → sale_items, mapped on saleId
+
+Sale Items — sale_items
+- saleId (select, required) → sales
+- productId (select, required) → products
+- quantity (number, required, min 1)
+- unitPrice (decimal, required) — auto-lookup from the product's price
+- subtotal (decimal, required) — computed: quantity × unitPrice
+
+### Screen & Menu
+- Route `/sales`, sidebar `CRM > Sales`
+
+## 3. Sales Dashboard
+Show sales activity with KPI cards and a chart.
+
+### Dashboard Widgets
+- KPI card "Total sales" — sum of totalAmount (aggregator sales/count)
+- Line chart of monthly sales — xAxis = month, series = sum of totalAmount (aggregator sales/monthly)
+
+## 4. Payments workflow
+Let the user receive payments against a sale.
+
+### Entity & Fields
+Payments — payments
+- saleId (select, required) → sales
+- method (select: cash / bank / card_transfer, required)
+- amount (decimal, required)
+- date (date, required)
+
+### Actions
+- "Receive Payment" row button on each sale; popup selects the method (cash / bank / card transfer), enters the amount and adds it. Amount must not exceed the sale's remaining amount.
+"#;
+        let tasks = parse_tasks(content);
+        assert_eq!(tasks.len(), 4);
+        assert_eq!(tasks[0].0, "Customer Management");
+        assert!(tasks[0].1.contains("### Entity & Fields"));
+        assert!(tasks[0].1.contains("- name (text, required)"));
+        assert!(!tasks[0].1.contains("Sales Management"));
+        assert_eq!(tasks[1].0, "Sales Management");
+        assert!(tasks[1].1.contains("Sale Items — sale_items"));
+        assert!(tasks[1]
+            .1
+            .contains("- subtotal (decimal, required) — computed: quantity × unitPrice"));
+        assert_eq!(tasks[2].0, "Sales Dashboard");
+        assert!(tasks[2].1.contains("KPI card"));
+        assert_eq!(tasks[3].0, "Payments workflow");
+        assert!(tasks[3].1.contains("### Actions"));
+        // Sections describe outcomes, not build steps.
+        assert!(!tasks.iter().any(|(_, body)| body.contains("Build Steps")));
+        assert!(!tasks.iter().any(|(_, body)| body.contains("sync_schema")));
+    }
+
+    #[test]
+    fn section_parser_skips_overview_and_empty_sections() {
+        let content = "\
+## Overview
+Just prose, not a task.
+
+## Empty Section
+
+## 2) Real Task
+Body here.
+";
+        let tasks = parse_tasks(content);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].0, "Real Task");
+        assert_eq!(tasks[0].1, "Body here.");
+    }
 
     #[test]
     fn parses_fenced_json_tasks() {

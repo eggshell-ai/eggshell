@@ -3,7 +3,7 @@ use crate::llm::{
     default_skills, AdminPanelApp, AgentArtifact, AgentOptions, AgentService, App, LLMMessage,
     LLMMessageRole, QaApp, Tool,
 };
-use crate::tools::{LoadSkillTool, ReadFileTool, ReadSchemaTool};
+use crate::tools::{ListDirectoryTool, LoadSkillTool, ReadFileTool, ReadSchemaTool};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,6 +65,7 @@ Specific fixes for bugs, missing routes, or broken forms identified by QA.
 fn planner_tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(LoadSkillTool::new(default_skills())),
+        Box::new(ListDirectoryTool::new()),
         Box::new(ReadFileTool::new()),
         Box::new(ReadSchemaTool::new()),
     ]

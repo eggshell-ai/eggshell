@@ -35,6 +35,7 @@ reference is deliberately small and focused so you load only what you need.
 | How does Eggshell's agent **skill** system work end to end? | [`references/skill-system.md`](./references/skill-system.md) |
 | What **tools** does the agent have, and what does each do? | [`references/tools.md`](./references/tools.md) |
 | How does the desktop **Vite/React** shell talk to Rust? | [`references/desktop-frontend.md`](./references/desktop-frontend.md) |
+| How do the **agent modes** work — Plan, QA, Iterate, Max? Where do prompts live? | [`references/planning-modes.md`](./references/planning-modes.md) |
 | What is in the **project templates** (Symfony + Next.js)? | [`references/templates.md`](./references/templates.md) |
 | How does the **resource/CRUD** system and `sync_schema` work? | [`references/resource-system.md`](./references/resource-system.md) |
 | How do I build, run, and lint things? | [`references/build-and-run.md`](./references/build-and-run.md) |
@@ -77,6 +78,7 @@ graph TD
 | Add or change a tool | `src-tauri/src/tools/` (+ register in `tools/mod.rs`) |
 | Add or change a runtime skill | create `src-tauri/src/skills/<name>/SKILL.md` with frontmatter — no Rust wiring needed |
 | Change an agent mode's system prompt or tools | `src-tauri/src/apps/` (`admin_panel.rs`, `planning.rs`, `qa.rs`, `max_planner.rs`) |
+| Understand Plan vs Iterate vs Max modes | [`references/planning-modes.md`](./references/planning-modes.md) |
 | Opt a mode out of the skills catalogue | pass `skills: Some(Vec::new())` in `AgentOptions` (see `max.rs::run_max_breakdown`) |
 | Change the desktop UI | `src/App.tsx`, `src/Chat.tsx` |
 | Change generated frontend | `templates/admin-panel/` |

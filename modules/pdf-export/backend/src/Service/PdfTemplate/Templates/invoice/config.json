@@ -1,0 +1,44 @@
+{
+    "name": "invoice",
+    "dir": "invoice",
+    "description": "Standard sales invoice: company header, customer info, line items, taxes and totals.",
+    "twig": { "strict_variables": true },
+    "mpdf": {
+        "format": "A4",
+        "orientation": "P",
+        "margin_left": 12,
+        "margin_right": 12,
+        "margin_top": 14,
+        "margin_bottom": 14,
+        "margin_header": 8,
+        "margin_footer": 8,
+        "font": "dejavusans"
+    },
+    "inputs": [
+        { "name": "invoice", "class": "App\\Service\\PdfTemplate\\Model\\InvoiceModel" }
+    ],
+    "samples": {
+        "invoice": {
+            "invNo": "INV-2026-0001",
+            "date": "2026-11-13",
+            "company": {
+                "name": "Sample Company",
+                "address": "123 Sample Street, Sample City",
+                "phone": "+15550001000",
+                "email": "billing@sample.com",
+                "taxNumber": "SAMPLE-TAX-0000"
+            },
+            "customerName": "Sample Customer",
+            "customerPhone": "+15550002000",
+            "customerEmail": "customer@sample.com",
+            "items": [
+                { "name": "Sample item one", "quantity": 2, "unitPrice": 250.0, "total": 500.0 },
+                { "name": "Sample item two", "quantity": 1, "unitPrice": 1200.0, "total": 1200.0 }
+            ],
+            "taxes": [
+                { "name": "VAT", "rate": 10, "amount": 170.0 }
+            ],
+            "total": 1870.0
+        }
+    }
+}

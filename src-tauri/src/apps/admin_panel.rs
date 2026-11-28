@@ -1,7 +1,7 @@
 use crate::llm::{default_skills, project_shells, App, Shell, Tool};
 use crate::tools::{
-    LintCodeTool, LoadSkillTool, ManageUserTool, MoveFileTool, PatchFileTool, ReadFileTool,
-    ReadSchemaTool, SyncSchemaTool, WriteFileTool,
+    EnableModuleTool, LintCodeTool, ListDirectoryTool, LoadSkillTool, ManageUserTool, MoveFileTool,
+    PatchFileTool, ReadFileTool, ReadSchemaTool, SyncSchemaTool, WriteFileTool,
 };
 
 /// The application definition used for new projects.
@@ -18,6 +18,7 @@ impl App for AdminPanelApp {
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
             Box::new(LoadSkillTool::new(default_skills())),
+            Box::new(ListDirectoryTool::new()),
             Box::new(ReadFileTool::new()),
             Box::new(WriteFileTool::new()),
             Box::new(PatchFileTool::new()),
@@ -26,11 +27,12 @@ impl App for AdminPanelApp {
             Box::new(ReadSchemaTool::new()),
             Box::new(LintCodeTool::new()),
             Box::new(ManageUserTool::new()),
+            Box::new(EnableModuleTool::new()),
         ]
     }
 
     fn system_prompt(&self) -> String {
-        "You are a development agent with access to a variety of tools to build powerful admin-panel applications.
+        let mut prompt = String::from("You are a development agent with access to a variety of tools to build powerful admin-panel applications.
 You can only build standard admin-panel web applications consisting of dashboards, reports, forms and a sidebar.
 If the user asks for something else, politely explain the limitations and suggest building an admin panel app, or checking
 back later to see if an update adds it.
@@ -45,8 +47,13 @@ provide instructions.
 You have access to the `lint_code` tool to lint and detect syntax or lint errors in the frontend (JS/JSX/TS/TSX and `menu-items/menu.json`) and backend (PHP) code.
 Always run `lint_code` after making changes to verify everything is valid and there are no syntax, lint, or schema errors.
 
+The backend checks also verify Symfony route registration: they flag controllers that exist but never reach the router (for example one importing the removed `Symfony\\Component\\Routing\\Annotation\\Route`), because those compile cleanly and then return 404. Always import routing attributes from
+`Symfony\\Component\\Routing\\Attribute\\Route` — never from `Routing\\Annotation`.
+
 ### Frontend Routing and Page Architecture
 All file-modifying and inspection tools (`write_file`, `patch_file`, `read_file`) operate within the shell's `src/` directory.
+
+Use `list_directory` to discover exact paths before reading or writing. Never guess a path or assume a folder exists: list its parent first. `list_directory` returns a compact indented tree and collapses dependency/build directories (`vendor`, `node_modules`, `dist`, `build`, `.next`, `var/cache`, ...), so it is cheap to call.
 
 1. **Page Creation & File Paths**:
    - The frontend uses Next.js App Router.
@@ -75,6 +82,8 @@ All file-modifying and inspection tools (`write_file`, `patch_file`, `read_file`
    - The `route` must match the page's route URL exactly.
    - The `icon` should be a standard Ant Design icon (e.g. `DashboardOutlined`, `UserOutlined`, `TeamOutlined`, `ShoppingOutlined`, `ShoppingCartOutlined`, `BarChartOutlined`, `AppstoreOutlined`, `SettingOutlined`, `TableOutlined`, `TagsOutlined`).
    - Use `patch_file` (or `write_file`) with `shell: \"frontend\"` on `menu-items/menu.json` to insert or update navigation entries.
-".to_string()
+");
+        prompt.push_str(&crate::modules::catalogue_prompt());
+        prompt
     }
 }

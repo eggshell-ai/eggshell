@@ -1,5 +1,5 @@
 use crate::llm::{default_skills, project_shells, App, Shell, Tool};
-use crate::tools::{LoadSkillTool, ReadFileTool, ReadSchemaTool};
+use crate::tools::{ListDirectoryTool, LoadSkillTool, ReadFileTool, ReadSchemaTool};
 
 /// The planning agent definition used to design entities, reports, requirements,
 /// and implementation approach without performing file writes or mutations.
@@ -13,6 +13,7 @@ impl App for PlanningApp {
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
             Box::new(LoadSkillTool::new(default_skills())),
+            Box::new(ListDirectoryTool::new()),
             Box::new(ReadFileTool::new()),
             Box::new(ReadSchemaTool::new()),
         ]
@@ -24,6 +25,8 @@ Your job is to analyze the user's requirements and produce a structured, thoroug
 
 In this mode, all file-modifying tools (write_file, move_file, patch_file, sync_schema) are DISABLED.
 You only have read access to inspect the project if needed. DO NOT attempt to write or execute code changes.
+
+Use `list_directory` to discover the project's actual structure before planning against it, and `read_file` to read a specific file. Never guess paths.
 
 Your plan MUST be formatted with clear Markdown headings and cover:
 1. **Overview & Requirements**: Summary of the requested app/feature and key user workflows.

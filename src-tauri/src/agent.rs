@@ -11,6 +11,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_MAX_TURNS: u32 = 10;
 
+/// How many times `sync_schema` may rename a field on the same resource within
+/// one run before the run is treated as stalled.
+///
+/// A rename drops and recreates a database column, so model-driven rename
+/// churn is never productive: if the name were already known, one call would
+/// have been enough. The sales-system incident needed three renames to be
+/// recognised as a loop. The threshold leaves room for one deliberate rename
+/// followed by a correction.
+const MAX_SCHEMA_RENAMES_PER_RESOURCE: u32 = 3;
+
 /// A file the user attached to a message. Only its name travels into the
 /// prompt; the contents are deliberately never sent to the upstream provider.
 #[derive(Debug, Clone)]
@@ -26,6 +36,10 @@ pub struct AgentRunResult {
     pub token_usage: Option<u64>,
     #[serde(default)]
     pub hit_max_turns: bool,
+    /// The turn budget the run was given. Reported alongside `hit_max_turns` so
+    /// callers can explain the stop without duplicating the default.
+    #[serde(default)]
+    pub max_turns: u32,
     /// Set when the model repeated a tool call that had already failed twice
     /// with identical arguments. The run stops instead of spending the rest of
     /// the turn budget on a call that cannot succeed.
@@ -77,7 +91,25 @@ impl AgentService {
         options: AgentOptions,
     ) -> LlmResult<AgentRunResult> {
         let skills = options.skills.as_deref().unwrap_or(&self.skills);
-        self.attach_skills_summary(&mut messages, skills);
+        // Project skills are the ones `enable_module` installed. They are read
+        // per run because a module can be enabled while the app is running, and
+        // its skill must be visible to the very next turn. A bundled skill of the
+        // same name wins: the application's own instructions are authoritative.
+        //
+        // `AgentOptions::skills` is an explicit opt-out as well as an override:
+        // max mode passes `Some(vec![])` so its planner prompt carries no skill
+        // catalogue at all, and a module must not quietly reintroduce one.
+        let installed = if options.skills.is_none() {
+            super::project_skills(options.project_path.as_deref())
+        } else {
+            Vec::new()
+        };
+        let project_skills: Vec<&dyn Skill> = installed
+            .iter()
+            .map(|skill| skill.as_ref())
+            .filter(|skill| !skills.iter().any(|bundled| bundled.name() == skill.name()))
+            .collect();
+        self.attach_skills_summary(&mut messages, skills, &project_skills);
         self.attach_artifacts(&mut messages, &options.artifacts);
 
         // The prompts themselves are sensitive: they only travel into the
@@ -102,6 +134,13 @@ impl AgentService {
         // Tracks a failing call so a byte-identical retry can be intercepted
         // instead of being executed again. See `fingerprint_tool_call`.
         let mut failed_call: Option<(String, u32)> = None;
+        // Counts mutating tool calls per "target" (tool + resource + field), so
+        // a run that keeps editing the same thing with slightly different
+        // arguments (e.g. renaming a field A -> B -> A) is stopped. Each such
+        // call succeeds, so `failed_call` never fires. See
+        // `mutation_target_key`.
+        let mut mutation_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         let mut stalled = false;
         let cancel_token = options.cancellation_token.clone();
 
@@ -253,7 +292,7 @@ impl AgentService {
                 if repeat_count > 0 {
                     let payload = json!({
                         "success": false,
-                        "error": "This is an identical repeat of a tool call that already failed. It cannot succeed and was not executed again. Change the arguments before retrying - for `sync_schema` that usually means putting the new properties in `changes` instead of `rename`.",
+                        "error": "This is an identical repeat of a tool call that already failed. It cannot succeed and was not executed again. Change the arguments before retrying - for `sync_schema` that sometimes means putting the new properties in `changes` or `changes.type` instead of `rename`.",
                         "repeatedCall": { "name": name, "arguments": tool_args },
                         "attempt": repeat_count + 1,
                     });
@@ -270,6 +309,28 @@ impl AgentService {
                     messages.push(tool_message(call_id, name, tool_args, payload));
                     failed_call = Some((fingerprint, repeat_count + 1));
                     continue;
+                }
+
+                // Guard against oscillation: repeated edits to the same field
+                // whose arguments only differ in `rename` all succeed, so the
+                // identical-call guard above never fires. The sales-system
+                // incident renamed saleId -> saleRef -> saleId -> sale_id_tmp
+                // across four turns and would have continued.
+                if let Some(key) = schema_rename_target(name, &tool_args) {
+                    let count = mutation_counts.entry(key).or_insert(0);
+                    *count += 1;
+                    if *count > MAX_SCHEMA_RENAMES_PER_RESOURCE {
+                        self.logger.warning(
+                            format!(
+                                "agent stalled: {name} renamed a field on the same resource {} times",
+                                *count
+                            ),
+                            true,
+                        );
+                        log.push(json!({ "timestamp": now_millis()?, "turn": turn, "type": "tool_repeat", "toolName": name, "attempts": *count, "stalled": true }));
+                        stalled = true;
+                        break;
+                    }
                 }
 
                 self.logger.info(
@@ -330,13 +391,18 @@ impl AgentService {
             }
         }
 
-        if final_content.trim().is_empty() {
-            if cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+        let cancelled = cancel_token.as_ref().is_some_and(|c| c.load(Ordering::Relaxed));
+        if hit_max_turns {
+            // The final turn asked for tools that were never executed, so any
+            // text it produced is a truncated preamble rather than an answer.
+            // Replace it so the UI does not look like the agent trailed off.
+            final_content = max_turns_notice(max_turns);
+        } else if stalled {
+            final_content =
+                "Stopped: the same tool call kept failing with identical arguments. Change the approach or arguments before retrying.".to_string();
+        } else if final_content.trim().is_empty() {
+            if cancelled {
                 final_content = "Response stopped by user.".to_string();
-            } else if stalled {
-                final_content = "Stopped: the same tool call kept failing with identical arguments. Change the approach or arguments before retrying.".to_string();
-            } else if hit_max_turns {
-                final_content = "Reached maximum allowed turns before completing all actions.".to_string();
             } else if !all_tool_calls.is_empty() {
                 final_content = "Completed requested actions.".to_string();
             }
@@ -347,6 +413,7 @@ impl AgentService {
             tool_calls: all_tool_calls,
             token_usage: latest_token_usage,
             hit_max_turns,
+            max_turns,
             stalled,
         };
         emit(
@@ -356,6 +423,8 @@ impl AgentService {
                 "content": result.content,
                 "tool_calls": result.tool_calls,
                 "token_usage": result.token_usage,
+                "hit_max_turns": result.hit_max_turns,
+                "max_turns": result.max_turns,
                 "stalled": result.stalled,
             }),
         );
@@ -416,10 +485,17 @@ impl AgentService {
 
     /// Appends the catalogue of `skills` to the conversation's system message.
     ///
-    /// An empty slice appends nothing, which lets a mode opt out of the skills
-    /// section entirely through [`AgentOptions::skills`].
-    fn attach_skills_summary(&self, messages: &mut Vec<LLMMessage>, skills: &[Box<dyn Skill>]) {
-        let summary = skills_summary(skills);
+    /// `project_skills` are the skills installed into the project by modules and
+    /// are listed after the bundled ones. Empty slices append nothing, which lets
+    /// a mode opt out of the skills section entirely through
+    /// [`AgentOptions::skills`].
+    fn attach_skills_summary(
+        &self,
+        messages: &mut Vec<LLMMessage>,
+        skills: &[Box<dyn Skill>],
+        project_skills: &[&dyn Skill],
+    ) {
+        let summary = skills_summary(skills, project_skills);
         if summary.is_empty() {
             return;
         }
@@ -507,6 +583,45 @@ fn fingerprint_tool_call(name: &str, args: &Value) -> String {
     format!("{name}:{}", serde_json::to_string(args).unwrap_or_default())
 }
 
+/// Returns a counter key when `name`/`args` describe a schema rename, so the
+/// caller can count renames per resource across the run.
+///
+/// Only destructive field renames are counted, not ordinary edits: a run may
+/// legitimately touch one field many times (labels, flags, then a type), but
+/// renaming the same resource's fields over and over means the model is
+/// thrashing. The key is `sync_schema:<resource>`.
+fn schema_rename_target(name: &str, args: &Value) -> Option<String> {
+    if name != "sync_schema" {
+        return None;
+    }
+    let operations = args.get("operations")?.as_array()?;
+    let mut resources: Vec<String> = Vec::new();
+    for operation in operations {
+        let object = operation.as_object()?;
+        if object.get("action").and_then(Value::as_str) != Some("updateField") {
+            continue;
+        }
+        let Some(field) = object.get("field").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(rename) = object.get("rename").and_then(Value::as_str) else {
+            continue;
+        };
+        // A `rename` equal to the current name is rejected by the tool, so it
+        // does not count as churn.
+        if rename.trim().eq_ignore_ascii_case(field.trim()) || rename.trim().is_empty() {
+            continue;
+        }
+        if let Some(resource) = object.get("resource").and_then(Value::as_str) {
+            resources.push(resource.to_ascii_lowercase());
+        }
+    }
+    resources.sort();
+    resources.dedup();
+    // Return the first renamed resource; one call normally targets one resource.
+    resources.into_iter().next().map(|resource| format!("sync_schema:{resource}"))
+}
+
 fn tool_message(id: Option<String>, name: &str, args: Value, result: Value) -> LLMMessage {
     LLMMessage {
         role: LLMMessageRole::Tool,
@@ -537,6 +652,15 @@ fn with_project_path(args: Value, project_path: Option<&str>) -> Value {
     Value::Object(args)
 }
 
+/// The message a run ends with when it used up its turn budget. It names the
+/// budget and tells the user how to continue, because the previous wording
+/// ("Reached maximum allowed turns") read like an error and gave no next step.
+fn max_turns_notice(max_turns: u32) -> String {
+    format!(
+        "Stopped after {max_turns} turns before finishing. Send **continue** to resume from where I left off."
+    )
+}
+
 fn emit(options: &AgentOptions, kind: &str, data: Value) {
     if let Some(callback) = &options.on_event {
         callback(json!({ "type": kind, "data": data }));
@@ -552,16 +676,31 @@ fn now_millis() -> LlmResult<u128> {
 
 /// Builds the catalogue of available skills appended to a system prompt.
 ///
-/// Returns an empty string when `skills` is empty so callers can opt out of the
-/// section altogether.
-fn skills_summary(skills: &[Box<dyn Skill>]) -> String {
-    if skills.is_empty() {
+/// Returns an empty string when there are no skills at all so callers can opt out
+/// of the section altogether. `project_skills` are the module-installed skills; a
+/// note explaining where they came from follows them.
+fn skills_summary(skills: &[Box<dyn Skill>], project_skills: &[&dyn Skill]) -> String {
+    if skills.is_empty() && project_skills.is_empty() {
         return String::new();
     }
     let mut summary = String::from("\n\n=== AVAILABLE SKILLS ===\nYou have access to the following skills that teach you how to perform specific tasks:\n\n");
     for skill in skills {
         summary.push_str(&format!(
             "**{}**\nDescription: {}\n",
+            skill.name(),
+            skill.description()
+        ));
+        if let Some(category) = skill.category() {
+            summary.push_str(&format!("Category: {category}\n"));
+        }
+        if !skill.tags().is_empty() {
+            summary.push_str(&format!("Tags: {}\n", skill.tags().join(", ")));
+        }
+        summary.push('\n');
+    }
+    for skill in project_skills {
+        summary.push_str(&format!(
+            "**{}** (installed module)\nDescription: {}\n",
             skill.name(),
             skill.description()
         ));
@@ -597,13 +736,13 @@ mod tests {
 
     #[test]
     fn skills_summary_is_empty_without_skills() {
-        assert!(skills_summary(&[]).is_empty());
+        assert!(skills_summary(&[], &[]).is_empty());
     }
 
     #[test]
     fn skills_summary_lists_the_default_catalogue() {
         let skills = super::super::default_skills();
-        let summary = skills_summary(&skills);
+        let summary = skills_summary(&skills, &[]);
         assert!(summary.contains("=== AVAILABLE SKILLS ==="));
         assert!(summary.contains("crud_creation"));
         assert!(summary.contains("=== END SKILLS ==="));
@@ -612,7 +751,7 @@ mod tests {
     #[test]
     fn skills_summary_does_not_advertise_reference_documents() {
         let skills = super::super::default_skills();
-        let summary = skills_summary(&skills);
+        let summary = skills_summary(&skills, &[]);
         assert!(!summary.contains("Documents (load on demand)"));
         assert!(!summary.contains("also pass its document name"));
     }
@@ -621,7 +760,7 @@ mod tests {
     fn empty_options_skills_do_not_touch_the_system_prompt() {
         let agent = AgentService::with_skills(Arc::new(StubLlm), Vec::new());
         let mut messages = vec![system_message("base prompt")];
-        agent.attach_skills_summary(&mut messages, &[]);
+        agent.attach_skills_summary(&mut messages, &[], &[]);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "base prompt");
     }
@@ -657,7 +796,6 @@ mod tests {
 
     /// Always emits the same `failing_tool` call with identical arguments.
     struct RepeatingLlm;
-
     #[async_trait]
     impl LLMService for RepeatingLlm {
         async fn execute_prompt(
@@ -724,6 +862,163 @@ mod tests {
         }
     }
 
+    /// Emits a `sync_schema` rename whose target changes on every turn, matching
+    /// the sales-system incident (`saleId` -> `saleRef` -> `saleId` -> `sale_id_tmp`).
+    struct RenameLoopLlm {
+        names: Vec<String>,
+    }
+
+    #[async_trait]
+    impl LLMService for RenameLoopLlm {
+        async fn execute_prompt(
+            &self,
+            _prompt: &str,
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<String> {
+            Ok(String::new())
+        }
+
+        async fn execute_prompt_with_tools(
+            &self,
+            messages: &[LLMMessage],
+            _tools: &[Box<dyn Tool>],
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<Value> {
+            // One rename per turn; the rename target cycles through `self.names`.
+            let turn = messages
+                .iter()
+                .filter(|message| matches!(message.role, LLMMessageRole::Tool))
+                .count();
+            let target = self
+                .names
+                .get(turn % self.names.len())
+                .cloned()
+                .unwrap_or_else(|| "saleId".to_string());
+            Ok(json!({
+                "content": "",
+                "tool_calls": [{
+                    "id": format!("call-{turn}"),
+                    "type": "function",
+                    "function": {
+                        "name": "sync_schema",
+                        "arguments": {
+                            "projectPath": "/tmp/project",
+                            "operations": [{
+                                "action": "updateField",
+                                "resource": "payments",
+                                "field": "saleId",
+                                "rename": target
+                            }]
+                        }
+                    }
+                }]
+            }))
+        }
+    }
+
+    /// Succeeds no matter what, so only the oscillation guard can stop the run.
+    struct AlwaysOkTool {
+        parameters: Map<String, Value>,
+    }
+
+    #[async_trait]
+    impl Tool for AlwaysOkTool {
+        fn name(&self) -> &str {
+            "sync_schema"
+        }
+        fn description(&self) -> &str {
+            "Pretends to edit the schema."
+        }
+        fn parameters(&self) -> &Map<String, Value> {
+            &self.parameters
+        }
+        async fn execute(&self, _args: Value) -> LlmResult<Value> {
+            Ok(json!({ "success": true, "message": "Schema sync completed successfully." }))
+        }
+    }
+
+    /// The incident's shape: every rename succeeds, so the identical-call guard
+    /// never fires and only the per-resource rename counter can stop the loop.
+    #[tokio::test]
+    async fn repeated_renames_on_one_resource_stop_the_run() {
+        let llm = Arc::new(RenameLoopLlm {
+            names: vec![
+                "saleRef".to_string(),
+                "saleId_back".to_string(),
+                "sale_id_tmp".to_string(),
+                "sale_id_tmp2".to_string(),
+                "sale_id_tmp3".to_string(),
+                "sale_id_tmp4".to_string(),
+            ],
+        });
+        let agent = AgentService::with_skills(llm, Vec::new());
+
+        let result = agent
+            .run_agent(
+                vec![
+                    system_message("system"),
+                    LLMMessage {
+                        role: LLMMessageRole::User,
+                        content: "change the type".to_string(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        tool_calls: None,
+                    },
+                ],
+                vec![Box::new(AlwaysOkTool {
+                    parameters: Map::new(),
+                })],
+                AgentOptions {
+                    max_turns: Some(30),
+                    ..agent_options()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(result.stalled, "expected the run to be marked stalled");
+        assert!(!result.hit_max_turns, "the guard must fire before the budget");
+    }
+
+    #[test]
+    fn schema_rename_target_only_counts_real_renames() {
+        let rename = json!({
+            "operations": [{
+                "action": "updateField",
+                "resource": "payments",
+                "field": "saleId",
+                "rename": "saleRef"
+            }]
+        });
+        assert_eq!(
+            schema_rename_target("sync_schema", &rename).as_deref(),
+            Some("sync_schema:payments")
+        );
+
+        // A no-op rename is rejected by the tool, so it must not count as churn.
+        let no_op = json!({
+            "operations": [{
+                "action": "updateField",
+                "resource": "payments",
+                "field": "saleId",
+                "rename": "saleId"
+            }]
+        });
+        assert_eq!(schema_rename_target("sync_schema", &no_op), None);
+
+        // A plain property edit is not churn either.
+        let edit = json!({
+            "operations": [{
+                "action": "updateField",
+                "resource": "payments",
+                "field": "saleId",
+                "changes": { "required": true }
+            }]
+        });
+        assert_eq!(schema_rename_target("sync_schema", &edit), None);
+    }
+
     #[test]
     fn fingerprint_ignores_argument_key_order() {
         let a = json!({ "b": 2, "a": 1 });
@@ -768,5 +1063,107 @@ mod tests {
         assert!(result.content.contains("same tool call kept failing"));
         // Executed once, intercepted once, stopped once.
         assert_eq!(result.tool_calls.len(), 3);
+    }
+
+    /// Always asks for a tool that succeeds, so the run can only end by using up
+    /// its turn budget. Mirrors the production run in log 1795440427291-39040,
+    /// where exploration consumed every turn without a single write.
+    struct EndlessLlm {
+        turn: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait]
+    impl LLMService for EndlessLlm {
+        async fn execute_prompt(
+            &self,
+            _prompt: &str,
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<String> {
+            Ok(String::new())
+        }
+
+        async fn execute_prompt_with_tools(
+            &self,
+            _messages: &[LLMMessage],
+            _tools: &[Box<dyn Tool>],
+            _context: Option<&Map<String, Value>>,
+        ) -> LlmResult<Value> {
+            let turn = self.turn.fetch_add(1, Ordering::Relaxed);
+            Ok(json!({
+                // A truncated preamble: the last thought never became an answer.
+                "content": "Let me read one more file before writing.\n",
+                "tool_calls": [{
+                    "id": format!("call-{turn}"),
+                    "type": "function",
+                    "function": {
+                        "name": "ok_tool",
+                        "arguments": { "projectPath": "/tmp/project", "index": turn }
+                    }
+                }]
+            }))
+        }
+    }
+
+    struct OkTool {
+        parameters: Map<String, Value>,
+    }
+
+    #[async_trait]
+    impl Tool for OkTool {
+        fn name(&self) -> &str {
+            "ok_tool"
+        }
+        fn description(&self) -> &str {
+            "Always succeeds."
+        }
+        fn parameters(&self) -> &Map<String, Value> {
+            &self.parameters
+        }
+        async fn execute(&self, _args: Value) -> LlmResult<Value> {
+            Ok(json!({ "ok": true }))
+        }
+    }
+
+    #[tokio::test]
+    async fn hitting_the_turn_budget_reports_the_limit_and_replaces_the_preamble() {
+        let agent = AgentService::with_skills(
+            Arc::new(EndlessLlm {
+                turn: std::sync::atomic::AtomicU32::new(0),
+            }),
+            Vec::new(),
+        );
+
+        let result = agent
+            .run_agent(
+                vec![
+                    system_message("system"),
+                    LLMMessage {
+                        role: LLMMessageRole::User,
+                        content: "do the thing".to_string(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        tool_calls: None,
+                    },
+                ],
+                vec![Box::new(OkTool {
+                    parameters: Map::new(),
+                })],
+                AgentOptions {
+                    max_turns: Some(3),
+                    ..agent_options()
+                },
+            )
+            .await
+            .expect("agent run");
+
+        assert!(result.hit_max_turns, "expected the run to hit the budget");
+        assert_eq!(result.max_turns, 3);
+        // The trailing preamble must not survive as the answer.
+        assert!(!result.content.contains("one more file"));
+        assert!(result.content.contains("Stopped after 3 turns"));
+        assert!(result.content.contains("continue"));
+        // Only executed turns are reported; the 3rd turn's calls never ran.
+        assert_eq!(result.tool_calls.len(), 2);
     }
 }

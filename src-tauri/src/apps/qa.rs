@@ -1,8 +1,8 @@
 use crate::llm::{default_skills, project_shells, App, Shell, Tool};
 use crate::tools::{
     BrowserClickTool, BrowserFillTool, BrowserGetContentTool, BrowserGetErrorsTool,
-    BrowserNavigateTool, BrowserOpenTool, LintCodeTool, LoadSkillTool, ReadFileTool,
-    ReadSchemaTool,
+    BrowserNavigateTool, BrowserOpenTool, LintCodeTool, ListDirectoryTool, LoadSkillTool,
+    ReadFileTool, ReadSchemaTool,
 };
 
 /// The QA / visual testing agent definition used to test web applications using
@@ -17,6 +17,7 @@ impl App for QaApp {
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
             Box::new(LoadSkillTool::new(default_skills())),
+            Box::new(ListDirectoryTool::new()),
             Box::new(ReadFileTool::new()),
             Box::new(ReadSchemaTool::new()),
             Box::new(LintCodeTool::new()),

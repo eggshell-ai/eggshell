@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -57,8 +57,35 @@ function App() {
   const [iterateStatus, setIterateStatus] = useState<{ loop?: number; stage?: string; phase?: string } | null>(null);
   const [maxTasks, setMaxTasks] = useState<MaxTask[]>([]);
   const [streamedMessages, setStreamedMessages] = useState<ChatMessage[]>([]);
+  // Answers given to `ask_user` questions in this session, keyed by question id.
+  // Kept in memory only: once the run finishes the question is part of the
+  // transcript and needs no further interaction.
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
+  // Questions the agent is currently parked on. Only these accept an answer;
+  // older questions in the transcript are rendered as read-only.
+  const [pendingQuestionIds, setPendingQuestionIds] = useState<string[]>([]);
   // What the shells have reported for the project currently being created.
   const [createLog, setCreateLog] = useState<ProgressLine[]>([]);
+
+  // The `agent-event` listener is registered once for the lifetime of the
+  // window, so it cannot close over `activeProject`/`activeSession` directly:
+  // re-subscribing on every switch is what duplicated the stream (a listener
+  // whose `listen()` promise resolved after cleanup was never removed, and each
+  // switch added another one). These refs keep the ids readable from the one
+  // stable handler.
+  const activeProjectIdRef = useRef<number | undefined>(undefined);
+  const activeSessionIdRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    activeProjectIdRef.current = activeProject?.id;
+  }, [activeProject?.id]);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSession?.id;
+  }, [activeSession?.id]);
+
+  // Last event sequence number applied. Events are stamped by the backend, and
+  // deltas are appended rather than replaced, so applying one twice doubles the
+  // text. Kept outside the listener effect so every listener instance shares it.
+  const lastEventSeqRef = useRef(0);
 
   async function syncSetupState() {
     try {
@@ -86,11 +113,36 @@ function App() {
   }, []);
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
-    void listen<{ projectId: number; event: { type: string; data: unknown } }>("agent-event", ({ payload }) => {
-      if (payload.projectId !== activeProject?.id || payload.event.type === "complete") return;
+    // `listen` resolves asynchronously. If the effect is cleaned up first, the
+    // resolved function must be called immediately instead of leaked, otherwise
+    // it stays subscribed and every event is handled twice.
+    let stopped = false;
+    void listen<{ projectId: number; sessionId?: number; seq?: number; event: { type: string; data: unknown } }>("agent-event", ({ payload }) => {
+      if (payload.projectId !== activeProjectIdRef.current) return;
+      // Drop a re-delivery of an event already applied (duplicate listener,
+      // reconnect, or a repeated emit).
+      if (typeof payload.seq === "number") {
+        if (payload.seq <= lastEventSeqRef.current) return;
+        lastEventSeqRef.current = payload.seq;
+      }
+      if (payload.event.type === "complete") {
+        // A run that consumed its whole turn budget has no normal reply. Show
+        // why it stopped right away instead of leaving the last thought looking
+        // like the agent trailed off mid-sentence.
+        const done = payload.event.data as { hit_max_turns?: boolean; max_turns?: number; stalled?: boolean } | undefined;
+        if (done?.hit_max_turns) {
+          setStreamedMessages((current) => [...current, {
+            role: "assistant",
+            content: "",
+            data: { stopReason: "max_turns", maxTurns: done.max_turns },
+          }]);
+        }
+        return;
+      }
       const { type, data } = payload.event;
       if (type === "thought_delta") {
         const delta = (data as { delta?: string })?.delta ?? "";
+        if (!delta) return;
         setStreamedMessages((current) => {
           const last = current[current.length - 1];
           if (last && last.role === "thought") {
@@ -107,6 +159,7 @@ function App() {
       }
       if (type === "content_delta") {
         const delta = (data as { delta?: string })?.delta ?? "";
+        if (!delta) return;
         setStreamedMessages((current) => {
           const last = current[current.length - 1];
           if (last && last.role === "assistant") {
@@ -142,7 +195,7 @@ function App() {
         const totalTokens = (data as { total_tokens?: number })?.total_tokens ?? 0;
         if (totalTokens > 0) {
           setActiveSession((current) => current ? { ...current, token_usage: totalTokens } : current);
-          setSessions((current) => current.map((s) => s.id === activeSession?.id ? { ...s, token_usage: totalTokens } : s));
+          setSessions((current) => current.map((s) => s.id === activeSessionIdRef.current ? { ...s, token_usage: totalTokens } : s));
         }
         return;
       }
@@ -171,7 +224,7 @@ function App() {
         const loopPayload = data as { loop?: number; plan?: string; implementation?: string; qaReport?: string; tokenUsage?: number };
         if (loopPayload.tokenUsage) {
           setActiveSession((current) => current ? { ...current, token_usage: loopPayload.tokenUsage } : current);
-          setSessions((current) => current.map((s) => s.id === activeSession?.id ? { ...s, token_usage: loopPayload.tokenUsage } : s));
+          setSessions((current) => current.map((s) => s.id === activeSessionIdRef.current ? { ...s, token_usage: loopPayload.tokenUsage } : s));
         }
         setStreamedMessages([]);
         return;
@@ -232,14 +285,30 @@ function App() {
         setStreamedMessages([]);
         return;
       }
+      if (type === "ask_user") {
+        // Show the question as a card and remember that the agent is waiting.
+        // The card, not the composer, is what sends the answer back.
+        const question = data as { questionId?: string; question?: string; options?: string[]; awaitingAnswer?: boolean };
+        const questionId = question.questionId;
+        if (questionId && question.awaitingAnswer !== false) {
+          setPendingQuestionIds((current) => current.includes(questionId) ? current : [...current, questionId]);
+        }
+        setStreamedMessages((current) => [...current, {
+          role: "ask_user",
+          content: question.question ?? "",
+          data: { ...question, isQuestion: true },
+        }]);
+        return;
+      }
       setStreamedMessages((current) => [...current, {
         role: type as ChatMessage["role"],
         content: eventContent(type, data),
         data,
       }]);
-    }).then((stop) => { unlisten = stop; });
-    return () => unlisten?.();
-  }, [activeProject?.id, activeSession?.id]);
+    }).then((stop) => { if (stopped) stop(); else unlisten = stop; })
+      .catch((reason: unknown) => console.error("[App] agent events unavailable", { reason }));
+    return () => { stopped = true; unlisten?.(); };
+  }, []);
   // Registered at mount rather than when a create starts: `listen` resolves
   // asynchronously, and the first commands would have run before it was ready.
   // That is also why this needs no history command, unlike the setup log.
@@ -339,7 +408,7 @@ function App() {
     const promptToSend = draft;
     setDraft("");
     setPendingPrompt(promptToSend);
-    setError(""); setIsSending(true); setStreamedMessages([]);
+    setError(""); setIsSending(true); setStreamedMessages([]); setPendingQuestionIds([]);
     try {
       const session = await invoke<Session>("send_message", {
         projectId: activeProject.id,
@@ -350,13 +419,13 @@ function App() {
       });
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); setPendingPrompt(""); void loadUsers(activeProject.id); }
+    finally { setIsSending(false); setPendingPrompt(""); setPendingQuestionIds([]); void loadUsers(activeProject.id); }
   }
 
   async function proceedToImplement() {
     if (!activeProject || isSending) return;
     setMode("implement");
-    setError(""); setIsSending(true); setStreamedMessages([]);
+    setError(""); setIsSending(true); setStreamedMessages([]); setPendingQuestionIds([]);
     const proceedMessage = "Proceed with implementation of the approved plan.";
     setPendingPrompt(proceedMessage);
     try {
@@ -369,11 +438,14 @@ function App() {
       });
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]); setDraft(""); setAttachments([]);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); setPendingPrompt(""); }
+    finally { setIsSending(false); setPendingPrompt(""); setPendingQuestionIds([]); }
   }
 
   async function stopChat() {
     if (!activeProject) return;
+    // The backend cancels any question the agent is parked on, so the card must
+    // stop offering an answer straight away.
+    setPendingQuestionIds([]);
     try {
       if (mode === "iterate" && !isWrappingUp) {
         setIsWrappingUp(true);
@@ -393,7 +465,7 @@ function App() {
 
   async function runMaxTasks(retryFailed: boolean) {
     if (!activeProject || !activeSession || isSending) return;
-    setError(""); setIsSending(true); setStreamedMessages([]); setMode("max");
+    setError(""); setIsSending(true); setStreamedMessages([]); setMode("max"); setPendingQuestionIds([]);
     setPendingPrompt(retryFailed ? "Retrying failed tasks…" : "Running Max tasks…");
     try {
       const session = await invoke<Session>("run_max_tasks", {
@@ -404,7 +476,7 @@ function App() {
       setActiveSession(session); setSessions((current) => [session, ...current.filter(({ id }) => session.id !== id)]);
       await loadMaxTasks(activeProject.id, session.id);
     } catch (reason) { setError(String(reason)); }
-    finally { setIsSending(false); setPendingPrompt(""); void loadUsers(activeProject.id); }
+    finally { setIsSending(false); setPendingPrompt(""); setPendingQuestionIds([]); void loadUsers(activeProject.id); }
   }
 
   async function stopMaxTask(taskId: number) {
@@ -413,6 +485,32 @@ function App() {
       await invoke("update_max_task_status", { taskId, status: "failed" });
       await loadMaxTasks(activeProject.id, activeSession.id);
     } catch (reason) { setError(String(reason)); }
+  }
+
+  /**
+   * Answers a question the agent is parked on. The run stays `isSending`: the
+   * answer resumes the existing turn rather than starting a new one, so no
+   * streaming state is reset here.
+   */
+  async function answerQuestion(questionId: string, answer: string) {
+    if (!pendingQuestionIds.includes(questionId)) return;
+    setError("");
+    // Optimistic: the card shows the choice immediately, and the pending marker
+    // is dropped so the buttons cannot be pressed twice.
+    setQuestionAnswers((current) => ({ ...current, [questionId]: answer }));
+    setPendingQuestionIds((current) => current.filter((id) => id !== questionId));
+    try {
+      await invoke("answer_question", { questionId, answer });
+    } catch (reason) {
+      setError(String(reason));
+      // The backend refused the answer, so let the user try again.
+      setQuestionAnswers((current) => {
+        const next = { ...current };
+        delete next[questionId];
+        return next;
+      });
+      setPendingQuestionIds((current) => current.includes(questionId) ? current : [...current, questionId]);
+    }
   }
 
   async function compactSession() {
@@ -445,6 +543,8 @@ function App() {
       finalAssistantContent &&
       message.content.trim() === finalAssistantContent
     ) return false;
+    // A stop notice is rendered from `data` alone, so it has no text of its own.
+    if ((message.data as { stopReason?: string } | undefined)?.stopReason) return true;
     if (message.content.trim()) return true;
     if (!message.data || typeof message.data !== "object") return false;
 
@@ -475,7 +575,7 @@ function App() {
   if (activeProject) {
     return (
       <>
-        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} maxTasks={maxTasks} onRunMaxTasks={() => void runMaxTasks(false)} onRetryMaxTasks={() => void runMaxTasks(true)} onStopMaxTask={(taskId) => void stopMaxTask(taskId)} />
+        <Chat projectTitle={activeProject.title} sessionTitle={activeSession?.title} sessions={sessions} activeSessionId={activeSession?.id} sessionTokenUsage={activeSession?.token_usage ?? 0} messages={visibleMessages} users={users} draft={draft} isSending={isSending} isStarting={isStarting} error={error} onBack={() => { setIsStarting(false); setActiveProject(null); }} onStart={() => void startProject()} onNewSession={startNewSession} onSelectSession={(id) => setActiveSession(sessions.find((session) => session.id === id) ?? null)} onDeleteSession={(id) => { const session = sessions.find((item) => item.id === id); if (session) void removeSession(session); }} onDraftChange={setDraft} onSend={sendMessage} attachments={attachments} onAttach={(files) => setAttachments((current) => Array.from(new Set([...current, ...files])))} onRemoveAttachment={(name) => setAttachments((current) => current.filter((item) => item !== name))} activeProvider={activeProvider} activeModel={activeModel} onModelChange={(provider, model, reasoning) => { void selectModel(provider, model, reasoning); }} mode={mode} onModeChange={setMode} onProceedToImplement={proceedToImplement} onStop={stopChat} onCompact={compactSession} isWrappingUp={isWrappingUp} iterateStatus={iterateStatus} maxTasks={maxTasks} onRunMaxTasks={() => void runMaxTasks(false)} onRetryMaxTasks={() => void runMaxTasks(true)} onStopMaxTask={(taskId) => void stopMaxTask(taskId)} questionAnswers={questionAnswers} pendingQuestionIds={pendingQuestionIds} onAnswerQuestion={(questionId, answer) => void answerQuestion(questionId, answer)} />
         <UpdatePrompt autoCheck={autoUpdateEnabled} />
       </>
     );

@@ -34,7 +34,7 @@ sync_schema({
       name: "products",
       endpoint: "/products", # Generally same as the resource name
       titleExpression: "data.sku + ' - ' + data.name", # Display the product's SKU / Name as the readable title of individual products
-      actions: [ # Optional: display a "Deactivate" button only if product is active, null hides the button automatically
+      actions: [ # Optional row actions. Each needs `label` (static text) or `labelExpression` (per-row JS)
         {
           permission: "products.edit",
           labelExpression: "data.active ? 'Deactivate' : null",
@@ -107,10 +107,12 @@ Use one of the following field types:
 | `"decimal"` | Fixed-point decimal / currency input with configurable `scale` and `precision` |
 | `"boolean"` | Boolean / checkbox input |
 | `"date"` | Date picker |
+| `"time"` | Time picker |
 | `"file"` | File upload |
 | `"select"` | Dropdown; use `options` for static choices or `resource` for dynamic choices |
 | `"tags"` | Multi-select tags, normally paired with `resource` |
 | `"table"` | Line-item grid, paired with `columns` |
+| `"foreign"` | A child line item's integer reference to its parent record. Renders as a **plain number input** — use `select` + `resource` when the user should pick from a dropdown. |
 
 ## Field Options
 Every field must have `name` and `type`.
@@ -184,6 +186,11 @@ Since the default admin user has all permissions, we don't need to worry about t
 
 ## 3. Write the Backend Controller
 We shall add our controller at the endpoint used in `sync_schema`.
+
+> **Import routing attributes from `Symfony\Component\Routing\Attribute\Route`.**
+> The old `Routing\Annotation\Route` class no longer exists; using it makes every
+> `#[Route]` in the file silently ignored, so the controller compiles but its
+> endpoints return 404. `lint_code` flags this on the backend shell.
 
 ```php
 write_file({
@@ -319,6 +326,36 @@ It requires that `products` resource is already created.
 }
 ```
 
+### Foreign-key storage types (read before writing backend code)
+
+The entity column type generated for a reference depends on the field type, and
+this is intentional — do not "fix" it by hand-editing the generated entity:
+
+| Field type | Generated PHP property | Notes |
+|---|---|---|
+| `type: "select"` with `resource` | `public ?string $productId` | **String column**, even when the referenced resource's id is an integer (`?int $id`). |
+| `type: "foreign"` (child line's parent reference) | `public ?int $saleId` | Integer column for the parent record id. |
+
+So `Sale.customerId` may be `?string` while `Customer.id` is `?int`. In custom
+backend routes and hooks, cast explicitly when the value is used as a lookup id:
+
+```php
+$customer = $entityManager->getRepository(Customer::class)->find((int) $record->customerId);
+$entityManager->createQuery('... WHERE p.saleId = :saleId')
+    ->setParameter('saleId', (int) $record->saleId);
+```
+
+> **Do not convert a `select` + `resource` field to `type: "foreign"`.** The
+> `?string` column is intentional and `sync_schema` rejects the conversion. If a
+> select field's column looks "wrong" next to a line item's `?int` parent
+> reference, that is by design: the two types serve different purposes. Change
+> a field's properties (including `type`) through `changes` on `updateField`, and
+> never by hand-editing `Entity/*.php`.
+
+Never write raw SQL/DQL comparing a string FK column against an integer literal
+without a cast, and never re-type the generated `?string` property to `?int` by
+editing `Entity/*.php` directly — `sync_schema` regenerates those files and will
+overwrite manual edits.
 
 ## Checkboxes
 Checkboxes should have a clear label, both in `label` and during dispaly. By default, they display `Yes` and `No`, which seems unpolished.

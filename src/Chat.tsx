@@ -7,9 +7,10 @@ import SettingsPopup from "./SettingsPopup";
 import FeedbackPopup from "./FeedbackPopup";
 import IterationLoopCard, { IterationLoopData } from "./IterationLoopCard";
 import MaxTasksCard, { MaxPlanData, MaxTask } from "./MaxTasksCard";
+import QuestionCard, { QuestionData } from "./QuestionCard";
 
 export type ChatMessage = {
-  role: "user" | "assistant" | "thought" | "tool_call" | "tool_result";
+  role: "user" | "assistant" | "thought" | "tool_call" | "tool_result" | "ask_user";
   content: string;
   data?: unknown;
 };
@@ -58,6 +59,20 @@ const toolCallFormatters: Record<string, ToolMessageFormatter> = {
   },
   browser_get_page_content: () => "Inspecting page content & tables",
   browser_get_console_errors: () => "Checking browser errors",
+  list_directory: ({ arguments: args }) => {
+    const listArgs = args as { shell?: string; path?: string } | undefined;
+    const shell = typeof listArgs?.shell === "string" ? listArgs.shell : "frontend";
+    const path = typeof listArgs?.path === "string" && listArgs.path.trim() ? listArgs.path : "src";
+    return `Listing ${shell}/${path}`;
+  },
+  ask_user: ({ arguments: args }) => {
+    const question = (args as { question?: string } | undefined)?.question;
+    return question ? `Asked: ${question}` : "Asked the user a question";
+  },
+  enable_module: ({ arguments: args }) => {
+    const moduleId = (args as { module?: string } | undefined)?.module;
+    return moduleId ? `Installing module: ${moduleId}` : "Installing a module";
+  },
 };
 
 function formatToolMessage(event: ToolEvent) {
@@ -66,10 +81,11 @@ function formatToolMessage(event: ToolEvent) {
 }
 
 export function eventContent(type: string, data: unknown) {
-  const event = data as ToolEvent & { content?: string };
+  const event = data as ToolEvent & { content?: string; question?: string };
   if (type === "thought") return event.content ?? "";
   if (type === "tool_call") return formatToolMessage(event);
   if (type === "tool_result") return `Completed tool: ${event.name ?? "tool"}`;
+  if (type === "ask_user") return event.question ?? "";
   return JSON.stringify(data);
 }
 
@@ -88,6 +104,29 @@ function MessageContent({ content }: { content: string }) {
   return <div className="message-content">
     <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
   </div>;
+}
+
+/**
+ * Why a run ended without a normal reply. Persisted on the assistant message by
+ * the backend (`db.rs`), so a reloaded session still explains the stop.
+ */
+export type StopReason = "max_turns" | "stalled";
+
+function StopNotice({ reason, maxTurns }: { reason: StopReason; maxTurns?: number }) {
+  const isMaxTurns = reason === "max_turns";
+  return (
+    <div className={`stop-notice ${reason}`} role="status">
+      <span className="stop-notice-icon" aria-hidden="true">{isMaxTurns ? "⏸" : "⚠"}</span>
+      <div className="stop-notice-body">
+        <strong>{isMaxTurns ? "Stopped at the turn limit" : "Stopped: a tool kept failing"}</strong>
+        <p>
+          {isMaxTurns
+            ? `The run used all ${maxTurns ?? 30} turns before finishing. Send “continue” to resume from where it left off.`
+            : "The same tool call failed repeatedly with identical arguments. Change the approach or arguments, then try again."}
+        </p>
+      </div>
+    </div>
+  );
 }
 
 type ToolRunProps = { call: ChatMessage; result?: ChatMessage };function ThinkingBlock({ content, isRunning }: { content: string; isRunning: boolean }) {
@@ -248,9 +287,14 @@ type ChatProps = {
   onRunMaxTasks?: () => void;
   onRetryMaxTasks?: () => void;
   onStopMaxTask?: (taskId: number) => void;
+  /** Answers already given for `ask_user` questions, keyed by question id. */
+  questionAnswers?: Record<string, string>;
+  /** Questions the agent is still parked on and can accept an answer for. */
+  pendingQuestionIds?: string[];
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
 };
 
-export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, users, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null, maxTasks = [], onRunMaxTasks, onRetryMaxTasks, onStopMaxTask }: ChatProps) {
+export default function Chat({ projectTitle, sessionTitle, sessions, activeSessionId, sessionTokenUsage = 0, messages, users, draft, isSending, isStarting, error, onBack, onStart, onNewSession, onSelectSession, onDeleteSession, onDraftChange, onSend, attachments, onAttach, onRemoveAttachment, activeProvider, activeModel, onModelChange, mode, onModeChange, onProceedToImplement, onStop, onCompact, isWrappingUp = false, iterateStatus = null, maxTasks = [], onRunMaxTasks, onRetryMaxTasks, onStopMaxTask, questionAnswers = {}, pendingQuestionIds = [], onAnswerQuestion }: ChatProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
@@ -498,6 +542,13 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (message.role === "tool_call") {
+      // An `ask_user` call is represented by the question card itself, so the
+      // raw tool run would just duplicate it (and would never pair correctly,
+      // since the card sits between the call and its result).
+      const callName = (message.data as ToolEvent | undefined)?.name;
+      if (callName === "ask_user") {
+        continue;
+      }
       const nextMessage = messages[index + 1];
       const result = nextMessage?.role === "tool_result" ? nextMessage : undefined;
       renderedMessages.push(<ToolRun call={message} result={result} key={`tool-${index}`} />);
@@ -507,6 +558,9 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     // Tool results are normally consumed by the preceding call. Retain orphaned
     // results so older or interrupted conversations do not silently lose data.
     if (message.role === "tool_result") {
+      if ((message.data as ToolEvent | undefined)?.name === "ask_user") {
+        continue;
+      }
       renderedMessages.push(<article className="message tool_result" key={`tool-result-${index}`}><span>Eggshell</span><MessageContent content={message.content} /></article>);
       continue;
     }
@@ -517,6 +571,29 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
           content={message.content}
           isRunning={isSending && isLastMessage}
           key={`thought-${index}`}
+        />
+      );
+      continue;
+    }
+    const questionData = message.data as QuestionData | undefined;
+    if (message.role === "ask_user" || questionData?.isQuestion) {
+      const questionId = questionData?.questionId ?? "";
+      // The tool result is persisted immediately after the question, so a
+      // reloaded session can still show what the user answered without keeping
+      // any extra UI state.
+      const answerResult = messages
+        .slice(index + 1)
+        .find((candidate) => candidate.role === "tool_result" && (candidate.data as ToolEvent | undefined)?.name === "ask_user");
+      const result = (answerResult?.data as { result?: { answered?: boolean; answer?: string } } | undefined)?.result;
+      const persistedAnswer = result?.answered ? result.answer : undefined;
+      renderedMessages.push(
+        <QuestionCard
+          key={`question-${index}`}
+          data={{ ...questionData, isQuestion: true, question: questionData?.question || message.content }}
+          answered={persistedAnswer ?? (questionId ? questionAnswers?.[questionId] : undefined)}
+          canAnswer={Boolean(questionId) && (pendingQuestionIds ?? []).includes(questionId)}
+          runActive={isSending}
+          onAnswer={onAnswerQuestion ?? (() => undefined)}
         />
       );
       continue;
@@ -540,6 +617,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
           key={`max-plan-${index}`}
           data={message.data as MaxPlanData}
           tasks={maxTasks}
+          plan={message.content}
           isSending={isSending}
           onRun={onRunMaxTasks ?? (() => undefined)}
           onRetryFailed={onRetryMaxTasks ?? (() => undefined)}
@@ -550,6 +628,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
     }
     const isPlan = (message.data as { isPlan?: boolean } | undefined)?.isPlan;
     const planPath = (message.data as { planPath?: string } | undefined)?.planPath;
+    const planStop = message.data as { stopReason?: StopReason; maxTurns?: number } | undefined;
     if (isPlan) {
       renderedMessages.push(
         <article className="message assistant plan-message" key={`plan-${index}`}>
@@ -561,6 +640,7 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
             {planPath && <span className="plan-path" title={planPath}>Saved to: {planPath.split(/[\\/]/).pop()}</span>}
           </div>
           <MessageContent content={message.content} />
+          {planStop?.stopReason && <StopNotice reason={planStop.stopReason} maxTurns={planStop.maxTurns} />}
           <div className="plan-actions">
             <button
               className="plan-proceed-btn"
@@ -577,10 +657,15 @@ export default function Chat({ projectTitle, sessionTitle, sessions, activeSessi
       continue;
     }
     if (message.role === "assistant") {
+      const stop = message.data as { stopReason?: StopReason; maxTurns?: number } | undefined;
       renderedMessages.push(
         <article className="message assistant" key={`assistant-${index}`}>
           <span>Eggshell</span>
-          <MessageContent content={message.content} />
+          {/* The stop notice says the same thing as the persisted text, so the
+              body is only shown for a normal reply. */}
+          {stop?.stopReason
+            ? <StopNotice reason={stop.stopReason} maxTurns={stop.maxTurns} />
+            : <MessageContent content={message.content} />}
           {renderFeedbackRow(index)}
         </article>
       );

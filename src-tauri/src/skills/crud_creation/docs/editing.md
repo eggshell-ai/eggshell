@@ -35,6 +35,12 @@ Insertion position rules for `addField` and `moveField`:
 
 Matching is case-insensitive for resource and field names.
 
+> **Never hand-edit generated files.** `Entity/*.php` and `resources/*.ts` are
+> regenerated from the stored schema on every sync — manual edits (including
+> "fixing" a select field's `?string` foreign-key column to `?int`, which is
+> intentional) are silently overwritten. Go through the schema via operations.
+> See "Foreign-key storage types" in the CRUD skill for the column-type rules.
+
 ## `changes` semantics
 
 `changes` is a camelCase object whose keys are the same properties documented in
@@ -59,6 +65,33 @@ sync_schema({
 Renaming a field drops the old column and creates a new one, so existing data in
 that column is not migrated. Prefer renaming only during development, or add the
 new field and copy/backfill data with an explicit migration.
+
+## Changing a field's type
+
+A type change is a property change, so it goes in `changes` — keep `field` as the
+current name:
+
+```javascript
+sync_schema({
+  operations: [
+    {
+      action: "updateField",
+      resource: "products",
+      field: "price",
+      changes: { type: "number" }
+    }
+  ]
+})
+```
+
+`rename` is **not** a type change; it only renames and would drop the column.
+When a field needs new properties *and* a new type, do both in one call with
+`field` = current name, `changes` = properties, and `rename` = the new name.
+
+> `type: "foreign"` cannot be paired with `resource`. `select` + `resource` is
+> the dropdown and stores `?string` on purpose; `foreign` is a line item's
+> integer parent reference and renders as a plain number input. Cast with
+> `(int)` in backend code instead of converting the field.
 
 ## Examples
 
@@ -160,6 +193,10 @@ sync_schema({
             actionExpression: "data.status == 'new' ? '/contacted' : null",
             labelExpression: "data.status == 'new' ? 'Mark Contacted' : null",
             confirm: true
+          },
+          {
+            label: "Export",
+            handler: "await api.openPdf('/pdf/lead/' + data.id);"
           }
         ]
       }
@@ -202,6 +239,8 @@ call — retrying the same shape will fail identically.
 | `{ action: "updateField", resource: "x", field: "y", label: "New" }` | Stray properties are folded into `changes`, but this form is only a fallback | Prefer the explicit `changes: { label: "New" }` |
 | `{ action: "updateResource", resource: "x" }` with no `changes` | `updateResource` always needs a `changes` object | `changes: { titleExpression: "data.name" }` |
 | `{ action: "updateField", ..., changes: { fields: [...] } }` | Field editing must go through the field actions | Use `addField` / `removeField` / `moveField` |
+| Action object with `labelExpression: "Download PDF"` | The expression is evaluated as JavaScript, so a bare string throws and hides the button | Use `label: "Download PDF"` for constant text, or `labelExpression: "'Download PDF'"` |
+| Action object using `title`, `icon`, or `onClick` | Row actions are declarative; `ResourceGrid` ignores these keys and the button never renders | Use `label` for the text and `handler` for the behavior |
 | Two fields for one relationship (`sale` select + `saleId` number) | Generates two columns for the same FK | Keep one field and `removeField` the other |
 
 Operations run in order and the whole call is all-or-nothing: if operation #3

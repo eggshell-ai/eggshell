@@ -254,6 +254,12 @@ class ActionBuilder implements ResourceAction {
     return this;
   }
 
+  /** Static button label; `labelExpression` wins when both are set. */
+  label(label: string): ActionBuilder {
+    this._config.label = label;
+    return this;
+  }
+
   confirm(confirm: boolean = true): ActionBuilder {
     this._config.confirm = confirm;
     return this;
@@ -348,6 +354,9 @@ export const field = {
 /**
  * Creates an action builder for a custom row action
  * Usage: action().permission('users.deactivate').actionExpression("data.status == 'Active' ? '/deactivate' : '/activate'").labelExpression("data.status == 'Active' ? 'Deactivate' : 'Activate'").confirm()
+ *
+ * For a constant button label use `.label('Download PDF')` instead of
+ * `.labelExpression(...)`. `labelExpression` wins when both are set.
  */
 export const action = (): ActionBuilder => new ActionBuilder();
 

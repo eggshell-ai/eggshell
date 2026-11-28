@@ -1,4 +1,5 @@
 mod apps;
+pub mod ask;
 pub mod config;
 mod db;
 pub mod dependencies;
@@ -9,6 +10,7 @@ use llm::LLMService;
 pub mod providers;
 pub mod logger;
 pub mod migrations;
+pub mod modules;
 pub mod progress;
 mod setup;
 pub mod telemetry;
@@ -25,10 +27,23 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
+
+/// Monotonic number stamped on every `agent-event` payload.
+///
+/// The frontend appends deltas to state, so a second delivery of the same event
+/// (a listener registered twice, for example) would render the token twice. A
+/// process-wide counter means the two sinks below never reuse a number, even
+/// across separate runs, so the UI can drop anything it has already seen.
+static AGENT_EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Wraps the app handle so every emitted payload carries the shared sequence.
+fn next_agent_event_seq() -> u64 {
+    AGENT_EVENT_SEQ.fetch_add(1, Ordering::Relaxed) + 1
+}
 
 type ActiveGenerationMap = Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>;
 type ActiveIterationMap = Arc<Mutex<HashMap<i64, Arc<iterate::IterationControl>>>>;
@@ -813,7 +828,10 @@ async fn send_message(
         .collect::<Vec<_>>();
     let event_sink = Arc::new({
         let app = app.clone();
-        move |payload| {
+        move |mut payload: serde_json::Value| {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("seq".to_string(), next_agent_event_seq().into());
+            }
             let _ = app.emit("agent-event", payload);
         }
     });
@@ -906,7 +924,10 @@ async fn run_max_tasks(
 
     let event_sink = Arc::new({
         let app = app.clone();
-        move |payload| {
+        move |mut payload: serde_json::Value| {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("seq".to_string(), next_agent_event_seq().into());
+            }
             let _ = app.emit("agent-event", payload);
         }
     });
@@ -974,6 +995,11 @@ async fn stop_chat(
     active_max: tauri::State<'_, ActiveMaxMap>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    // A tool may be parked on an `ask_user` question. Resolve those first so
+    // the blocked run unwinds instead of holding the project's cancel flag
+    // occupied forever.
+    ask::cancel_project(project_id);
+
     // A Max mode run has no wrap-up phase: stopping aborts the current task and
     // leaves the rest resumable.
     let max_control = {
@@ -1038,6 +1064,16 @@ async fn stop_chat(
         flag.store(true, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// Resolves a pending `ask_user` question with the user's answer.
+///
+/// The agent's `ask_user` tool is parked on a channel; this command hands it
+/// the answer so the run can continue. An unknown id means the question already
+/// timed out, was stopped, or the app was restarted.
+#[tauri::command]
+async fn answer_question(question_id: String, answer: String) -> Result<(), String> {
+    ask::answer(&question_id, answer)
 }
 
 #[tauri::command]
@@ -1436,6 +1472,7 @@ pub fn run() {
             list_sessions,
             delete_session,
             send_message,
+            answer_question,
             wrap_up_chat,
             stop_chat,
             list_max_tasks,

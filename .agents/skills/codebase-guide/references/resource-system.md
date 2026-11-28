@@ -81,9 +81,12 @@ export default function ProductsPage() {
 ## Row actions
 
 Actions are declared on the resource `actions` array and rendered in the grid's
-actions column. Each action supports `permission`, `labelExpression` (per-row
-label; falsy hides the button), `confirm`, and one of:
+actions column. Each action supports `permission`, a label, `confirm`, and one
+of:
 
+- **Label** — exactly one of `label` (static string, rendered as-is) or
+  `labelExpression` (per-row JavaScript; falsy hides the button). `labelExpression`
+  wins when both are present.
 - **Path action** — `actionExpression` evaluates to a path appended to
   `<endpoint>/<record.id>` and POSTs (e.g. `/contacted` → `POST /api/leads/42/contacted`).
 - **Handler action** — `handler` runs custom JavaScript with an injected helper
@@ -92,6 +95,13 @@ label; falsy hides the button), `confirm`, and one of:
 - **Form action** — `form` opens a reusable dialog (`ActionFormModal`) built from
   a `fields` list and submits to a custom endpoint (`{id}` supported), then
   refreshes the grid.
+
+The supported keys are an allow-list
+(`ACTION_KEYS`: `permission`, `actionExpression`, `labelExpression`, `label`,
+`confirm`, `handler`, `form`). Unknown keys (`title`, `icon`, `onClick`, ...) are
+dropped, which hides the button with no error, so `sync_schema`'s
+`validate_actions()` rejects them and the `resource-actions` `lint_code` check
+flags them in hand-written files.
 
 Frontend visibility is **not** authorization — backend routes must re-check
 permission and record state.

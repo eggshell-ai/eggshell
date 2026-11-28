@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 
@@ -494,7 +494,7 @@ impl SessionsRepository {
             .await;
         }
 
-        let (system_prompt, tools) = if is_plan_mode {
+        let (system_prompt, mut tools) = if is_plan_mode {
             let app = llm::PlanningApp;
             (app.system_prompt(), app.tools())
         } else if is_qa_mode {
@@ -516,6 +516,38 @@ impl SessionsRepository {
             .and_then(|handle| handle.path().app_log_dir().ok().or_else(|| handle.path().app_data_dir().ok()))
             .map(|path| path.join("agent-conversations").to_string_lossy().to_string());
 
+        // One event path for everything the agent emits, including questions.
+        // Building it before the tools means `ask_user` can publish through the
+        // same sink, so the question is streamed to the UI *and* written into
+        // `conversation_history` exactly like a `tool_call`.
+        let on_event: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |event: Value| {
+            let event_type = event.get("type").and_then(Value::as_str).unwrap_or("event");
+            if event_type != "complete" && event_type != "thought_delta" && event_type != "content_delta" {
+                callback_messages
+                    .lock()
+                    .expect("agent event lock poisoned")
+                    .push(ChatMessage {
+                        role: event_type.to_string(),
+                        content: event_content(&event),
+                        data: event.get("data").cloned(),
+                    });
+            }
+            callback_sink(json!({ "projectId": project_id, "sessionId": id, "event": event }));
+        });
+
+        // Interactive modes can ask the user a question and wait for the answer.
+        // QA is excluded: it verifies an existing app rather than making
+        // product decisions. The tool is constructed here because it needs the
+        // project and session it belongs to, which `App::tools()` cannot know.
+        if !is_qa_mode {
+            tools.push(Box::new(crate::tools::AskUserTool::new(
+                Some(crate::ask::AskBroker::new(Arc::clone(&on_event))),
+                project_id,
+                id,
+                true,
+            )));
+        }
+
         let result = agent
             .run_agent(
                 conversation_messages(&messages, &system_prompt),
@@ -524,24 +556,12 @@ impl SessionsRepository {
                     project_path: Some(project_path),
                     artifacts,
                     log_dir,
-                    on_event: Some(Arc::new(move |event| {
-                        let event_type =
-                            event.get("type").and_then(Value::as_str).unwrap_or("event");
-                        if event_type != "complete" && event_type != "thought_delta" && event_type != "content_delta" {
-                            callback_messages
-                                .lock()
-                                .expect("agent event lock poisoned")
-                                .push(ChatMessage {
-                                    role: event_type.to_string(),
-                                    content: event_content(&event),
-                                    data: event.get("data").cloned(),
-                                });
-                        }
-                        callback_sink(
-                            json!({ "projectId": project_id, "sessionId": id, "event": event }),
-                        );
-                    })),
+                    on_event: Some(on_event),
                     cancellation_token: cancel_token,
+                    // Chat runs explore a codebase before writing, so 10 turns
+                    // was enough to exhaust the budget on recon alone (see log
+                    // 1795440427291-39040, which never reached a write).
+                    max_turns: Some(30),
                     ..Default::default()
                 },
             )
@@ -573,6 +593,25 @@ impl SessionsRepository {
                 "isPlan": true,
                 "planPath": plan_path_str
             }));
+        }
+
+        // A run that stopped because it ran out of turns (or because it stalled)
+        // never produced a normal reply. Record why, so the UI can explain the
+        // stop instead of showing a mid-sentence trailing thought.
+        if result.hit_max_turns || result.stalled {
+            let reason = if result.stalled { "stalled" } else { "max_turns" };
+            match assistant_data.as_mut() {
+                Some(data) if data.is_object() => {
+                    data["stopReason"] = json!(reason);
+                    data["maxTurns"] = json!(result.max_turns);
+                }
+                _ => {
+                    assistant_data = Some(json!({
+                        "stopReason": reason,
+                        "maxTurns": result.max_turns,
+                    }));
+                }
+            }
         }
 
         messages.push(ChatMessage {
@@ -746,6 +785,13 @@ fn event_content(event: &Value) -> String {
             data.get("name").and_then(Value::as_str).unwrap_or("tool"),
             data.get("result").cloned().unwrap_or(Value::Null)
         ),
+        // The transcript keeps the question text, not the raw event JSON, so a
+        // reloaded session still renders the prompt inside the card.
+        Some("ask_user") => data
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         _ => data.to_string(),
     }
 }

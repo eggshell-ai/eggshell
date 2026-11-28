@@ -292,7 +292,12 @@ export default function ResourceGrid({
     }
   };
 
-  /** Render custom action buttons for a row (only permitted actions with truthy labels) */
+  /**
+   * Render custom action buttons for a row.
+   *
+   * Only permitted actions with a truthy label are shown. `labelExpression` is
+   * evaluated per row and takes precedence; `label` is a static string.
+   */
   const renderCustomActions = (record: any): React.ReactNode[] => {
     if (!actions || actions.length === 0) return [];
 
@@ -300,8 +305,19 @@ export default function ResourceGrid({
     actions.forEach((action, index) => {
       if (!allowedActions[index]) return;
 
-      const label = evaluateActionExpression(action.labelExpression, record);
-      if (!label) return; // falsy label hides the button for this row
+      // `labelExpression` is per-row JavaScript and wins when present; `label`
+      // is a static string. Never evaluate a static label as code.
+      const label = action.labelExpression
+        ? evaluateActionExpression(action.labelExpression, record)
+        : action.label;
+      if (!label) {
+        if (!action.labelExpression && !action.label) {
+          console.warn(
+            `[ResourceGrid] Action #${index} has neither 'label' nor 'labelExpression', so its button is hidden.`
+          );
+        }
+        return; // falsy label hides the button for this row
+      }
 
       // Path actions resolve their request path from the row; handler and form
       // actions do not require an actionExpression.
